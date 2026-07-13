@@ -21,9 +21,6 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-info "Updating package lists..."
-apt-get update -y >/dev/null 2>&1 || apt-get update >/dev/null 2>&1
-
 # Minimal deps: run manager + core safely
 BASE_DEPS=(curl ca-certificates python3 iproute2 screen)
 
