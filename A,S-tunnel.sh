@@ -8,7 +8,7 @@ VERSION="2.0.0"
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
 # MUST match GitHub file name exactly:
-SCRIPT_FILENAME="A,S-Tunnel.sh"
+SCRIPT_FILENAME="A,S-tunnel.sh"
 SELF_URL="https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main/${SCRIPT_FILENAME}"
 
 PY="/opt/A,S/A,S.py"
