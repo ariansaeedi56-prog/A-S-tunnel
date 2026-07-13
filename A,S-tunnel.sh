@@ -9,10 +9,10 @@ GITHUB_REPO="github.com/Zehnovik/A,S-tunnel"
 
 # MUST match GitHub file name exactly:
 SCRIPT_FILENAME="A,S-Tunnel.sh"
-SELF_URL="https://raw.githubusercontent.com/Zehnovik/A,S-tunnel/main/${SCRIPT_FILENAME}"
+SELF_URL="https://raw.github.com/ariansaeedi56-prog/A-S-tunnel/main/${SCRIPT_FILENAME}"
 
 PY="/opt/A,S/A,S.py"
-PY_URL="https://raw.githubusercontent.com/Zehnovik/A,S-tunnel/main/A,S.py"
+PY_URL="https://raw.githubusercontent.com/ariansaeedi56-prog/A,S-tunnel/main/A,S.py"
 
 INSTALL_PATH="/usr/local/bin/A,S-tunnel"
 
