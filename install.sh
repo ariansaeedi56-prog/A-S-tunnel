@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO="https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main"
-MANAGER_URL="$REPO/A,S-Tunnel.sh"
+MANAGER_URL="$REPO/A,S-tunnel.sh"
 PY_URL="$REPO/A,S.py"
 
 BIN="/usr/local/bin/A,S-tunnel"
