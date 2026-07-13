@@ -1,422 +1,454 @@
-#!/usr/bin/env python3
-import os, sys, time, socket, struct, threading, subprocess, re, resource
-from queue import Queue, Empty
-from typing import Optional
+#!/usr/bin/env bash
+set -euo pipefail
 
-# --------- Tunables ----------
-DIAL_TIMEOUT = 5
-KEEPALIVE_SECS = 20
-SOCKBUF = 8 * 1024 * 1024
-BUF_COPY = 256 * 1024
-POOL_WAIT = 5
-SYNC_INTERVAL = 3
+APP_NAME="A,S"
+TG_ID="@Asnejad"
+VERSION="2.0.0"
 
-# --------- Auto pool sizing ----------
-def auto_pool_size(role: str = "ir") -> int:
-    """Pick a safe default pool size based on process FD limit + RAM.
-    Can be overridden with env var A,S_POOL (positive int).
-    """
-    # Allow explicit override
-    try:
-        env_pool = int(os.environ.get("A,S_POOL", "0"))
-        if env_pool > 0:
-            return env_pool
-    except Exception:
-        pass
+GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
-    # File descriptor limit for this process
-    try:
-        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
-        nofile = soft if soft and soft > 0 else 1024
-    except Exception:
-        nofile = 1024
+# MUST match GitHub file name exactly:
+SCRIPT_FILENAME="A,S-tunnel.sh"
+SELF_URL="https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main/${SCRIPT_FILENAME}"
 
-    # Total RAM (best-effort)
-    mem_mb = 0
-    try:
-        with open("/proc/meminfo", "r") as f:
-            for line in f:
-                if line.startswith("MemTotal:"):
-                    mem_kb = int(line.split()[1])
-                    mem_mb = mem_kb // 1024
-                    break
-    except Exception:
-        mem_mb = 0
+PY="/opt/A,S/A,S.py"
+PY_URL="https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main/A,S.py"
 
-    # Reserve room for listeners, logs, timewait bursts, and user sockets
-    reserve = 500
-    fd_budget = max(0, nofile - reserve)
+INSTALL_PATH="/usr/local/bin/A,S-tunnel"
 
-    # IR side tends to have more concurrent user sockets; be more conservative
-    frac = 0.22 if role.lower().startswith("ir") else 0.30
-    fd_based = int(fd_budget * frac)
+BASE="/etc/A,S_manager"
+CONF="$BASE/profiles"
+MAX=10
 
-    # RAM cap (rough): allow ~250 pool per 1GB
-    ram_based = int((mem_mb / 1024) * 250) if mem_mb else 500
+HC_SCRIPT="/usr/local/bin/A,S-health-check"
+HC_CRON_TAG="# A,STunnelHealthCheck"
 
-    pool = min(fd_based, ram_based)
+# Colors
+if [[ -t 1 ]]; then
+  CLR_RESET="\033[0m"; CLR_DIM="\033[2m"; CLR_BOLD="\033[1m"
+  CLR_RED="\033[31m"; CLR_GREEN="\033[32m"; CLR_YELLOW="\033[33m"
+  CLR_CYAN="\033[36m"; CLR_WHITE="\033[97m"
+else
+  CLR_RESET=""; CLR_DIM=""; CLR_BOLD=""
+  CLR_RED=""; CLR_GREEN=""; CLR_YELLOW=""
+  CLR_CYAN=""; CLR_WHITE=""
+fi
 
-    # Clamp to sane bounds
-    if pool < 100:
-        pool = 100
-    if pool > 2000:
-        pool = 2000
-    return pool
+need_root(){ [[ "$(id -u)" == "0" ]] || { echo "Run as root (sudo -i)"; exit 1; }; }
+pause(){ read -r -p "Press Enter to continue..." _ < /dev/tty || true; }
+have(){ command -v "$1" >/dev/null 2>&1; }
 
-def is_socket_alive(s: socket.socket) -> bool:
-    """Best-effort check to avoid using dead sockets from the pool."""
-    try:
-        s.setblocking(False)
-        try:
-            data = s.recv(1, socket.MSG_PEEK)
-            if data == b"":
-                return False
-        except BlockingIOError:
-            return True
-        except Exception:
-            # If we can't peek, assume it's OK; actual send will validate
-            return True
-        finally:
-            s.setblocking(True)
-        return True
-    except Exception:
-        return False
+apt_try_install(){
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y >/dev/null 2>&1 || true
+  apt-get install -y "$@" >/dev/null 2>&1 || true
+}
 
-def tune_tcp(sock: socket.socket):
-    try:
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-    except Exception:
-        pass
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKBUF)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKBUF)
-    except Exception:
-        pass
-    # keepalive
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        # Linux specific options
-        if hasattr(socket, "TCP_KEEPIDLE"):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, KEEPALIVE_SECS)
-        if hasattr(socket, "TCP_KEEPINTVL"):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, KEEPALIVE_SECS)
-        if hasattr(socket, "TCP_KEEPCNT"):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
-    except Exception:
-        pass
+fetch_url_to(){
+  local url="$1" out="$2"
+  if have curl; then
+    curl -fsSL "$url" -o "$out"
+  else
+    have wget || apt_try_install wget
+    wget -qO "$out" "$url"
+  fi
+}
 
-def dial_tcp(host, port):
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    tune_tcp(s)
-    s.settimeout(DIAL_TIMEOUT)
-    s.connect((host, port))
-    s.settimeout(None)
-    return s
+is_installed(){ [[ -x "$INSTALL_PATH" ]]; }
 
+ensure(){
+  mkdir -p "$CONF"
+  mkdir -p "$(dirname "$PY")"
+  have screen  || apt_try_install screen
+  have python3 || apt_try_install python3
+  have curl    || apt_try_install curl
+  have figlet  || apt_try_install figlet
+  have ss      || apt_try_install iproute2
+  have crontab || apt_try_install cron
 
-def recv_exact(sock: socket.socket, n: int) -> Optional[bytes]:
-    """Receive exactly n bytes or return None if the connection closes."""
-    data = bytearray()
-    while len(data) < n:
-        chunk = sock.recv(n - len(data))
-        if not chunk:
-            return None
-        data.extend(chunk)
-    return bytes(data)
+  if [[ ! -f "$PY" ]]; then
+    echo "[*] Python core not found. Downloading: $PY_URL" > /dev/tty
+    fetch_url_to "$PY_URL" "$PY"
+    chmod +x "$PY" || true
+  fi
+  [[ -f "$PY" ]] || { echo "Missing python file: $PY"; exit 1; }
+}
 
-def pipe(a: socket.socket, b: socket.socket):
-    buf = bytearray(BUF_COPY)
-    try:
-        while True:
-            n = a.recv_into(buf)
-            if n <= 0:
-                break
-            b.sendall(memoryview(buf)[:n])
-    except Exception:
-        pass
-    finally:
-        try: a.shutdown(socket.SHUT_RD)
-        except Exception: pass
-        try: b.shutdown(socket.SHUT_WR)
-        except Exception: pass
+install_script(){
+  echo "[*] Installing to: $INSTALL_PATH" > /dev/tty
+  mkdir -p "$(dirname "$INSTALL_PATH")"
 
-def bridge(a: socket.socket, b: socket.socket):
-    t1 = threading.Thread(target=pipe, args=(a,b), daemon=True)
-    t2 = threading.Thread(target=pipe, args=(b,a), daemon=True)
-    t1.start(); t2.start()
-    t1.join(); t2.join()
-    try: a.close()
-    except Exception: pass
-    try: b.close()
-    except Exception: pass
+  # If executed from a file path, copy it. Otherwise download from SELF_URL.
+  if [[ -f "$0" ]] && [[ "$0" != "bash" ]] && [[ "$0" != "/dev/fd/"* ]]; then
+    cp -f "$0" "$INSTALL_PATH"
+  else
+    fetch_url_to "$SELF_URL" "$INSTALL_PATH"
+  fi
+  chmod +x "$INSTALL_PATH"
+  echo "[+] Installed. Run: sudo A,S-tunnel" > /dev/tty
+}
 
-# --------- EU: detect listening TCP ports (like ss) ----------
-_port_re = re.compile(r":(\d+)$")
-def get_listen_ports(exclude_bridge, exclude_sync):
-    try:
-        out = subprocess.check_output(["bash","-lc","ss -lntp | awk '{print $4}'"], stderr=subprocess.DEVNULL).decode()
-    except Exception:
-        return []
-    ports = set()
-    for ln in out.splitlines():
-        ln = ln.strip()
-        if not ln: 
-            continue
-        m = _port_re.search(ln)
-        if not m:
-            continue
-        p = int(m.group(1))
-        if p in (exclude_bridge, exclude_sync):
-            continue
-        if 1 <= p <= 65535:
-            ports.add(p)
-    return sorted(ports)
+update_script(){
+  echo "[*] Updating from: $SELF_URL" > /dev/tty
+  local tmp; tmp="$(mktemp)"
+  fetch_url_to "$SELF_URL" "$tmp"
 
-# --------- EU mode ----------
-def eu_mode(iran_ip, bridge_port, sync_port, pool_size):
-    def port_sync_loop():
-        while True:
-            try:
-                c = dial_tcp(iran_ip, sync_port)
-            except Exception:
-                time.sleep(SYNC_INTERVAL); continue
-            try:
-                while True:
-                    ports = get_listen_ports(bridge_port, sync_port)[:255]
-                    payload = bytes([len(ports)]) + b"".join(struct.pack("!H", p) for p in ports)
-                    c.settimeout(2)
-                    c.sendall(payload)
-                    c.settimeout(None)
-                    time.sleep(SYNC_INTERVAL)
-            except Exception:
-                try: c.close()
-                except Exception: pass
-                time.sleep(SYNC_INTERVAL)
+  if ! head -n 1 "$tmp" | grep -q "bash"; then
+    echo "[-] Update failed: invalid file downloaded." > /dev/tty
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod +x "$tmp"
 
-    def reverse_link_worker():
-        delay = 0.2
-        while True:
-            try:
-                conn = dial_tcp(iran_ip, bridge_port)
-                # wait for 2-byte target port
-                hdr = recv_exact(conn, 2)
-                if not hdr:
-                    conn.close(); continue
-                (target_port,) = struct.unpack("!H", hdr)
-                local = dial_tcp("127.0.0.1", target_port)
-                bridge(conn, local)
-                delay = 0.2
-            except Exception:
-                time.sleep(delay)
-                delay = min(delay * 2, 5.0)
+  if is_installed; then
+    mv -f "$tmp" "$INSTALL_PATH"
+    chmod +x "$INSTALL_PATH"
+    echo "[+] Updated. Run again: sudo A,S-tunnel" > /dev/tty
+  else
+    mv -f "$tmp" "./${SCRIPT_FILENAME}"
+    chmod +x "./${SCRIPT_FILENAME}"
+    echo "[+] Updated file saved locally: ./${SCRIPT_FILENAME}" > /dev/tty
+  fi
+}
 
-    threading.Thread(target=port_sync_loop, daemon=True).start()
-    for _ in range(pool_size):
-        threading.Thread(target=reverse_link_worker, daemon=True).start()
+disable_cron_healthcheck(){
+  local tmp; tmp="$(mktemp)"
+  (crontab -l 2>/dev/null || true) | grep -vF "${HC_CRON_TAG}" >"$tmp" || true
+  crontab "$tmp" || true
+  rm -f "$tmp"
+  echo "[+] Cron disabled." > /dev/tty
+}
 
-    print(f"[EU] Running | IRAN={iran_ip} bridge={bridge_port} sync={sync_port} pool={pool_size}")
-    while True:
-        time.sleep(3600)
+optimize_server(){
+  echo "" > /dev/tty
+  echo "[*] Optimizing network settings and enabling BBR if supported..." > /dev/tty
 
-# --------- IR mode ----------
-def ir_mode(bridge_port, sync_port, pool_size, auto_sync, manual_ports_csv):
-    pool = Queue(maxsize=pool_size * 2)
-    active = {}
-    active_lock = threading.Lock()
+  # Ensure tools that are commonly missing on minimal images
+  have sysctl  || apt_try_install procps
+  have modprobe || apt_try_install kmod
+  have ss || apt_try_install iproute2
 
-    def accept_bridge():
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("0.0.0.0", bridge_port))
-        srv.listen(16384)
-        print(f"[IR] Bridge listening on {bridge_port}")
-        while True:
-            try:
-                c, _ = srv.accept()
-            except OSError as e:
-                print(f"[IR] sync_listener error: {e}")
-                time.sleep(0.2)
-                continue
-            tune_tcp(c)
-            try:
-                pool.put(c, block=False)
-            except Exception:
-                try: c.close()
-                except Exception: pass
+  # Cron is optional but health-check uses crontab
+  have crontab || apt_try_install cron
 
-    def handle_user(user_sock: socket.socket, target_port: int):
-        tune_tcp(user_sock)
-        deadline = time.time() + POOL_WAIT
-        europe = None
-        while time.time() < deadline:
-            try:
-                cand = pool.get(timeout=max(0.1, deadline - time.time()))
-            except Empty:
-                break
-            if is_socket_alive(cand):
-                europe = cand
-                break
-            try: cand.close()
-            except Exception: pass
-        if europe is None:
-            try: user_sock.close()
-            except Exception: pass
-            return
-        try:
-            europe.settimeout(2)
-            europe.sendall(struct.pack("!H", target_port))
-            europe.settimeout(None)
-        except Exception:
-            try: user_sock.close()
-            except Exception: pass
-            try: europe.close()
-            except Exception: pass
-            return
-        bridge(user_sock, europe)
+  # Try loading BBR module (no hard fail)
+  modprobe tcp_bbr >/dev/null 2>&1 || true
 
-    def open_port(p: int):
-        with active_lock:
-            if p in active:
-                return
-            active[p] = True
+  if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
+    echo "[+] BBR is available." > /dev/tty
 
-        try:
-            srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            srv.bind(("0.0.0.0", p))
-            srv.listen(16384)
-        except Exception as e:
-            with active_lock:
-                active.pop(p, None)
-            print(f"[IR] Cannot open port {p}: {e}")
-            return
+    # Apply runtime settings
+    sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
+    sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
 
-        print(f"[IR] Port Active: {p}")
+    # Persist settings (idempotent, separate file)
+    local conf="/etc/sysctl.d/99-A,S-tunnel.conf"
+    cat > "$conf" <<'EOF'
+# A,S Tunnel - network tuning
+net.core.default_qdisc=fq
+net.ipv4.tcp_congestion_control=bbr
 
-        def accept_users():
-            while True:
-                try:
-                    u, _ = srv.accept()
-                except OSError as e:
-                    print(f"[IR] accept_users({p}) error: {e}")
-                    time.sleep(0.2)
-                    continue
-                try:
-                    threading.Thread(target=handle_user, args=(u,p), daemon=True).start()
-                except Exception as e:
-                    print(f"[IR] spawn thread error: {e}")
-                    try: u.close()
-                    except Exception: pass
-        threading.Thread(target=accept_users, daemon=True).start()
+# Socket buffer ceilings (reasonable defaults)
+net.core.rmem_max=16777216
+net.core.wmem_max=16777216
+net.ipv4.tcp_rmem=4096 87380 16777216
+net.ipv4.tcp_wmem=4096 65536 16777216
+EOF
 
-    def sync_listener():
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("0.0.0.0", sync_port))
-        srv.listen(1024)
-        print(f"[IR] Sync listening on {sync_port} (AutoSync)")
-        while True:
-            try:
-                c, _ = srv.accept()
-            except OSError as e:
-                print(f"[IR] accept_bridge error: {e}")
-                time.sleep(0.2)
-                continue
-            def handle_sync(conn):
-                try:
-                    while True:
-                        h = recv_exact(conn, 1)
-                        if not h:
-                            break
-                        count = h[0]
-                        for _ in range(count):
-                            pd = recv_exact(conn, 2)
-                            if not pd:
-                                return
-                            (p,) = struct.unpack("!H", pd)
-                            open_port(p)
-                except Exception:
-                    pass
-                finally:
-                    try: conn.close()
-                    except Exception: pass
-            threading.Thread(target=handle_sync, args=(c,), daemon=True).start()
+    sysctl --system >/dev/null 2>&1 || sysctl -p >/dev/null 2>&1 || true
 
-    threading.Thread(target=accept_bridge, daemon=True).start()
+    echo "[+] Applied sysctl tuning." > /dev/tty
+    echo "[i] tcp_congestion_control: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" > /dev/tty
+    echo "[i] default_qdisc:         $(sysctl -n net.core.default_qdisc 2>/dev/null)" > /dev/tty
+  else
+    echo "[!] BBR is NOT available on this kernel." > /dev/tty
+    echo "[i] Available: $(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo unknown)" > /dev/tty
+    echo "[i] Hint: upgrade kernel to use BBR." > /dev/tty
+  fi
+}
 
-    if auto_sync:
-        threading.Thread(target=sync_listener, daemon=True).start()
-    else:
-        ports = []
-        if manual_ports_csv.strip():
-            for part in manual_ports_csv.split(","):
-                part = part.strip()
-                if not part: 
-                    continue
-                try:
-                    p = int(part)
-                    if 1 <= p <= 65535:
-                        ports.append(p)
-                except Exception:
-                    pass
-        for p in ports:
-            open_port(p)
-        print("[IR] Manual ports opened.")
+uninstall_script(){
+  disable_cron_healthcheck >/dev/null 2>&1 || true
+  rm -f "$HC_SCRIPT" >/dev/null 2>&1 || true
+  rm -f "$INSTALL_PATH" >/dev/null 2>&1 || true
+  echo "[+] Uninstalled: $INSTALL_PATH" > /dev/tty
+}
 
-    print(f"[IR] Running | bridge={bridge_port} sync={sync_port} pool={pool_size} autoSync={auto_sync}")
-    while True:
-        time.sleep(3600)
+# Info (best-effort)
+get_public_ip(){ curl -fsSL --max-time 3 https://api.ipify.org 2>/dev/null || true; }
+get_ipinfo_field(){
+  local field="$1" ip="$2"
+  [[ -n "$ip" ]] || { echo ""; return 0; }
+  local json
+  json="$(curl -fsSL --max-time 4 "https://ipinfo.io/${ip}/json" 2>/dev/null || true)"
+  [[ -n "$json" ]] || { echo ""; return 0; }
+  echo "$json" | tr -d '\n' | sed -n "s/.*\"${field}\":[ ]*\"\\([^\"]*\\)\".*/\\1/p" | head -n1
+}
+get_location_string(){
+  local ip city region country
+  ip="$(get_public_ip)"
+  city="$(get_ipinfo_field city "$ip")"
+  region="$(get_ipinfo_field region "$ip")"
+  country="$(get_ipinfo_field country "$ip")"
+  if [[ -n "$city" || -n "$region" || -n "$country" ]]; then
+    echo "${city}${city:+, }${region}${region:+, }${country}"
+  else
+    echo "Unknown"
+  fi
+}
+get_datacenter_string(){
+  local ip org
+  ip="$(get_public_ip)"
+  org="$(get_ipinfo_field org "$ip")"
+  [[ -n "$org" ]] && echo "$org" || echo "Unknown"
+}
 
-# --------- Simple stdin-driven menu (works with your .sh printf feeding) ----------
-def read_line(prompt=None):
-    if prompt:
-        print(prompt, end="", flush=True)
-    s = sys.stdin.readline()
-    if not s:
-        return ""
-    return s.strip()
+# Profiles
+pick_role(){
+  while true; do
+    printf "1) EU\n2) IRAN\n" > /dev/tty
+    read -r -p "Select: " x < /dev/tty
+    if [[ "$x" == "1" ]]; then echo "eu"; return 0; fi
+    if [[ "$x" == "2" ]]; then echo "iran"; return 0; fi
+    echo "Invalid." > /dev/tty
+  done
+}
+slot_status(){ local role="$1" i="$2"; [[ -f "$CONF/${role}${i}.env" ]] && echo "[saved]" || echo "(empty)"; }
+pick_slot(){
+  local role="$1"
+  echo "" > /dev/tty
+  echo "Select ${role} slot (1..${MAX}):" > /dev/tty
+  echo "--------------------------------" > /dev/tty
+  for i in $(seq 1 "$MAX"); do
+    printf "  %s) %s%s %s\n" "$i" "$role" "$i" "$(slot_status "$role" "$i")" > /dev/tty
+  done
+  echo "--------------------------------" > /dev/tty
+  read -r -p "Slot number: " slot < /dev/tty
+  [[ "$slot" =~ ^[0-9]+$ ]] && [[ "$slot" -ge 1 ]] && [[ "$slot" -le "$MAX" ]] || { echo "Invalid"; exit 1; }
+  echo "${role}${slot}"
+}
+edit_profile(){
+  local prof="$1" f="$CONF/${prof}.env" role="${prof%%[0-9]*}"
+  echo "" > /dev/tty; echo "Editing: $prof" > /dev/tty
 
-def main():
-    # expected input order (from your shell wrapper):
-    # EU: 1, IRAN_IP, BRIDGE, SYNC
-    # IR: 2, BRIDGE, SYNC, y|n, [PORTS if n]
-    choice = read_line()
-    if choice not in ("1","2"):
-        print("Invalid mode selection.")
-        sys.exit(1)
+  if [[ "$role" == "eu" ]]; then
+    read -r -p "Iran IP: " IRAN_IP < /dev/tty
+    read -r -p "Bridge port (e.g. 7000): " BRIDGE < /dev/tty
+    read -r -p "Sync port   (e.g. 7001): " SYNC < /dev/tty
+    cat >"$f" <<EOF
+ROLE=eu
+IRAN_IP=$IRAN_IP
+BRIDGE=$BRIDGE
+SYNC=$SYNC
+EOF
+  else
+    read -r -p "Bridge port (e.g. 7000): " BRIDGE < /dev/tty
+    read -r -p "Sync port   (e.g. 7001): " SYNC < /dev/tty
+    read -r -p "Auto-Sync ports from EU? (y/n): " AS < /dev/tty
+    if [[ "${AS,,}" == "y" ]]; then
+      cat >"$f" <<EOF
+ROLE=iran
+BRIDGE=$BRIDGE
+SYNC=$SYNC
+AUTO_SYNC=true
+PORTS=
+EOF
+    else
+      read -r -p "Manual ports CSV (e.g. 80,443,2083): " PORTS < /dev/tty
+      cat >"$f" <<EOF
+ROLE=iran
+BRIDGE=$BRIDGE
+SYNC=$SYNC
+AUTO_SYNC=false
+PORTS=$PORTS
+EOF
+    fi
+  fi
+  echo "[+] Saved $f" > /dev/tty
+}
 
-    if choice == "1":
-        iran_ip = read_line()
-        bridge = int(read_line() or "7000")
-        sync = int(read_line() or "7001")
-        pool = auto_pool_size("eu")
-        try:
-            nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-        except Exception:
-            nofile = -1
-        print(f"[AUTO] role=EU nofile={nofile} pool={pool} (override: A,S_POOL)")
-        eu_mode(iran_ip, bridge, sync, pool_size=pool)
-    else:
-        bridge = int(read_line() or "7000")
-        sync = int(read_line() or "7001")
-        yn = (read_line() or "y").lower()
-        if yn == "y":
-            pool = auto_pool_size("ir")
-            try:
-                nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-            except Exception:
-                nofile = -1
-            print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: A,S_POOL)")
-            ir_mode(bridge, sync, pool_size=pool, auto_sync=True, manual_ports_csv="")
-        else:
-            ports = read_line()
-            pool = auto_pool_size("ir")
-            try:
-                nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
-            except Exception:
-                nofile = -1
-            print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: A,S_POOL)")
-            ir_mode(bridge, sync, pool_size=pool, auto_sync=False, manual_ports_csv=ports)
+session_name(){ echo "A,S_$1"; }
+is_running(){
+  local prof="$1" s; s="$(session_name "$prof")"
+  screen -ls 2>/dev/null | grep -q "\.${s}[[:space:]]"
+}
+run_slot(){
+  local prof="$1" f="$CONF/${prof}.env"
+  [[ -f "$f" ]] || { echo "Profile not found: $prof" > /dev/tty; return 1; }
+  # shellcheck disable=SC1090
+  source "$f"
+  local s; s="$(session_name "$prof")"
+  screen -S "$s" -X quit >/dev/null 2>&1 || true
 
-if __name__ == "__main__":
-    main()
+  if [[ "$ROLE" == "eu" ]]; then
+    screen -dmS "$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | PAHLAVI_POOL="${PAHLAVI_POOL:-0}" python3 '$PY'"
+  else
+    if [[ "${AUTO_SYNC:-true}" == "true" ]]; then
+      screen -dmS "$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '2\n%s\n%s\ny\n' '$BRIDGE' '$SYNC' | PAHLAVI_POOL="${PAHLAVI_POOL:-0}" python3 '$PY'"
+    else
+      screen -dmS "$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '2\n%s\n%s\nn\n%s\n' '$BRIDGE' '$SYNC' '${PORTS:-}' | PAHLAVI_POOL="${PAHLAVI_POOL:-0}" python3 '$PY'"
+    fi
+  fi
+  echo "[+] Started: $s" > /dev/tty
+}
+stop_slot(){ local prof="$1" s; s="$(session_name "$prof")"; screen -S "$s" -X quit >/dev/null 2>&1 || true; echo "[+] Stopped: $s" > /dev/tty; }
+restart_slot(){ local prof="$1"; stop_slot "$prof" >/dev/null 2>&1 || true; sleep 0.5; run_slot "$prof"; }
+status_slot(){
+  local prof="$1" f="$CONF/${prof}.env"
+  [[ -f "$f" ]] || { echo "Profile not found: $prof" > /dev/tty; return 1; }
+  local st="${CLR_RED}OFF${CLR_RESET}"
+  if is_running "$prof"; then st="${CLR_GREEN}ON${CLR_RESET}"; fi
+  echo -e "Profile: $prof | Running: $st" > /dev/tty
+}
+delete_slot(){
+  local prof="$1" f="$CONF/${prof}.env"
+  stop_slot "$prof" >/dev/null 2>&1 || true
+  if [[ -f "$f" ]]; then rm -f "$f"; echo "[+] Deleted: $f" > /dev/tty; else echo "[-] Not found: $f" > /dev/tty; fi
+}
+logs_slot(){ local prof="$1" s; s="$(session_name "$prof")"; echo "[i] Attach: $s (Ctrl+A then D)" > /dev/tty; screen -r "$s" || true; }
+
+install_healthcheck_script(){
+  cat >"$HC_SCRIPT" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+PY="${PY}"
+CONF="${CONF}"
+MAX="${MAX}"
+session_name(){ echo "A,S_\$1"; }
+is_running(){ local prof="\$1" s; s="\$(session_name "\$prof")"; screen -ls 2>/dev/null | grep -q "\\.\${s}[[:space:]]"; }
+start_from_profile(){
+  local prof="\$1" f="\${CONF}/\${prof}.env"
+  [[ -f "\$f" ]] || return 0
+  # shellcheck disable=SC1090
+  source "\$f"
+  local s; s="\$(session_name "\$prof")"
+  screen -S "\$s" -X quit >/dev/null 2>&1 || true
+  if [[ "\${ROLE}" == "eu" ]]; then
+    screen -dmS "\$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '1\\n%s\\n%s\\n%s\\n' '\${IRAN_IP}' '\${BRIDGE}' '\${SYNC}' | PAHLAVI_POOL="\${PAHLAVI_POOL:-0}" python3 '\${PY}'"
+  else
+    if [[ "\${AUTO_SYNC:-true}" == "true" ]]; then
+      screen -dmS "\$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '2\\n%s\\n%s\\ny\\n' '\${BRIDGE}' '\${SYNC}' | PAHLAVI_POOL="\${PAHLAVI_POOL:-0}" python3 '\${PY}'"
+    else
+      screen -dmS "\$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '2\\n%s\\n%s\\nn\\n%s\\n' '\${BRIDGE}' '\${SYNC}' '\${PORTS:-}' | PAHLAVI_POOL="\${PAHLAVI_POOL:-0}" python3 '\${PY}'"
+    fi
+  fi
+}
+[[ -f "\$PY" ]] || exit 0
+for role in eu iran; do
+  for i in \$(seq 1 "\$MAX"); do
+    prof="\${role}\${i}"
+    [[ -f "\${CONF}/\${prof}.env" ]] || continue
+    if ! is_running "\$prof"; then start_from_profile "\$prof" >/dev/null 2>&1 || true; fi
+  done
+done
+EOF
+  chmod +x "$HC_SCRIPT"
+}
+enable_cron_healthcheck(){
+  install_healthcheck_script
+
+  echo "" > /dev/tty
+  read -r -p "Enter interval in minutes (default: 1): " interval < /dev/tty || true
+  interval=${interval:-1}
+
+  if ! [[ "$interval" =~ ^[0-9]+$ ]]; then
+    echo "[!] Invalid number. Using default 1 minute." > /dev/tty
+    interval=1
+  fi
+  if [ "$interval" -lt 1 ]; then interval=1; fi
+
+  local line="*/$interval * * * * ${HC_SCRIPT} >/dev/null 2>&1 ${HC_CRON_TAG}"
+  local tmp; tmp="$(mktemp)"
+  (crontab -l 2>/dev/null || true) | grep -vF "${HC_CRON_TAG}" >"$tmp" || true
+  echo "$line" >>"$tmp"
+  crontab "$tmp"
+  rm -f "$tmp"
+  echo "[+] Cron enabled (every $interval minute(s))." > /dev/tty
+}
+
+print_banner(){
+  local loc dc inst
+  loc="$(get_location_string)"
+  dc="$(get_datacenter_string)"
+  inst="${CLR_RED}NOT INSTALLED${CLR_RESET}"
+  if is_installed; then inst="${CLR_GREEN}INSTALLED${CLR_RESET}"; fi
+
+  echo -e "${CLR_CYAN}${CLR_BOLD}"
+  if have figlet; then
+    figlet -f slant "$APP_NAME" 2>/dev/null || figlet "$APP_NAME" 2>/dev/null || true
+  else
+    echo "$APP_NAME"
+  fi
+  echo -e "${CLR_RESET}"
+
+  echo -e "${CLR_GREEN}Version:${CLR_RESET} v${VERSION}"
+  echo -e "${CLR_GREEN}GitHub:${CLR_RESET} ${GITHUB_REPO}"
+  echo -e "${CLR_GREEN}Telegram ID:${CLR_RESET} ${TG_ID}"
+  echo -e "${CLR_DIM}============================================================${CLR_RESET}"
+  echo -e "${CLR_CYAN}Location:${CLR_RESET} ${loc}"
+  echo -e "${CLR_CYAN}Datacenter:${CLR_RESET} ${dc}"
+  echo -e "${CLR_CYAN}Script:${CLR_RESET} ${inst}"
+  echo -e "${CLR_DIM}============================================================${CLR_RESET}"
+}
+
+manage_slot_menu(){
+  local prof="$1"
+  while true; do
+    echo "" > /dev/tty
+    echo -e "${CLR_YELLOW}${CLR_BOLD}Manage slot:${CLR_RESET} ${prof}" > /dev/tty
+    echo "1) Show profile" > /dev/tty
+    echo "2) Start" > /dev/tty
+    echo "3) Stop" > /dev/tty
+    echo "4) Restart" > /dev/tty
+    echo "5) Status" > /dev/tty
+    echo "6) Logs" > /dev/tty
+    echo "7) Delete slot" > /dev/tty
+    echo "0) Back" > /dev/tty
+    read -r -p "Select: " c < /dev/tty
+    case "$c" in
+      1) cat "$CONF/${prof}.env" 2>/dev/null > /dev/tty || echo "Profile not found." > /dev/tty; pause ;;
+      2) run_slot "$prof"; pause ;;
+      3) stop_slot "$prof"; pause ;;
+      4) restart_slot "$prof"; pause ;;
+      5) status_slot "$prof"; pause ;;
+      6) logs_slot "$prof" ;;
+      7) delete_slot "$prof"; pause ;;
+      0) return ;;
+      *) echo "Invalid." > /dev/tty ;;
+    esac
+  done
+}
+
+# ===================== Main =====================
+need_root
+ensure
+
+while true; do
+  clear || true
+  print_banner
+
+  echo -e "${CLR_WHITE}${CLR_BOLD}1.${CLR_RESET} Create/Update profile"
+  echo -e "${CLR_WHITE}${CLR_BOLD}2.${CLR_RESET} Manage tunnel (select slot)"
+  echo -e "${CLR_WHITE}${CLR_BOLD}3.${CLR_RESET} Enable cron health-check"
+  echo -e "${CLR_WHITE}${CLR_BOLD}4.${CLR_RESET} Disable cron health-check"
+  echo -e "${CLR_WHITE}${CLR_BOLD}5.${CLR_RESET} Install script (system-wide)"
+  echo -e "${CLR_WHITE}${CLR_BOLD}6.${CLR_RESET} Update script (self-update)"
+  echo -e "${CLR_WHITE}${CLR_BOLD}7.${CLR_RESET} Uninstall script"
+  echo -e "${CLR_WHITE}${CLR_BOLD}8.${CLR_RESET} Optimize server (BBR + sysctl)"
+  echo -e "${CLR_WHITE}${CLR_BOLD}0.${CLR_RESET} Exit"
+  echo -e "${CLR_DIM}------------------------------------------------------------${CLR_RESET}"
+
+  read -r -p "Select: " c < /dev/tty
+  case "$c" in
+    1) role="$(pick_role)"; prof="$(pick_slot "$role")"; edit_profile "$prof"; pause ;;
+    2) role="$(pick_role)"; prof="$(pick_slot "$role")"; manage_slot_menu "$prof" ;;
+    3) enable_cron_healthcheck; pause ;;
+    4) disable_cron_healthcheck; pause ;;
+    5) install_script; pause ;;
+    6) update_script; pause ;;
+    7) uninstall_script; pause ;;
+    8) optimize_server; pause ;;
+    0) exit 0 ;;
+    *) echo "Invalid."; sleep 1 ;;
+  esac
+done
