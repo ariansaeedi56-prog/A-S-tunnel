@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO="https://raw.githubusercontent.com/Zehnovik/A,S-tunnel/main"
+REPO="https://raw.githubusercontent.com/ariansaeedi56-prog/A,S-tunnel/main"
 MANAGER_URL="$REPO/A,S-Tunnel.sh"
 PY_URL="$REPO/A,S.py"
 
