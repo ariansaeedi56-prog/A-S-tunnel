@@ -5,7 +5,7 @@ APP_NAME="A,S"
 TG_ID="@Asnejad"
 VERSION="2.0.0"
 
-GITHUB_REPO="github.com/Zehnovik/A,S-tunnel"
+GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
 # MUST match GitHub file name exactly:
 SCRIPT_FILENAME="A,S-Tunnel.sh"
