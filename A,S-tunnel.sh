@@ -54,16 +54,6 @@ fetch_url_to(){
   fi
 }
 
-generate_secret_key(){
-
-    if command -v openssl >/dev/null 2>&1; then
-        openssl rand -hex 16
-    else
-        tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32
-    fi
-
-}
-
 is_installed(){ [[ -x "$INSTALL_PATH" ]]; }
 
 ensure(){
@@ -238,82 +228,26 @@ pick_slot(){
   echo "${role}${slot}"
 }
 edit_profile(){
-  local prof="$1"
-local f="$CONF/${prof}.env"
-local role="${prof%%[0-9]*}"
-
-local SECRET_KEY=""
-local KEYMODE=""
+  local prof="$1" f="$CONF/${prof}.env" role="${prof%%[0-9]*}"
   echo "" > /dev/tty; echo "Editing: $prof" > /dev/tty
 
   if [[ "$role" == "eu" ]]; then
-read -r -p "Iran IP: " IRAN_IP
-
-echo ""
-echo "=========================="
-echo " Secret Key"
-echo "=========================="
-echo "1) Auto Generate"
-echo "2) Manual"
-echo ""
-
-read -r -p "Select: " KEYMODE
-
-if [[ "$KEYMODE" == "1" ]]; then
-
-    SECRET_KEY="$(generate_secret_key)"
-
-    echo ""
-    echo "Generated Secret Key:"
-    echo ""
-    echo "$SECRET_KEY"
-    echo ""
-
-else
-
-    while true; do
-
-        read -r -p "Enter Secret Key: " SECRET_KEY
-
-        if [[ -n "$SECRET_KEY" ]]; then
-            break
-        fi
-
-        echo "Secret Key cannot be empty."
-
-    done
-
-fi
-
-read -r -p "Bridge port (e.g. 7000): " BRIDGE
-read -r -p "Sync port   (e.g. 7001): " SYNC
-cat >"$f" <<EOF
+    read -r -p "Iran IP: " IRAN_IP < /dev/tty
+    read -r -p "Bridge port (e.g. 7000): " BRIDGE < /dev/tty
+    read -r -p "Sync port   (e.g. 7001): " SYNC < /dev/tty
+    cat >"$f" <<EOF
 ROLE=eu
 IRAN_IP=$IRAN_IP
-SECRET_KEY=$SECRET_KEY
 BRIDGE=$BRIDGE
 SYNC=$SYNC
 EOF
-EOF
   else
-   read -r -p "Bridge port (e.g. 7000): " BRIDGE
-read -r -p "Sync port   (e.g. 7001): " SYNC
-
-while true; do
-    read -r -p "Secret Key: " SECRET_KEY
-
-    if [[ -n "$SECRET_KEY" ]]; then
-        break
-    fi
-
-    echo "Secret Key cannot be empty."
-done
-
-read -r -p "Auto-Sync ports from EU? (y/n): " AS
+    read -r -p "Bridge port (e.g. 7000): " BRIDGE < /dev/tty
+    read -r -p "Sync port   (e.g. 7001): " SYNC < /dev/tty
+    read -r -p "Auto-Sync ports from EU? (y/n): " AS < /dev/tty
     if [[ "${AS,,}" == "y" ]]; then
       cat >"$f" <<EOF
 ROLE=iran
-SECRET_KEY=$SECRET_KEY
 BRIDGE=$BRIDGE
 SYNC=$SYNC
 AUTO_SYNC=true
@@ -323,7 +257,6 @@ EOF
       read -r -p "Manual ports CSV (e.g. 80,443,2083): " PORTS < /dev/tty
       cat >"$f" <<EOF
 ROLE=iran
-SECRET_KEY=$SECRET_KEY
 BRIDGE=$BRIDGE
 SYNC=$SYNC
 AUTO_SYNC=false
@@ -348,34 +281,18 @@ run_slot(){
   screen -S "$s" -X quit >/dev/null 2>&1 || true
 
   if [[ "$ROLE" == "eu" ]]; then
-    screen -dmS "$s" bash -lc "SECRET_KEY='$SECRET_KEY' ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | python3 '$PY'"
+    screen -dmS "$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | PAHLAVI_POOL="${PAHLAVI_POOL:-0}" python3 '$PY'"
   else
     if [[ "${AUTO_SYNC:-true}" == "true" ]]; then
-      screen -dmS "$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; SECRET_KEY='$SECRET_KEY' printf '2\n%s\n%s\ny\n' '$BRIDGE' '$SYNC' | python3 '$PY'"
+      screen -dmS "$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '2\n%s\n%s\ny\n' '$BRIDGE' '$SYNC' | PAHLAVI_POOL="${PAHLAVI_POOL:-0}" python3 '$PY'"
     else
       screen -dmS "$s" bash -lc "ulimit -Hn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; ulimit -Sn ${ULIMIT_NOFILE:-1048576} >/dev/null 2>&1 || true; printf '2\n%s\n%s\nn\n%s\n' '$BRIDGE' '$SYNC' '${PORTS:-}' | PAHLAVI_POOL="${PAHLAVI_POOL:-0}" python3 '$PY'"
     fi
   fi
-  if is_running "$prof"; then
-    echo ""
-    echo "[✓] Tunnel Started."
-else
-    echo ""
-    echo "[✗] Tunnel Failed To Start."
-fi
+  echo "[+] Started: $s" > /dev/tty
 }
 stop_slot(){ local prof="$1" s; s="$(session_name "$prof")"; screen -S "$s" -X quit >/dev/null 2>&1 || true; echo "[+] Stopped: $s" > /dev/tty; }
-restart_slot(){
-
-    local prof="$1"
-
-    stop_slot "$prof" >/dev/null 2>&1 || true
-
-    sleep 1
-
-    run_slot "$prof"
-
-}
+restart_slot(){ local prof="$1"; stop_slot "$prof" >/dev/null 2>&1 || true; sleep 0.5; run_slot "$prof"; }
 status_slot(){
   local prof="$1" f="$CONF/${prof}.env"
   [[ -f "$f" ]] || { echo "Profile not found: $prof" > /dev/tty; return 1; }
@@ -523,26 +440,7 @@ while true; do
 
   read -r -p "Select: " c < /dev/tty
   case "$c" in
-    1)
-    role="$(pick_role)"
-    prof="$(pick_slot "$role")"
-
-    edit_profile "$prof"
-
-    echo ""
-    echo "[*] Starting tunnel..."
-
-    if is_running "$prof"; then
-        restart_slot "$prof"
-    else
-        run_slot "$prof"
-    fi
-
-    echo ""
-    echo "[+] Tunnel Started Successfully."
-
-    pause
-;;
+    1) role="$(pick_role)"; prof="$(pick_slot "$role")"; edit_profile "$prof"; pause ;;
     2) role="$(pick_role)"; prof="$(pick_slot "$role")"; manage_slot_menu "$prof" ;;
     3) enable_cron_healthcheck; pause ;;
     4) disable_cron_healthcheck; pause ;;
