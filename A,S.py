@@ -11,6 +11,24 @@ BUF_COPY = 256 * 1024
 POOL_WAIT = 5
 SYNC_INTERVAL = 3
 
+SECRET_KEY = ""
+
+def auth_socket(sock):
+    global SECRET_KEY
+
+    if not SECRET_KEY:
+        return True
+
+    try:
+        key = recv_exact(sock, len(SECRET_KEY.encode()))
+        if key != SECRET_KEY.encode():
+            return False
+
+        sock.sendall(b"OK")
+        return True
+    except:
+        return False
+
 # --------- Auto pool sizing ----------
 def auto_pool_size(role: str = "ir") -> int:
     """Pick a safe default pool size based on process FD limit + RAM.
@@ -198,6 +216,12 @@ def eu_mode(iran_ip, bridge_port, sync_port, pool_size):
         while True:
             try:
                 conn = dial_tcp(iran_ip, bridge_port)
+                if SECRET_KEY:
+                  conn.sendall(SECRET_KEY.encode())
+
+                if recv_exact(conn,2)!=b"OK":
+                  conn.close()
+                continue
                 # wait for 2-byte target port
                 hdr = recv_exact(conn, 2)
                 if not hdr:
@@ -233,6 +257,9 @@ def ir_mode(bridge_port, sync_port, pool_size, auto_sync, manual_ports_csv):
         while True:
             try:
                 c, _ = srv.accept()
+                if not auth_socket(c):
+                      c.close()
+                      continue
             except OSError as e:
                 print(f"[IR] sync_listener error: {e}")
                 time.sleep(0.2)
@@ -380,6 +407,9 @@ def main():
     # expected input order (from your shell wrapper):
     # EU: 1, IRAN_IP, BRIDGE, SYNC
     # IR: 2, BRIDGE, SYNC, y|n, [PORTS if n]
+    global SECRET_KEY
+
+    SECRET_KEY = os.environ.get("SECRET_KEY","")
     choice = read_line()
     if choice not in ("1","2"):
         print("Invalid mode selection.")
