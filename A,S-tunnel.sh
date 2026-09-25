@@ -135,6 +135,22 @@ install_frp(){
   echo "[+] FRP installed at $BIN_DIR/frps, $BIN_DIR/frpc" > /dev/tty
 }
 
+install_gost(){
+  [[ -x "$BIN_DIR/gost" ]] && return 0
+  echo "[*] Installing Gost..." > /dev/tty
+  local arch; arch="$(detect_arch)"
+  local url; url="$(gh_latest_asset_url "go-gost/gost" "linux_${arch}\\.tar\\.gz$")"
+  [[ -n "$url" ]] || { echo "[-] Could not find a Gost release asset for linux_${arch}." > /dev/tty; return 1; }
+  local tmp; tmp="$(mktemp -d)"
+  fetch_url_to "$url" "$tmp/gost.tar.gz" || { rm -rf "$tmp"; return 1; }
+  tar -xzf "$tmp/gost.tar.gz" -C "$tmp" 2>/dev/null || true
+  find "$tmp" -maxdepth 2 -type f -iname "gost" -exec cp {} "$BIN_DIR/gost" \; 2>/dev/null || true
+  chmod +x "$BIN_DIR/gost" 2>/dev/null || true
+  rm -rf "$tmp"
+  [[ -x "$BIN_DIR/gost" ]] || { echo "[-] Gost install failed." > /dev/tty; return 1; }
+  echo "[+] Gost installed at $BIN_DIR/gost" > /dev/tty
+}
+
 is_installed(){ [[ -x "$INSTALL_PATH" ]]; }
 
 ensure(){
@@ -346,14 +362,16 @@ edit_profile(){
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Rathole      ${CLR_DIM}lightweight NAT-traversal tunnel${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}4${CLR_RESET}) GRE          ${CLR_DIM}kernel-level IP tunnel${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}5${CLR_RESET}) FRP          ${CLR_DIM}fast reverse proxy${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}6${CLR_RESET}) Gost         ${CLR_DIM}per-port IPv4/IPv6 forwarder${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}└───────────────────────────────────────────────────┘${CLR_RESET}" > /dev/tty
-  read -r -p "Select [1-5]: " m < /dev/tty
+  read -r -p "Select [1-6]: " m < /dev/tty
   case "$m" in
     1) edit_profile_asnative "$prof" "$f" "$role" ;;
     2) edit_profile_backhaul "$prof" "$f" "$role" ;;
     3) edit_profile_rathole  "$prof" "$f" "$role" ;;
     4) edit_profile_gre      "$prof" "$f" "$role" ;;
     5) edit_profile_frp      "$prof" "$f" "$role" ;;
+    6) edit_profile_gost     "$prof" "$f" "$role" ;;
     *) echo "Invalid." > /dev/tty; return 1 ;;
   esac
 
@@ -512,9 +530,40 @@ EOF
   echo "[+] Saved $f" > /dev/tty
 }
 
+edit_profile_gost(){
+  local prof="$1" f="$2" role="$3"
+  read -r -p "Destination (Kharej) IP — where traffic gets forwarded to: " DEST_IP < /dev/tty
+  echo "1) Manual ports (comma separated)" > /dev/tty
+  echo "2) Port range" > /dev/tty
+  read -r -p "Select: " pm < /dev/tty
+  local PORT_MODE PORTS RANGE_START RANGE_END
+  if [[ "$pm" == "2" ]]; then
+    read -r -p "Range start,end (e.g. 54,65000): " rng < /dev/tty
+    RANGE_START="${rng%%,*}"; RANGE_END="${rng##*,}"
+    PORT_MODE="range"; PORTS=""
+  else
+    read -r -p "Ports CSV (e.g. 443,8080,2083): " PORTS < /dev/tty
+    PORT_MODE="manual"; RANGE_START=""; RANGE_END=""
+  fi
+  echo "1) tcp   2) udp   3) grpc" > /dev/tty
+  read -r -p "Protocol: " po < /dev/tty
+  local PROTO="tcp"
+  [[ "$po" == "2" ]] && PROTO="udp"
+  [[ "$po" == "3" ]] && PROTO="grpc"
+  cat >"$f" <<EOF
+METHOD=gost
+ROLE=$role
+DEST_IP=$DEST_IP
+PORT_MODE=$PORT_MODE
+PORTS=$PORTS
+RANGE_START=$RANGE_START
+RANGE_END=$RANGE_END
+PROTO=$PROTO
+EOF
+  echo "[+] Saved $f" > /dev/tty
+}
 edit_profile_gre(){
   local prof="$1" f="$2" role="$3"
-  read -r -p "This host's public IP (local): " LOCAL_IP < /dev/tty
   read -r -p "Peer public IP (remote): " PEER_IP < /dev/tty
   local SELF_TUN_IP PEER_TUN_IP
   if [[ "$role" == "eu" ]]; then
@@ -692,6 +741,35 @@ run_frp_slot(){
   echo "[+] Started: $s (frp $FRP_ROLE)" > /dev/tty
 }
 
+gost_port_list(){
+  local prof="$1" f="$CONF/${prof}.env"
+  # shellcheck disable=SC1090
+  source "$f"
+  if [[ "${PORT_MODE:-manual}" == "range" ]]; then
+    seq "$RANGE_START" "$RANGE_END"
+  else
+    csv_ports_to_array "$PORTS"
+  fi
+}
+
+run_gost_slot(){
+  local prof="$1" f="$CONF/${prof}.env"
+  # shellcheck disable=SC1090
+  source "$f"
+  install_gost || return 1
+  local args="" n=0 p
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
+    args+=" -L=${PROTO}://:${p}/[${DEST_IP}]:${p}"
+    n=$((n+1))
+  done < <(gost_port_list "$prof")
+  [[ -n "$args" ]] || { echo "[-] No ports to forward." > /dev/tty; return 1; }
+  local s; s="$(session_name "$prof")"
+  screen -S "$s" -X quit >/dev/null 2>&1 || true
+  screen -dmS "$s" bash -lc "'$BIN_DIR/gost'$args"
+  echo "[+] Started: $s (gost, ${n} port(s) -> ${DEST_IP})" > /dev/tty
+}
+
 run_gre_slot(){
   local prof="$1" f="$CONF/${prof}.env"
   # shellcheck disable=SC1090
@@ -737,6 +815,7 @@ run_slot(){
     backhaul) run_backhaul_slot "$prof" ;;
     rathole)  run_rathole_slot "$prof" ;;
     frp)      run_frp_slot "$prof" ;;
+    gost)     run_gost_slot "$prof" ;;
     gre)      run_gre_slot "$prof" ;;
     *) echo "[-] Unknown method: $m" > /dev/tty; return 1 ;;
   esac
