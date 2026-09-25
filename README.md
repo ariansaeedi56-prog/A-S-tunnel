@@ -157,7 +157,7 @@ Binary is auto-downloaded from `rapiz1/rathole` releases.
 
 ---
 
-### 4️⃣ GRE (just iran use it)
+### 4️⃣ GRE (just run in IRAN)
 
 | Field | Both sides |
 |---|---|
