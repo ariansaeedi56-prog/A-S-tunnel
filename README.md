@@ -1,9 +1,7 @@
-
-
 # 🚀 A,S Tunnel
 
-High-Performance Reverse TCP Tunnel Manager  
-Multi-Slot • AutoSync • Health Check • BBR Optimization • Multi Port-Forward
+**Multi-Protocol Tunnel Manager for IR ⇄ EU Servers**
+Multi-Slot • Multi-Protocol • AutoSync • Health Check • BBR Optimization
 
 ---
 
@@ -11,269 +9,259 @@ Multi-Slot • AutoSync • Health Check • BBR Optimization • Multi Port-For
   <b>Lightweight • Stable • Production Ready</b>
 </p>
 
----
-
-# 📌 Overview
-
-A,S Tunnel is a reverse TCP tunneling system designed to connect two servers:
-
-- 🇮🇷 IR (Iran Server)
-- 🌍 EU (Outside Server)
-
-It supports multi-slot configuration, automatic port synchronization, system optimization, and multiple port-forwarding methods.
+<p align="center">
+  <img src="https://img.shields.io/badge/version-3.0.0-cyan">
+  <img src="https://img.shields.io/badge/protocols-6-brightgreen">
+  <img src="https://img.shields.io/badge/slots-1--10-blue">
+  <img src="https://img.shields.io/badge/license-MIT-lightgrey">
+</p>
 
 ---
 
-# 🧠 Architecture
+## 📌 Overview
+
+**A,S Tunnel** is a unified tunnel manager that connects two servers:
+
+- 🇮🇷 **IR** — Iran server
+- 🌍 **EU** — Foreign / outside server
+
+Instead of locking you into one tunneling technology, A,S Tunnel lets you pick — **per slot** — whichever protocol fits your situation, then handles installation, configuration, starting, stopping, health-checking, and auto-restart for you, all from one menu.
+
+---
+
+## 🧩 Supported Tunnel Protocols
+
+| # | Protocol | Type | Best for |
+|---|----------|------|----------|
+| 1 | **A,S Native** | Reverse TCP (built-in, pooled connections) | Zero external dependency, dynamic auto-synced ports |
+| 2 | **Backhaul** | TCP / WS / WSS multiplexed tunnel | High throughput, transport flexibility |
+| 3 | **Rathole** | Lightweight NAT-traversal tunnel | Low overhead, many small services |
+| 4 | **GRE** | Kernel-level IP tunnel | Raw IP-level connectivity, no userspace daemon |
+| 5 | **FRP** | Fast reverse proxy | Battle-tested, widely used, rich proxy types |
+| 6 | **Gost** | Per-port IPv4/IPv6 forwarder (tcp/udp/grpc) | Simple 1:1 port forwarding, huge port ranges |
+
+Each slot remembers its own protocol, so you can run **A,S Native on slot `iran1`**, **Backhaul on `iran2`**, **Gost on `eu3`**, etc. — all at once, all managed from the same menu.
+
+---
+
+## 🧠 Architecture
 
 ```
 Client → IR Server ⇄ EU Server
              │
-        Bridge Port (Main Tunnel)
-             │
-         Sync Port (AutoSync)
+     Protocol of your choice
+   (A,S Native / Backhaul / Rathole
+        / GRE / FRP / Gost)
 ```
 
-### 🔹 Bridge Port
-Main persistent TCP tunnel connection between IR and EU.
-
-### 🔹 Sync Port
-Used for automatic port synchronization between servers.
+Every slot is independent: pick a protocol, answer a short wizard, and the tunnel **starts automatically** — no extra "start" step needed.
 
 ---
 
-# 🛠 Features
+## 🛠 Features
 
 | Feature | Description |
-|----------|------------|
-| Reverse TCP Tunnel | Persistent IR ⇄ EU connection |
-| Multi-Slot (1–10) | Store up to 10 independent tunnel configs |
-| AutoSync | Automatic port creation & synchronization |
-| Cron Health Check | Automatic restart if tunnel stops |
-| BBR Optimization | Network performance tuning |
-| Multi Port Forward | iptables, nftables, HAProxy, socat |
-| systemd Integration | Auto-start on reboot |
-| Performance Tuning | ENV-based tuning |
-| Thread Control | Worker pool limitation |
-| Metrics (Optional) | Connection & traffic stats |
+|---------|--------------|
+| 🔀 Multi-Protocol | Choose A,S Native / Backhaul / Rathole / GRE / FRP / Gost per slot |
+| 🎛 Multi-Slot (1–10) | Store up to 10 independent tunnel configs per side |
+| ⚡ Auto-Start | Tunnel starts immediately after you save its config |
+| 🔄 AutoSync | Automatic port creation & synchronization (A,S Native) |
+| 🕒 Cron Health Check | Auto-restarts any stopped tunnel, any protocol |
+| 🚀 BBR Optimization | Congestion control + sysctl network tuning |
+| 📦 Auto-Install | Official binaries for Backhaul / Rathole / FRP / Gost fetched straight from GitHub Releases |
+| 🖥 systemd/cron Integration | Health check survives reboot via cron |
+| 📊 Live Status | See which slots are running, and with which protocol, right in the menu |
 
 ---
 
-# 📦 Installation Guide
+## 📦 Installation
 
----
-
-# 🟢 Step 1 — Setup IR Server
+### 🟢 Step 1 — Setup IR Server
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main/install.sh)
 ```
 
-After completing all installation and configuration steps, run the following command to open the Tunnel Manager:
+Once setup finishes, open the manager any time with:
 
 ```bash
 sudo A,S-tunnel
-
-
-### 1️⃣ Install Dependencies
-
-Select:
-
-```
-5) Install / Complete Setup
 ```
 
----
+### 🔵 Step 2 — Setup EU Server
 
-### 2️⃣ Create Tunnel
-
-```
-1) Create Tunnel
-2) IRAN Server
-```
-
----
-
-### 3️⃣ Select Slot (1–10)
-
-Each slot represents a saved configuration.
-
----
-
-### 4️⃣ Enter Bridge Port
-
-Default:
-
-```
-7000
-```
-
-Must match on both servers.
-
----
-
-### 5️⃣ Enter Sync Port
-
-Default:
-
-```
-7001
-```
-
-Must match on both servers.
-
----
-
-### 6️⃣ Enable AutoSync?
-
-```
-y  → Enable
-n  → Disable
-```
-
----
-
-### 7️⃣ Enter Config Port
-
-Enter your desired service port.
-
-Press Enter to finish.
-
----
-
-# 🔵 Step 2 — Setup EU Server
-
-Repeat same process:
+Run the **same** install command on the EU server too:
 
 ```bash
 bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main/install.sh)
 ```
 
-After completing all installation and configuration steps, run the following command to open the Tunnel Manager:
+---
 
-```bash
-sudo A,S-tunnel
+## 🎬 Creating a Tunnel
 
-Select:
+From the main menu:
 
 ```
-5) Install / Complete Setup
-1) Create Tunnel
-2) EU Server
+1) 🛠 Create/Update profile
 ```
 
-- Choose same Slot
-- Enter IR Server IP
-- Enter same Bridge Port
-- Enter same Sync Port
+1. Choose the side: **EU** or **IRAN**
+2. Choose a slot (**1–10**)
+3. Choose a protocol (**1–6**, see table above)
+4. Answer the protocol's short wizard
+5. ✅ Done — the tunnel **starts automatically** and its status is shown right away
 
-Press Enter to finish.
+Repeat on the **other server** with matching values (same token/port where required).
 
 ---
 
-# ▶️ Start Tunnel
+### 1️⃣ A,S Native
 
-## On IR:
+| Field | EU side | IRAN side |
+|---|---|---|
+| Iran IP | ✅ required | — |
+| Bridge port | ✅ (e.g. `7000`) | ✅ same value |
+| Sync port | ✅ (e.g. `7001`) | ✅ same value |
+| AutoSync | — | `y`/`n` |
+| Manual ports | — | only if AutoSync = `n` |
 
-```
-2) Manage Tunnel
-→ Select IR
-→ Select Slot
-→ 2) Start
-→ 5) Status
-```
-
-Status must show:
-
-```
-Running
-```
-
-## On EU:
-
-Repeat same steps.
+No external binary — runs on the bundled `A,S.py` core.
 
 ---
 
-# 🎉 Tunnel Connected Successfully
+### 2️⃣ Backhaul
+
+| Field | Server role | Client role |
+|---|---|---|
+| Token | ✅ shared secret | ✅ same value |
+| Transport | `tcp` / `ws` / `wss` | same value |
+| Bind port | ✅ control port | — |
+| Server IP | — | ✅ |
+| Forward ports (CSV) | ✅ | — |
+
+Binary is auto-downloaded from `Musixal/Backhaul` releases.
 
 ---
 
-# ⚙ Optional Enhancements
+### 3️⃣ Rathole
+
+| Field | Server role | Client role |
+|---|---|---|
+| Token | ✅ shared secret | ✅ same value |
+| Bind port | ✅ control port | — |
+| Server IP | — | ✅ |
+| Forward ports (CSV) | ✅ (public, per-service) | ✅ same ports (local forward) |
+
+Binary is auto-downloaded from `rapiz1/rathole` releases.
 
 ---
 
-## 🚀 Enable BBR Optimization
+### 4️⃣ GRE
+
+| Field | Both sides |
+|---|---|
+| This host's public IP | ✅ |
+| Peer public IP | ✅ |
+| Tunnel IP | assigned automatically (`10.10.10.1` ↔ `10.10.10.2`) |
+
+Pure kernel tunnel — no daemon, no extra binary. Combine with `iptables` for selective port routing.
+
+---
+
+### 5️⃣ FRP
+
+| Field | Server (frps) | Client (frpc) |
+|---|---|---|
+| Token | ✅ shared secret | ✅ same value |
+| Bind port | ✅ | ✅ (server's port) |
+| Server IP | — | ✅ |
+| Forward ports (CSV) | — | ✅ |
+
+Binaries auto-downloaded from `fatedier/frp` releases.
+
+---
+
+### 6️⃣ Gost
+
+| Field | Value |
+|---|---|
+| Destination (Kharej) IP | the server traffic gets forwarded to |
+| Ports | manual CSV **or** a full range (e.g. `54,65000`) |
+| Protocol | `tcp` / `udp` / `grpc` |
+
+One-sided per-port forwarder — no matching config needed on the other end. Binary auto-downloaded from `go-gost/gost` releases.
+
+---
+
+## 🎛 Managing a Tunnel
 
 ```
-9) Optimize Server
+2) 🎛 Manage tunnel
 ```
 
-Enables:
+For any slot you get:
+
+```
+1) 📄 Show profile
+2) ▶️  Start
+3) ⏹  Stop
+4) 🔁 Restart
+5) 📊 Status
+6) 📜 Logs
+7) 🗑  Delete slot
+```
+
+Slot lists show live status at a glance: 🟢 running, 🔴 stopped, ⚪ empty — with the active protocol shown next to each.
+
+---
+
+## 🕒 Health Check (Cron)
+
+```
+3) ✅ Enable cron health-check
+```
+
+Pick an interval in minutes — any slot found stopped is automatically restarted with its own protocol, no matter which one it uses.
+
+Disable any time with:
+
+```
+4) ❌ Disable cron health-check
+```
+
+---
+
+## 🚀 Server Optimization
+
+```
+8) 🚀 Optimize server
+```
+
+Enables, when supported by the kernel:
 
 - BBR congestion control
-- fq queue discipline
-- sysctl performance tuning
+- `fq` queue discipline
+- Persistent sysctl network tuning
 
 ---
 
-## 🕒 Enable Health Check (Cron)
+## 🔧 Script Management
 
 ```
-3) Enable Cron
+5) 📦 Install script     — install system-wide as `A,S-tunnel`
+6) 🔄 Update script      — self-update from GitHub
+7) 🗑  Uninstall script  — remove binary + cron health check
 ```
 
-Choose interval in minutes.
-
-Auto-restarts tunnel if stopped.
-
 ---
 
-# 🔄 Port Forward Methods
+## 🛠 Troubleshooting
 
-Available methods:
-
-1. iptables (DNAT)
-2. nftables
-3. HAProxy (Layer 4)
-4. socat relay
-
-Each method supports:
-- Add rule
-- Remove rule
-- Show rules
-
----
-
-# ⚡ Performance Tuning (Advanced)
-
-You can configure environment variables:
+Check a slot's screen session directly:
 
 ```bash
-export USER_WORKERS=128
-export AUTO_SOCKBUF=1
-export BUF_COPY_BYTES=262144
-export METRICS_PORT=9109
-```
-
----
-
-# 🔐 Security Recommendations
-
-- Only open required ports
-- Use firewall rules carefully
-- Keep Bridge & Sync ports protected
-- Monitor active connections
-- Enable failover if using multiple EU servers
-
----
-
-# 🛠 Troubleshooting
-
-Check service:
-
-```bash
-systemctl status A,S
+screen -ls
 ```
 
 Check listening ports:
@@ -282,54 +270,59 @@ Check listening ports:
 ss -lntp
 ```
 
-Test connectivity:
+Test connectivity between servers:
 
 ```bash
-nc -zv IR_IP 7000
+nc -zv IR_IP <bridge_or_control_port>
+```
+
+For GRE, check the interface:
+
+```bash
+ip -s link show gre<slot_name>
 ```
 
 ---
 
-# 📊 Recommended Production Setup
+## 📊 Recommended Production Setup
 
-- Enable BBR
-- Enable Cron HealthCheck
-- Use HAProxy for managed forwarding
-- Use AutoSync
-- Monitor logs regularly
-
----
-
-# ❓ FAQ
-
-### Q: Bridge & Sync ports must match?
-Yes, both servers must use identical values.
-
-### Q: Can I run multiple tunnels?
-Yes, use different slots.
-
-### Q: What if tunnel stops?
-Enable Cron HealthCheck.
-
-### Q: Does it survive reboot?
-Yes (systemd integration).
+- Enable BBR optimization
+- Enable Cron Health Check
+- Pick the protocol that matches your traffic pattern (Gost for simple 1:1 forwarding, Backhaul/Rathole/FRP for multiplexed tunneling, A,S Native when you want zero external dependencies)
+- Keep tokens/ports identical on both sides
+- Monitor slot status regularly from the main menu
 
 ---
 
+## ❓ FAQ
 
+**Q: Do I have to use the same protocol on both servers?**
+Yes — a protocol pairs two matching sides (except Gost, which is one-sided).
 
-# 📌 Final Notes
+**Q: Can I run multiple tunnels at once?**
+Yes — use different slots (1–10), each with its own protocol if you like.
 
-Any configuration change must be applied identically on both servers.
+**Q: What if a tunnel stops?**
+Enable Cron Health Check — it restarts any slot regardless of protocol.
 
-Restart tunnel after changes.
+**Q: Does it survive reboot?**
+Yes, via the cron-based health check.
+
+**Q: What if a protocol's binary fails to install?**
+Its installer pulls the latest release from the official GitHub repo. If the asset naming changed upstream, re-run the install — check that repo's Releases page if it still fails.
 
 ---
 
-# ❤️ Maintained by A,S
+## 📌 Final Notes
 
-TEL: @Asnejad 
+Any configuration change must be applied identically on both servers (matching token/ports).
+Restart the tunnel after changes — or just re-save the profile, since saving auto-starts it.
 
+---
 
-DONATE : 0xAb27580238c98290e291fF11C78061469A69406f 
-USDT BNB
+## ❤️ Maintained by A,S
+
+**TEL:** [@Asnejad](https://t.me/Asnejad)
+
+**DONATE:** `0xAb27580238c98290e291fF11C78061469A69406f`
+USDT · BNB
