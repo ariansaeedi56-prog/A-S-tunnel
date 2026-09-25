@@ -24,6 +24,10 @@ MAX=10
 HC_SCRIPT="/usr/local/bin/A,S-health-check"
 HC_CRON_TAG="# A,STunnelHealthCheck"
 
+WEBPANEL_DIR="/opt/A,S/webpanel"
+WEBPANEL_ENV="$BASE/webpanel.env"
+WEBPANEL_SERVICE="/etc/systemd/system/A,S-webpanel.service"
+
 # Colors
 if [[ -t 1 ]]; then
   CLR_RESET="\033[0m"; CLR_DIM="\033[2m"; CLR_BOLD="\033[1m"
@@ -362,7 +366,7 @@ edit_profile(){
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Rathole      ${CLR_DIM}lightweight NAT-traversal tunnel${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}4${CLR_RESET}) GRE          ${CLR_DIM}kernel-level IP tunnel${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}5${CLR_RESET}) FRP          ${CLR_DIM}fast reverse proxy${CLR_RESET}" > /dev/tty
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}6${CLR_RESET}) Gost just iran         ${CLR_DIM}per-port IPv4/IPv6 forwarder${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}6${CLR_RESET}) Gost         ${CLR_DIM}per-port IPv4/IPv6 forwarder${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}└───────────────────────────────────────────────────┘${CLR_RESET}" > /dev/tty
   read -r -p "Select [1-6]: " m < /dev/tty
   case "$m" in
@@ -893,6 +897,653 @@ enable_cron_healthcheck(){
   echo "[+] Cron enabled (every $interval minute(s))." > /dev/tty
 }
 
+write_webpanel_app(){
+  cat > "$WEBPANEL_DIR/app.py" <<'PYEOF'
+#!/usr/bin/env python3
+import json, os, secrets, subprocess
+from flask import Flask, request, jsonify, send_from_directory
+
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+INSTALL_PATH = os.environ.get("INSTALL_PATH", "/usr/local/bin/A,S-tunnel")
+TOKEN = os.environ.get("TOKEN", "")
+PORT = int(os.environ.get("PORT", "8088"))
+
+app = Flask(__name__, static_folder=None)
+
+
+def run_api(args, stdin_data=None):
+    if not os.path.isfile(INSTALL_PATH):
+        return {"error": "script_not_installed"}, 500
+    cmd = [INSTALL_PATH, "--api"] + args
+    try:
+        p = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True, timeout=60)
+    except Exception as e:
+        return {"error": str(e)}, 500
+    out = (p.stdout or "").strip()
+    if not out:
+        return {"error": "empty_response", "stderr": p.stderr}, 500
+    try:
+        return json.loads(out), 200
+    except Exception:
+        return {"error": "bad_response", "raw": out, "stderr": p.stderr}, 500
+
+
+def check_auth():
+    if not TOKEN:
+        return True
+    supplied = request.headers.get("X-API-Key", "") or request.args.get("token", "")
+    return secrets.compare_digest(supplied, TOKEN)
+
+
+@app.before_request
+def guard():
+    if request.path.startswith("/api/") and not check_auth():
+        return jsonify({"error": "unauthorized"}), 401
+
+
+@app.get("/")
+def index():
+    return send_from_directory(APP_DIR, "index.html")
+
+
+@app.get("/api/info")
+def info():
+    data, code = run_api(["info"])
+    return jsonify(data), code
+
+
+@app.get("/api/slots")
+def slots():
+    data, code = run_api(["list"])
+    return jsonify(data), code
+
+
+@app.get("/api/slots/<prof>")
+def slot_get(prof):
+    data, code = run_api(["get", prof])
+    return jsonify(data), code
+
+
+@app.post("/api/slots/<prof>")
+def slot_save(prof):
+    body = json.dumps(request.get_json(force=True, silent=True) or {})
+    data, code = run_api(["save", prof], stdin_data=body)
+    return jsonify(data), code
+
+
+@app.post("/api/slots/<prof>/<action>")
+def slot_action(prof, action):
+    if action not in ("start", "stop", "restart"):
+        return jsonify({"error": "bad_action"}), 400
+    data, code = run_api([action, prof])
+    return jsonify(data), code
+
+
+@app.delete("/api/slots/<prof>")
+def slot_delete(prof):
+    data, code = run_api(["delete", prof])
+    return jsonify(data), code
+
+
+@app.get("/api/slots/<prof>/logs")
+def slot_logs(prof):
+    data, code = run_api(["logs", prof])
+    return jsonify(data), code
+
+
+@app.post("/api/healthcheck")
+def healthcheck():
+    body = request.get_json(force=True, silent=True) or {}
+    minutes = str(body.get("minutes", 1))
+    data, code = run_api(["hc", "on" if body.get("enabled") else "off", minutes])
+    return jsonify(data), code
+
+
+@app.post("/api/optimize")
+def optimize():
+    data, code = run_api(["optimize"])
+    return jsonify(data), code
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=PORT)
+PYEOF
+}
+
+write_webpanel_html(){
+  cat > "$WEBPANEL_DIR/index.html" <<'HTMLEOF'
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A,S Tunnel Panel</title>
+<style>
+  :root{
+    --bg1:#0f0c29; --bg2:#302b63; --bg3:#24243e;
+    --accent:#7ee8fa; --accent2:#a682ff;
+    --glass:rgba(255,255,255,0.07); --glass-brd:rgba(255,255,255,0.14);
+    --green:#3ddc84; --red:#ff5c7a; --yellow:#ffd166; --dim:rgba(255,255,255,0.55);
+  }
+  *{box-sizing:border-box}
+  html,body{height:100%}
+  body{
+    margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif;
+    color:#fff; min-height:100%;
+    background:linear-gradient(135deg,var(--bg1),var(--bg2) 50%,var(--bg3));
+    background-attachment:fixed;
+    padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0);
+  }
+  body::before{
+    content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
+    background:
+      radial-gradient(circle at 15% 20%, rgba(126,232,250,0.18), transparent 40%),
+      radial-gradient(circle at 85% 80%, rgba(166,130,255,0.18), transparent 40%);
+  }
+  .wrap{position:relative; z-index:1; max-width:1100px; margin:0 auto; padding:20px 16px 60px}
+  .glass{
+    background:var(--glass); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
+    border:1px solid var(--glass-brd); border-radius:18px;
+    box-shadow:0 8px 32px rgba(0,0,0,0.35);
+  }
+  header.glass{padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:18px}
+  header h1{font-size:18px; margin:0; font-weight:700; letter-spacing:.3px}
+  header .sub{font-size:12px; color:var(--dim); margin-top:2px}
+  .pill{display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; font-size:12px; background:rgba(255,255,255,0.08); border:1px solid var(--glass-brd)}
+  .dot{width:8px; height:8px; border-radius:50%}
+  .dot.on{background:var(--green); box-shadow:0 0 8px var(--green)}
+  .dot.off{background:var(--red); box-shadow:0 0 8px var(--red)}
+  .dot.empty{background:rgba(255,255,255,0.25)}
+  .cols{display:grid; grid-template-columns:1fr 1fr; gap:18px}
+  @media (max-width:760px){.cols{grid-template-columns:1fr}}
+  .col h2{font-size:14px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:0 0 10px 4px}
+  .slot{
+    padding:14px 16px; margin-bottom:10px; border-radius:14px; cursor:pointer;
+    display:flex; justify-content:space-between; align-items:center; gap:10px;
+    transition:transform .15s ease, background .15s ease;
+  }
+  .slot:hover{transform:translateY(-2px); background:rgba(255,255,255,0.11)}
+  .slot .name{font-weight:600; font-size:14px}
+  .slot .meta{font-size:11px; color:var(--dim); margin-top:2px}
+  .btnrow{display:flex; gap:8px; margin-top:18px; flex-wrap:wrap}
+  button{
+    font-family:inherit; cursor:pointer; border:1px solid var(--glass-brd); color:#fff;
+    background:rgba(255,255,255,0.08); padding:9px 16px; border-radius:12px; font-size:13px;
+    transition:background .15s ease, transform .1s ease;
+  }
+  button:hover{background:rgba(255,255,255,0.16)}
+  button:active{transform:scale(.97)}
+  button.primary{background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#10121c; font-weight:700; border:none}
+  button.danger{background:rgba(255,92,122,0.18); border-color:rgba(255,92,122,0.4)}
+  button.ghost{background:transparent}
+  input,select{
+    width:100%; padding:10px 12px; border-radius:10px; border:1px solid var(--glass-brd);
+    background:rgba(0,0,0,0.25); color:#fff; font-size:14px; font-family:inherit; margin-top:4px;
+  }
+  label{font-size:12px; color:var(--dim); display:block; margin-top:12px}
+  .field-grid{display:grid; grid-template-columns:1fr 1fr; gap:0 14px}
+  .field-grid .full{grid-column:1/-1}
+  .modal-bg{
+    position:fixed; inset:0; background:rgba(5,5,15,0.6); backdrop-filter:blur(4px);
+    display:flex; align-items:center; justify-content:center; z-index:50; padding:16px;
+  }
+  .modal{width:100%; max-width:480px; max-height:88vh; overflow-y:auto; padding:22px}
+  .modal h3{margin:0 0 4px}
+  .modal .close{position:absolute; top:14px; right:18px; cursor:pointer; font-size:20px; color:var(--dim)}
+  .hidden{display:none !important}
+  pre.logbox{
+    white-space:pre-wrap; word-break:break-word; background:rgba(0,0,0,0.35); border-radius:10px;
+    padding:12px; font-size:12px; max-height:50vh; overflow-y:auto; border:1px solid var(--glass-brd);
+  }
+  .toast{
+    position:fixed; bottom:20px; left:50%; transform:translateX(-50%); z-index:100;
+    padding:12px 20px; border-radius:12px; font-size:13px; opacity:0; transition:opacity .25s ease;
+    pointer-events:none;
+  }
+  .toast.show{opacity:1}
+  .gate{position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; padding:16px}
+  .gate .box{width:100%; max-width:360px; padding:28px}
+  .footer-note{text-align:center; color:var(--dim); font-size:11px; margin-top:28px}
+  .switch{position:relative; display:inline-block; width:42px; height:24px}
+  .switch input{opacity:0; width:0; height:0}
+  .slider{position:absolute; cursor:pointer; inset:0; background:rgba(255,255,255,0.15); border-radius:24px; transition:.2s}
+  .slider:before{content:""; position:absolute; height:18px; width:18px; left:3px; top:3px; background:#fff; border-radius:50%; transition:.2s}
+  input:checked + .slider{background:linear-gradient(135deg,var(--accent),var(--accent2))}
+  input:checked + .slider:before{transform:translateX(18px)}
+</style>
+</head>
+<body>
+
+<div id="gate" class="gate">
+  <div class="box glass">
+    <h3 style="margin-top:0">🔐 A,S Tunnel Panel</h3>
+    <p style="color:var(--dim); font-size:13px">Enter your access token to continue.</p>
+    <input id="tokenInput" type="password" placeholder="Access token">
+    <div class="btnrow"><button class="primary" style="width:100%" onclick="submitToken()">Unlock</button></div>
+    <div id="gateError" style="color:var(--red); font-size:12px; margin-top:10px"></div>
+  </div>
+</div>
+
+<div class="wrap hidden" id="app">
+  <header class="glass">
+    <div>
+      <h1>🚀 A,S Tunnel</h1>
+      <div class="sub" id="infoLine">loading…</div>
+    </div>
+    <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
+      <span class="pill">🕒 Health check
+        <label class="switch"><input type="checkbox" id="hcToggle" onchange="toggleHC()"><span class="slider"></span></label>
+      </span>
+      <button class="ghost" onclick="runOptimize()">🚀 Optimize</button>
+      <button class="ghost" onclick="loadSlots()">⟳ Refresh</button>
+    </div>
+  </header>
+
+  <div class="cols">
+    <div class="col">
+      <h2>🌍 EU</h2>
+      <div id="euList"></div>
+    </div>
+    <div class="col">
+      <h2>🇮🇷 IRAN</h2>
+      <div id="iranList"></div>
+    </div>
+  </div>
+
+  <div class="footer-note">A,S Tunnel Web Panel · keep this URL and token private</div>
+</div>
+
+<!-- Slot config modal -->
+<div id="slotModal" class="modal-bg hidden">
+  <div class="modal glass" style="position:relative">
+    <span class="close" onclick="closeModal('slotModal')">✕</span>
+    <h3 id="modalTitle">Slot</h3>
+    <div class="sub" id="modalSub" style="color:var(--dim); font-size:12px; margin-bottom:6px"></div>
+
+    <label>Protocol</label>
+    <select id="methodSelect" onchange="renderFields()">
+      <option value="asnative">A,S Native</option>
+      <option value="backhaul">Backhaul</option>
+      <option value="rathole">Rathole</option>
+      <option value="gre">GRE</option>
+      <option value="frp">FRP</option>
+      <option value="gost">Gost</option>
+    </select>
+
+    <div id="fieldsBox"></div>
+
+    <div class="btnrow">
+      <button class="primary" onclick="saveSlot()">💾 Save & Start</button>
+      <button onclick="doAction('start')">▶ Start</button>
+      <button onclick="doAction('stop')">⏹ Stop</button>
+      <button onclick="doAction('restart')">🔁 Restart</button>
+    </div>
+    <div class="btnrow">
+      <button onclick="showLogs()">📜 Logs</button>
+      <button class="danger" onclick="deleteSlot()">🗑 Delete</button>
+    </div>
+    <div id="slotMsg" style="font-size:12px; margin-top:10px; color:var(--dim)"></div>
+  </div>
+</div>
+
+<!-- Logs modal -->
+<div id="logsModal" class="modal-bg hidden">
+  <div class="modal glass" style="position:relative">
+    <span class="close" onclick="closeModal('logsModal')">✕</span>
+    <h3>📜 Logs</h3>
+    <pre class="logbox" id="logsBox">…</pre>
+    <div class="btnrow"><button onclick="showLogs()">⟳ Refresh</button></div>
+  </div>
+</div>
+
+<div id="toast" class="toast glass"></div>
+
+<script>
+let TOKEN = localStorage.getItem('as_token') || '';
+let SLOTS = [];
+let CURRENT = null;
+
+const FIELD_DEFS = {
+  asnative_eu: [
+    {k:'IRAN_IP', l:'Iran IP', t:'text'},
+    {k:'BRIDGE', l:'Bridge port', t:'text', ph:'7000'},
+    {k:'SYNC', l:'Sync port', t:'text', ph:'7001'},
+  ],
+  asnative_iran: [
+    {k:'BRIDGE', l:'Bridge port', t:'text', ph:'7000'},
+    {k:'SYNC', l:'Sync port', t:'text', ph:'7001'},
+    {k:'AUTO_SYNC', l:'Auto-sync ports?', t:'select', opts:['true','false']},
+    {k:'PORTS', l:'Manual ports (CSV, if auto-sync=false)', t:'text', full:true},
+  ],
+  backhaul: [
+    {k:'BH_ROLE', l:'Role', t:'select', opts:['server','client']},
+    {k:'TOKEN', l:'Shared token', t:'text', full:true},
+    {k:'TRANSPORT', l:'Transport', t:'select', opts:['tcp','ws','wss']},
+    {k:'BIND_PORT', l:'Control port', t:'text'},
+    {k:'SERVER_IP', l:'Server IP (client only)', t:'text'},
+    {k:'FORWARD_PORTS', l:'Forward ports CSV (server only)', t:'text', full:true},
+  ],
+  rathole: [
+    {k:'RT_ROLE', l:'Role', t:'select', opts:['server','client']},
+    {k:'TOKEN', l:'Shared token', t:'text', full:true},
+    {k:'BIND_PORT', l:'Control port', t:'text'},
+    {k:'SERVER_IP', l:'Server IP (client only)', t:'text'},
+    {k:'FORWARD_PORTS', l:'Forward ports CSV', t:'text', full:true},
+  ],
+  gre: [
+    {k:'LOCAL_IP', l:'This host public IP', t:'text', full:true},
+    {k:'PEER_IP', l:'Peer public IP', t:'text', full:true},
+  ],
+  frp: [
+    {k:'FRP_ROLE', l:'Role', t:'select', opts:['server','client']},
+    {k:'TOKEN', l:'Shared token', t:'text', full:true},
+    {k:'BIND_PORT', l:'Control port', t:'text'},
+    {k:'SERVER_IP', l:'Server IP (client only)', t:'text'},
+    {k:'FORWARD_PORTS', l:'Forward ports CSV (client only)', t:'text', full:true},
+  ],
+  gost: [
+    {k:'DEST_IP', l:'Destination (Kharej) IP', t:'text', full:true},
+    {k:'PORT_MODE', l:'Port mode', t:'select', opts:['manual','range']},
+    {k:'PORTS', l:'Ports CSV (if manual)', t:'text', full:true},
+    {k:'RANGE_START', l:'Range start (if range)', t:'text'},
+    {k:'RANGE_END', l:'Range end (if range)', t:'text'},
+    {k:'PROTO', l:'Protocol', t:'select', opts:['tcp','udp','grpc']},
+  ],
+};
+
+function api(path, opts={}){
+  opts.headers = Object.assign({'Content-Type':'application/json','X-API-Key':TOKEN}, opts.headers||{});
+  return fetch(path, opts).then(async r=>{
+    const data = await r.json().catch(()=>({error:'bad_json'}));
+    if(r.status===401){ showGate('Invalid or expired token.'); throw new Error('unauthorized'); }
+    return data;
+  });
+}
+
+function showGate(err){
+  document.getElementById('gate').classList.remove('hidden');
+  document.getElementById('app').classList.add('hidden');
+  document.getElementById('gateError').textContent = err || '';
+}
+function submitToken(){
+  TOKEN = document.getElementById('tokenInput').value.trim();
+  localStorage.setItem('as_token', TOKEN);
+  boot();
+}
+
+function toast(msg, isErr){
+  const el = document.getElementById('toast');
+  el.textContent = msg;
+  el.style.background = isErr ? 'rgba(255,92,122,0.25)' : 'rgba(61,220,132,0.22)';
+  el.classList.add('show');
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>el.classList.remove('show'), 2600);
+}
+
+function closeModal(id){ document.getElementById(id).classList.add('hidden'); }
+
+async function boot(){
+  if(!TOKEN){ showGate(''); return; }
+  try{
+    const info = await api('/api/info');
+    if(info.error){ showGate('Invalid token or server error.'); return; }
+    document.getElementById('gate').classList.add('hidden');
+    document.getElementById('app').classList.remove('hidden');
+    document.getElementById('infoLine').textContent =
+      `v${info.version || '?'} · ${info.location || 'Unknown'} · ${info.datacenter || 'Unknown'}`;
+    loadSlots();
+  }catch(e){ /* gate already shown */ }
+}
+
+async function loadSlots(){
+  const data = await api('/api/slots');
+  if(!Array.isArray(data)) return;
+  SLOTS = data;
+  renderList('eu'); renderList('iran');
+}
+
+function slotFor(role,i){ return SLOTS.find(s=>s.role===role && s.slot===i); }
+
+function renderList(role){
+  const box = document.getElementById(role+'List');
+  box.innerHTML = '';
+  for(let i=1;i<=10;i++){
+    const s = slotFor(role,i);
+    const div = document.createElement('div');
+    div.className = 'slot glass';
+    const dotClass = !s ? 'empty' : (s.running ? 'on' : 'off');
+    div.innerHTML = `
+      <div>
+        <div class="name">${role}${i}</div>
+        <div class="meta">${s ? s.method : 'empty'}</div>
+      </div>
+      <span class="dot ${dotClass}"></span>`;
+    div.onclick = ()=>openSlot(role, i, s);
+    box.appendChild(div);
+  }
+}
+
+function openSlot(role, i, existing){
+  CURRENT = {prof: role+i, role, i};
+  document.getElementById('modalTitle').textContent = CURRENT.prof;
+  document.getElementById('modalSub').textContent = existing ? (existing.running ? '🟢 running' : '🔴 stopped') : 'new slot';
+  document.getElementById('slotMsg').textContent = '';
+  const sel = document.getElementById('methodSelect');
+  sel.value = existing ? existing.method : 'asnative';
+  renderFields(existing ? null : null);
+  if(existing){
+    api('/api/slots/'+CURRENT.prof).then(d=>{
+      if(d.fields){ fillFields(d.fields); }
+    });
+  }
+  document.getElementById('slotModal').classList.remove('hidden');
+}
+
+function fieldDefsFor(){
+  const m = document.getElementById('methodSelect').value;
+  if(m === 'asnative') return FIELD_DEFS['asnative_' + CURRENT.role];
+  return FIELD_DEFS[m];
+}
+
+function renderFields(){
+  const defs = fieldDefsFor();
+  const box = document.getElementById('fieldsBox');
+  box.innerHTML = '<div class="field-grid"></div>';
+  const grid = box.firstChild;
+  defs.forEach(f=>{
+    const wrap = document.createElement('div');
+    if(f.full) wrap.className = 'full';
+    let inputHtml;
+    if(f.t === 'select'){
+      inputHtml = `<select id="f_${f.k}">${f.opts.map(o=>`<option value="${o}">${o}</option>`).join('')}</select>`;
+    } else {
+      inputHtml = `<input id="f_${f.k}" type="text" placeholder="${f.ph||''}">`;
+    }
+    wrap.innerHTML = `<label>${f.l}</label>${inputHtml}`;
+    grid.appendChild(wrap);
+  });
+}
+
+function fillFields(fields){
+  Object.keys(fields).forEach(k=>{
+    const el = document.getElementById('f_'+k);
+    if(el) el.value = fields[k];
+  });
+}
+
+function collectFields(){
+  const defs = fieldDefsFor();
+  const out = {};
+  defs.forEach(f=>{
+    const el = document.getElementById('f_'+f.k);
+    if(el && el.value !== '') out[f.k] = el.value;
+  });
+  return out;
+}
+
+async function saveSlot(){
+  const method = document.getElementById('methodSelect').value;
+  const fields = collectFields();
+  document.getElementById('slotMsg').textContent = 'Saving & starting…';
+  const res = await api('/api/slots/'+CURRENT.prof, {method:'POST', body: JSON.stringify({method, fields})});
+  if(res.ok){
+    toast('Saved & started ✔');
+    document.getElementById('slotMsg').textContent = 'Started successfully.';
+    loadSlots();
+  } else {
+    toast('Save failed', true);
+    document.getElementById('slotMsg').textContent = (res.log || res.error || 'Unknown error');
+  }
+}
+
+async function doAction(action){
+  const res = await api(`/api/slots/${CURRENT.prof}/${action}`, {method:'POST'});
+  if(res.ok){ toast(action+' ok ✔'); loadSlots(); }
+  else { toast(action+' failed', true); document.getElementById('slotMsg').textContent = res.log || res.error || ''; }
+}
+
+async function deleteSlot(){
+  if(!confirm('Delete '+CURRENT.prof+'? This stops it and removes its config.')) return;
+  const res = await api('/api/slots/'+CURRENT.prof, {method:'DELETE'});
+  if(res.ok){ toast('Deleted'); closeModal('slotModal'); loadSlots(); }
+  else { toast('Delete failed', true); }
+}
+
+async function showLogs(){
+  document.getElementById('logsModal').classList.remove('hidden');
+  document.getElementById('logsBox').textContent = 'Loading…';
+  const res = await api('/api/slots/'+CURRENT.prof+'/logs');
+  document.getElementById('logsBox').textContent = res.logs || res.error || '(empty)';
+}
+
+async function toggleHC(){
+  const enabled = document.getElementById('hcToggle').checked;
+  let minutes = 1;
+  if(enabled){
+    minutes = prompt('Health-check interval in minutes:', '1') || '1';
+  }
+  const res = await api('/api/healthcheck', {method:'POST', body: JSON.stringify({enabled, minutes})});
+  toast(res.ok ? 'Health check updated ✔' : 'Failed', !res.ok);
+}
+
+async function runOptimize(){
+  toast('Optimizing server…');
+  const res = await api('/api/optimize', {method:'POST'});
+  toast(res.log ? 'Optimize done ✔' : 'Failed', !res.log);
+}
+
+document.getElementById('tokenInput').addEventListener('keydown', e=>{ if(e.key==='Enter') submitToken(); });
+boot();
+</script>
+</body>
+</html>
+HTMLEOF
+}
+
+install_webpanel(){
+  echo "" > /dev/tty
+  echo "[*] Setting up Web Panel..." > /dev/tty
+  have python3 || apt_try_install python3
+  python3 -c "import flask" >/dev/null 2>&1 || { pip3 install --break-system-packages flask >/dev/null 2>&1 || apt_try_install python3-flask; }
+
+  mkdir -p "$WEBPANEL_DIR"
+
+  local PORT="" TOKEN="" port token
+  if [[ -f "$WEBPANEL_ENV" ]]; then
+    # shellcheck disable=SC1090
+    source "$WEBPANEL_ENV"
+  fi
+  read -r -p "Panel port (default ${PORT:-8088}): " port < /dev/tty
+  port="${port:-${PORT:-8088}}"
+  if [[ -z "${TOKEN:-}" ]]; then
+    token="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  else
+    read -r -p "Keep existing access token? (y/n): " keep < /dev/tty
+    if [[ "${keep,,}" == "n" ]]; then
+      token="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+    else
+      token="$TOKEN"
+    fi
+  fi
+
+  cat > "$WEBPANEL_ENV" <<EOF
+PORT=$port
+TOKEN=$token
+EOF
+
+  write_webpanel_app
+  write_webpanel_html
+
+  cat > "$WEBPANEL_SERVICE" <<EOF
+[Unit]
+Description=A,S Tunnel Web Panel
+After=network.target
+
+[Service]
+Type=simple
+EnvironmentFile=$WEBPANEL_ENV
+Environment=INSTALL_PATH=$INSTALL_PATH
+ExecStart=/usr/bin/env python3 "$WEBPANEL_DIR/app.py"
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  systemctl daemon-reload
+  systemctl enable "A,S-webpanel" >/dev/null 2>&1 || true
+  systemctl restart "A,S-webpanel"
+
+  local ip; ip="$(get_public_ip)"
+  echo "" > /dev/tty
+  echo -e "${CLR_GREEN}[+] Web panel is running.${CLR_RESET}" > /dev/tty
+  echo -e "URL:   ${CLR_CYAN}http://${ip:-<server-ip>}:${port}/${CLR_RESET}" > /dev/tty
+  echo -e "Token: ${CLR_YELLOW}${token}${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}Keep this URL/token private — it's equivalent to root access. Restrict the port with a firewall where possible.${CLR_RESET}" > /dev/tty
+}
+
+disable_webpanel(){
+  systemctl stop "A,S-webpanel" >/dev/null 2>&1 || true
+  systemctl disable "A,S-webpanel" >/dev/null 2>&1 || true
+  echo "[+] Web panel stopped and disabled (config kept)." > /dev/tty
+}
+
+show_webpanel_info(){
+  if [[ ! -f "$WEBPANEL_ENV" ]]; then echo "[-] Web panel not installed yet." > /dev/tty; return; fi
+  local PORT="" TOKEN=""
+  # shellcheck disable=SC1090
+  source "$WEBPANEL_ENV"
+  local ip; ip="$(get_public_ip)"
+  local active="inactive"
+  systemctl is-active --quiet "A,S-webpanel" && active="active"
+  echo -e "Status: ${active}" > /dev/tty
+  echo -e "URL:    http://${ip:-<server-ip>}:${PORT}/" > /dev/tty
+  echo -e "Token:  ${TOKEN}" > /dev/tty
+}
+
+webpanel_menu(){
+  while true; do
+    echo "" > /dev/tty
+    echo -e "${CLR_DIM}┌───────────────────────────────────────┐${CLR_RESET}" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}🌐 Web Panel${CLR_RESET}" > /dev/tty
+    echo -e "${CLR_DIM}├───────────────────────────────────────┤${CLR_RESET}" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) Install / Reconfigure" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) Disable" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Show URL & Token" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_DIM}0) Back${CLR_RESET}" > /dev/tty
+    echo -e "${CLR_DIM}└───────────────────────────────────────┘${CLR_RESET}" > /dev/tty
+    read -r -p "Select: " c < /dev/tty
+    case "$c" in
+      1) install_webpanel; pause ;;
+      2) disable_webpanel; pause ;;
+      3) show_webpanel_info; pause ;;
+      0) return ;;
+      *) echo "Invalid." > /dev/tty ;;
+    esac
+  done
+}
+
 print_banner(){
   local loc dc inst
   loc="$(get_location_string)"
@@ -950,9 +1601,169 @@ manage_slot_menu(){
   done
 }
 
+# ===================== Non-interactive API (used by the web panel) =====================
+# Every action here reuses the exact same functions as the interactive menu
+# (run_slot/stop_slot/get_method/is_running/...), so the CLI and the web
+# panel are always reading and writing the same profile files — there is
+# only one source of truth, never two copies of the logic.
+
+json_str(){ printf '%s' "$1" | jq -Rs .; }
+api_json_field(){ printf '"%s":%s' "$1" "$(json_str "$2")"; }
+valid_prof(){ [[ "$1" =~ ^(eu|iran)([1-9]|10)$ ]]; }
+
+api_list(){
+  echo "["
+  local first=1 role i prof f m running
+  for role in eu iran; do
+    for i in $(seq 1 "$MAX"); do
+      prof="${role}${i}"; f="$CONF/${prof}.env"
+      [[ -f "$f" ]] || continue
+      m="$(get_method "$prof")"
+      running=false; is_running "$prof" 2>/dev/null && running=true
+      [[ $first -eq 1 ]] || echo ","
+      first=0
+      printf '{%s,%s,%s,"running":%s,"slot":%s}' \
+        "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
+        "$(api_json_field method "$m")" "$running" "$i"
+    done
+  done
+  echo ""; echo "]"
+}
+
+api_get(){
+  local prof="$1" f="$CONF/${prof}.env"
+  valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
+  [[ -f "$f" ]] || { echo '{"error":"not_found"}'; return 1; }
+  local m; m="$(get_method "$prof")"
+  local running=false; is_running "$prof" 2>/dev/null && running=true
+  printf '{%s,%s,"running":%s,"fields":{' "$(api_json_field prof "$prof")" "$(api_json_field method "$m")" "$running"
+  local first=1 line k v
+  while IFS='=' read -r k v; do
+    [[ -n "$k" ]] || continue
+    [[ "$k" == "METHOD" || "$k" == "ROLE" ]] && continue
+    [[ $first -eq 1 ]] || printf ','
+    first=0
+    printf '%s' "$(api_json_field "$k" "$v")"
+  done < "$f"
+  echo "}}"
+}
+
+api_save(){
+  local prof="$1" f="$CONF/${prof}.env" role="${prof%%[0-9]*}"
+  valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
+  local body; body="$(cat)"
+  local method; method="$(printf '%s' "$body" | jq -r '.method // empty' 2>/dev/null)"
+  [[ -n "$method" ]] || { echo '{"error":"missing_method"}'; return 1; }
+
+  local allowed=""
+  case "$method" in
+    asnative) allowed="IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS" ;;
+    backhaul) allowed="BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP" ;;
+    rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS SERVER_IP" ;;
+    gre)      allowed="LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP" ;;
+    frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS" ;;
+    gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
+    *) echo '{"error":"bad_method"}'; return 1 ;;
+  esac
+
+  {
+    echo "METHOD=$method"
+    echo "ROLE=$role"
+    local k v
+    for k in $allowed; do
+      v="$(printf '%s' "$body" | jq -r --arg k "$k" '.fields[$k] // empty' 2>/dev/null)"
+      [[ -n "$v" ]] || continue
+      printf '%s=%q\n' "$k" "$v"   # %q: safely shell-quoted, so later `source` can never execute injected input
+    done
+  } > "$f"
+
+  if [[ "$method" == "gre" ]] && ! grep -q '^SELF_TUN_IP=' "$f"; then
+    if [[ "$role" == "eu" ]]; then printf 'SELF_TUN_IP=10.10.10.1\nPEER_TUN_IP=10.10.10.2\n' >> "$f"
+    else printf 'SELF_TUN_IP=10.10.10.2\nPEER_TUN_IP=10.10.10.1\n' >> "$f"; fi
+  fi
+
+  local log; log="$(run_slot "$prof" 2>&1)"; local ok=$?
+  if [[ $ok -eq 0 ]]; then echo '{"ok":true}'; else printf '{"ok":false,"log":%s}\n' "$(json_str "$log")"; fi
+}
+
+api_simple(){
+  local action="$1" prof="$2"
+  valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
+  [[ -f "$CONF/${prof}.env" ]] || { echo '{"error":"not_found"}'; return 1; }
+  local log; log="$("${action}_slot" "$prof" 2>&1)"; local ok=$?
+  if [[ $ok -eq 0 ]]; then echo '{"ok":true}'; else printf '{"ok":false,"log":%s}\n' "$(json_str "$log")"; fi
+}
+
+api_status(){
+  local prof="$1"
+  valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
+  [[ -f "$CONF/${prof}.env" ]] || { echo '{"error":"not_found"}'; return 1; }
+  local m; m="$(get_method "$prof")"
+  local running=false; is_running "$prof" 2>/dev/null && running=true
+  printf '{%s,%s,"running":%s}\n' "$(api_json_field prof "$prof")" "$(api_json_field method "$m")" "$running"
+}
+
+api_logs(){
+  local prof="$1" m
+  valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
+  m="$(get_method "$prof")"
+  local out
+  if [[ "$m" == "gre" ]]; then
+    out="$(ip -s link show "gre${prof}" 2>&1 || true)"
+  else
+    local s tmpf; s="$(session_name "$prof")"; tmpf="$(mktemp)"
+    screen -S "$s" -X hardcopy "$tmpf" >/dev/null 2>&1 || true
+    out="$(cat "$tmpf" 2>/dev/null || true)"
+    rm -f "$tmpf"
+  fi
+  printf '{"logs":%s}\n' "$(json_str "$out")"
+}
+
+api_hc(){
+  if [[ "$1" == "on" ]]; then
+    install_healthcheck_script
+    local interval="${2:-1}"; [[ "$interval" =~ ^[0-9]+$ ]] || interval=1; [[ "$interval" -lt 1 ]] && interval=1
+    local line="*/$interval * * * * ${HC_SCRIPT} >/dev/null 2>&1 ${HC_CRON_TAG}"
+    local tmp; tmp="$(mktemp)"
+    (crontab -l 2>/dev/null || true) | grep -vF "${HC_CRON_TAG}" >"$tmp" || true
+    echo "$line" >>"$tmp"; crontab "$tmp"; rm -f "$tmp"
+  else
+    disable_cron_healthcheck >/dev/null 2>&1 || true
+  fi
+  echo '{"ok":true}'
+}
+
+api_optimize(){ local out; out="$(optimize_server 2>&1)"; printf '{"log":%s}\n' "$(json_str "$out")"; }
+
+api_info(){
+  local loc dc; loc="$(get_location_string)"; dc="$(get_datacenter_string)"
+  printf '{%s,%s,%s}\n' "$(api_json_field version "$VERSION")" "$(api_json_field location "$loc")" "$(api_json_field datacenter "$dc")"
+}
+
 # ===================== Main =====================
 need_root
 ensure
+
+if [[ "${1:-}" == "--api" ]]; then
+  shift
+  sub="${1:-}"; shift || true
+  case "$sub" in
+    list)     api_list ;;
+    get)      api_get "${1:-}" ;;
+    save)     api_save "${1:-}" ;;
+    start)    api_simple run "${1:-}" ;;
+    stop)     api_simple stop "${1:-}" ;;
+    restart)  api_simple restart "${1:-}" ;;
+    delete)   api_simple delete "${1:-}" ;;
+    status)   api_status "${1:-}" ;;
+    logs)     api_logs "${1:-}" ;;
+    hc)       api_hc "${1:-off}" "${2:-1}" ;;
+    optimize) api_optimize ;;
+    info)     api_info ;;
+    *) echo '{"error":"unknown_command"}' ;;
+  esac
+  exit 0
+fi
 
 # Internal entry point used by the cron health-check (see install_healthcheck_script).
 if [[ "${1:-}" == "--healthcheck" ]]; then
@@ -979,6 +1790,7 @@ while true; do
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}3${CLR_RESET}) ✅ Enable cron health-check"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}4${CLR_RESET}) ❌ Disable cron health-check"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}8${CLR_RESET}) 🚀 Optimize server  ${CLR_DIM}(BBR + sysctl)${CLR_RESET}"
+  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}9${CLR_RESET}) 🌐 Web panel  ${CLR_DIM}(glass dashboard)${CLR_RESET}"
   echo -e "${CLR_DIM}│${CLR_RESET}"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}SCRIPT${CLR_RESET}"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}5${CLR_RESET}) 📦 Install script  ${CLR_DIM}(system-wide)${CLR_RESET}"
@@ -998,6 +1810,7 @@ while true; do
     6) update_script; pause ;;
     7) uninstall_script; pause ;;
     8) optimize_server; pause ;;
+    9) webpanel_menu ;;
     0) exit 0 ;;
     *) echo "Invalid."; sleep 1 ;;
   esac
