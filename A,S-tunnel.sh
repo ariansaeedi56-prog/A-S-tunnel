@@ -26,7 +26,8 @@ HC_CRON_TAG="# A,STunnelHealthCheck"
 
 WEBPANEL_DIR="/opt/A,S/webpanel"
 WEBPANEL_ENV="$BASE/webpanel.env"
-WEBPANEL_SERVICE="/etc/systemd/system/A,S-webpanel.service"
+WEBPANEL_UNIT="AS-webpanel"
+WEBPANEL_SERVICE="/etc/systemd/system/${WEBPANEL_UNIT}.service"
 
 # Colors
 if [[ -t 1 ]]; then
@@ -1474,6 +1475,9 @@ EOF
   write_webpanel_app
   write_webpanel_html
 
+  # Clean up a leftover unit file from an older version that used a comma in the name
+  rm -f "/etc/systemd/system/A,S-webpanel.service" 2>/dev/null || true
+
   cat > "$WEBPANEL_SERVICE" <<EOF
 [Unit]
 Description=A,S Tunnel Web Panel
@@ -1492,8 +1496,8 @@ WantedBy=multi-user.target
 EOF
 
   systemctl daemon-reload
-  systemctl enable "A,S-webpanel" >/dev/null 2>&1 || true
-  systemctl restart "A,S-webpanel"
+  systemctl enable "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
+  systemctl restart "$WEBPANEL_UNIT"
 
   local ip; ip="$(get_public_ip)"
   echo "" > /dev/tty
@@ -1504,8 +1508,8 @@ EOF
 }
 
 disable_webpanel(){
-  systemctl stop "A,S-webpanel" >/dev/null 2>&1 || true
-  systemctl disable "A,S-webpanel" >/dev/null 2>&1 || true
+  systemctl stop "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
+  systemctl disable "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   echo "[+] Web panel stopped and disabled (config kept)." > /dev/tty
 }
 
@@ -1516,7 +1520,7 @@ show_webpanel_info(){
   source "$WEBPANEL_ENV"
   local ip; ip="$(get_public_ip)"
   local active="inactive"
-  systemctl is-active --quiet "A,S-webpanel" && active="active"
+  systemctl is-active --quiet "$WEBPANEL_UNIT" && active="active"
   echo -e "Status: ${active}" > /dev/tty
   echo -e "URL:    http://${ip:-<server-ip>}:${PORT}/" > /dev/tty
   echo -e "Token:  ${TOKEN}" > /dev/tty
