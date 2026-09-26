@@ -919,7 +919,8 @@ app = Flask(__name__, static_folder=None)
 
 def run_api(args, stdin_data=None):
     if not os.path.isfile(INSTALL_PATH):
-        return {"error": "script_not_installed"}, 500
+        return {"error": "script_not_installed",
+                "hint": "Run the CLI menu once (option 5: Install script) so " + INSTALL_PATH + " exists."}, 500
     cmd = [INSTALL_PATH, "--api"] + args
     try:
         p = subprocess.run(cmd, input=stdin_data, capture_output=True, text=True, timeout=60)
@@ -1551,6 +1552,12 @@ make_selfsigned_cert(){
 install_webpanel(){
   echo "" > /dev/tty
   echo "[*] Setting up Web Panel..." > /dev/tty
+
+  if [[ ! -f "$INSTALL_PATH" ]]; then
+    echo "[*] The web panel calls the installed script, which isn't set up yet — installing it first..." > /dev/tty
+    install_script
+  fi
+
   have python3 || apt_try_install python3
   python3 -c "import flask, werkzeug" >/dev/null 2>&1 || { pip3 install --break-system-packages flask >/dev/null 2>&1 || apt_try_install python3-flask; }
 
