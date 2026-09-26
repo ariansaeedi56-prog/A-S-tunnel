@@ -903,11 +903,16 @@ write_webpanel_app(){
 #!/usr/bin/env python3
 import json, os, secrets, subprocess
 from flask import Flask, request, jsonify, send_from_directory
+from werkzeug.security import check_password_hash
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 INSTALL_PATH = os.environ.get("INSTALL_PATH", "/usr/local/bin/A,S-tunnel")
-TOKEN = os.environ.get("TOKEN", "")
 PORT = int(os.environ.get("PORT", "8088"))
+USERNAME = os.environ.get("USERNAME", "")
+PASSWORD_HASH = os.environ.get("PASSWORD_HASH", "")
+HTTPS = os.environ.get("HTTPS", "false") == "true"
+CERT_FILE = os.environ.get("CERT_FILE", "")
+KEY_FILE = os.environ.get("KEY_FILE", "")
 
 app = Flask(__name__, static_folder=None)
 
@@ -930,21 +935,34 @@ def run_api(args, stdin_data=None):
 
 
 def check_auth():
-    if not TOKEN:
+    if not USERNAME or not PASSWORD_HASH:
         return True
-    supplied = request.headers.get("X-API-Key", "") or request.args.get("token", "")
-    return secrets.compare_digest(supplied, TOKEN)
+    auth = request.authorization
+    if not auth:
+        return False
+    if not secrets.compare_digest(auth.username or "", USERNAME):
+        return False
+    return check_password_hash(PASSWORD_HASH, auth.password or "")
 
 
 @app.before_request
 def guard():
-    if request.path.startswith("/api/") and not check_auth():
-        return jsonify({"error": "unauthorized"}), 401
+    if request.path.startswith("/api/") and request.path != "/api/whoami":
+        if not check_auth():
+            return jsonify({"error": "unauthorized"}), 401
+    if request.path == "/api/whoami":
+        if not check_auth():
+            return jsonify({"authenticated": False}), 401
 
 
 @app.get("/")
 def index():
     return send_from_directory(APP_DIR, "index.html")
+
+
+@app.get("/api/whoami")
+def whoami():
+    return jsonify({"authenticated": True, "username": USERNAME})
 
 
 @app.get("/api/info")
@@ -1007,7 +1025,10 @@ def optimize():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=PORT)
+    ssl_ctx = None
+    if HTTPS and CERT_FILE and KEY_FILE and os.path.isfile(CERT_FILE) and os.path.isfile(KEY_FILE):
+        ssl_ctx = (CERT_FILE, KEY_FILE)
+    app.run(host="0.0.0.0", port=PORT, ssl_context=ssl_ctx)
 PYEOF
 }
 
@@ -1039,33 +1060,61 @@ write_webpanel_html(){
     content:""; position:fixed; inset:0; pointer-events:none; z-index:0;
     background:
       radial-gradient(circle at 15% 20%, rgba(126,232,250,0.18), transparent 40%),
-      radial-gradient(circle at 85% 80%, rgba(166,130,255,0.18), transparent 40%);
+      radial-gradient(circle at 85% 80%, rgba(166,130,255,0.18), transparent 40%),
+      radial-gradient(circle at 50% 100%, rgba(255,209,102,0.08), transparent 45%);
   }
-  .wrap{position:relative; z-index:1; max-width:1100px; margin:0 auto; padding:20px 16px 60px}
+  .wrap{position:relative; z-index:1; max-width:1140px; margin:0 auto; padding:20px 16px 60px}
   .glass{
     background:var(--glass); backdrop-filter:blur(18px); -webkit-backdrop-filter:blur(18px);
     border:1px solid var(--glass-brd); border-radius:18px;
     box-shadow:0 8px 32px rgba(0,0,0,0.35);
   }
-  header.glass{padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px; margin-bottom:18px}
+  section{margin-bottom:20px}
+  section > .sec-head{display:flex; align-items:center; justify-content:space-between; margin:0 0 10px 4px}
+  section > .sec-head h2{font-size:13px; text-transform:uppercase; letter-spacing:1.2px; color:var(--dim); margin:0; display:flex; align-items:center; gap:6px}
+
+  header.glass{padding:16px 20px; display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:18px}
+  .brand{display:flex; align-items:center; gap:12px}
+  .brand .logo{
+    width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); font-size:20px; flex:none;
+    box-shadow:0 4px 14px rgba(126,232,250,0.35);
+  }
   header h1{font-size:18px; margin:0; font-weight:700; letter-spacing:.3px}
   header .sub{font-size:12px; color:var(--dim); margin-top:2px}
+  .author-badge{
+    display:inline-flex; align-items:center; gap:6px; font-size:11px; color:var(--dim);
+    padding:5px 10px; border-radius:999px; background:rgba(255,255,255,0.06); border:1px solid var(--glass-brd);
+    text-decoration:none;
+  }
+  .author-badge b{color:#fff}
+  .author-badge:hover{background:rgba(255,255,255,0.12)}
+
+  .stats-row{display:flex; gap:10px; flex-wrap:wrap}
+  .stat{
+    flex:1 1 140px; padding:14px 16px; display:flex; flex-direction:column; gap:4px;
+  }
+  .stat .label{font-size:11px; color:var(--dim); text-transform:uppercase; letter-spacing:.6px}
+  .stat .value{font-size:15px; font-weight:600}
+
   .pill{display:inline-flex; align-items:center; gap:6px; padding:5px 12px; border-radius:999px; font-size:12px; background:rgba(255,255,255,0.08); border:1px solid var(--glass-brd)}
   .dot{width:8px; height:8px; border-radius:50%}
   .dot.on{background:var(--green); box-shadow:0 0 8px var(--green)}
   .dot.off{background:var(--red); box-shadow:0 0 8px var(--red)}
   .dot.empty{background:rgba(255,255,255,0.25)}
   .cols{display:grid; grid-template-columns:1fr 1fr; gap:18px}
-  @media (max-width:760px){.cols{grid-template-columns:1fr}}
-  .col h2{font-size:14px; text-transform:uppercase; letter-spacing:1px; color:var(--dim); margin:0 0 10px 4px}
+  @media (max-width:760px){.cols{grid-template-columns:1fr} .stats-row{flex-direction:column}}
+  .col-box{padding:16px}
   .slot{
     padding:14px 16px; margin-bottom:10px; border-radius:14px; cursor:pointer;
     display:flex; justify-content:space-between; align-items:center; gap:10px;
-    transition:transform .15s ease, background .15s ease;
+    transition:transform .15s ease, background .15s ease; border:1px solid transparent;
   }
+  .slot:last-child{margin-bottom:0}
   .slot:hover{transform:translateY(-2px); background:rgba(255,255,255,0.11)}
+  .slot.is-on{border-color:rgba(61,220,132,0.35)}
   .slot .name{font-weight:600; font-size:14px}
-  .slot .meta{font-size:11px; color:var(--dim); margin-top:2px}
+  .slot .meta{font-size:11px; color:var(--dim); margin-top:2px; text-transform:capitalize}
   .btnrow{display:flex; gap:8px; margin-top:18px; flex-wrap:wrap}
   button{
     font-family:inherit; cursor:pointer; border:1px solid var(--glass-brd); color:#fff;
@@ -1103,8 +1152,13 @@ write_webpanel_html(){
   }
   .toast.show{opacity:1}
   .gate{position:fixed; inset:0; z-index:200; display:flex; align-items:center; justify-content:center; padding:16px}
-  .gate .box{width:100%; max-width:360px; padding:28px}
-  .footer-note{text-align:center; color:var(--dim); font-size:11px; margin-top:28px}
+  .gate .box{width:100%; max-width:380px; padding:30px}
+  .gate .glogo{
+    width:56px; height:56px; margin:0 auto 14px; border-radius:16px; display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); font-size:26px;
+    box-shadow:0 6px 20px rgba(126,232,250,0.35);
+  }
+  .footer-note{text-align:center; color:var(--dim); font-size:11px; margin-top:28px; display:flex; flex-direction:column; gap:8px; align-items:center}
   .switch{position:relative; display:inline-block; width:42px; height:24px}
   .switch input{opacity:0; width:0; height:0}
   .slider{position:absolute; cursor:pointer; inset:0; background:rgba(255,255,255,0.15); border-radius:24px; transition:.2s}
@@ -1117,19 +1171,29 @@ write_webpanel_html(){
 
 <div id="gate" class="gate">
   <div class="box glass">
-    <h3 style="margin-top:0">🔐 A,S Tunnel Panel</h3>
-    <p style="color:var(--dim); font-size:13px">Enter your access token to continue.</p>
-    <input id="tokenInput" type="password" placeholder="Access token">
-    <div class="btnrow"><button class="primary" style="width:100%" onclick="submitToken()">Unlock</button></div>
-    <div id="gateError" style="color:var(--red); font-size:12px; margin-top:10px"></div>
+    <div class="glogo">🚀</div>
+    <h3 style="margin:0 0 2px; text-align:center">A,S Tunnel Panel</h3>
+    <p style="color:var(--dim); font-size:13px; text-align:center; margin-top:2px">Sign in to manage your tunnels</p>
+    <label>Username</label>
+    <input id="userInput" type="text" autocomplete="username" placeholder="Username">
+    <label>Password</label>
+    <input id="passInput" type="password" autocomplete="current-password" placeholder="Password">
+    <div class="btnrow"><button class="primary" style="width:100%" onclick="submitLogin()">🔓 Sign in</button></div>
+    <div id="gateError" style="color:var(--red); font-size:12px; margin-top:10px; text-align:center"></div>
+    <div class="footer-note" style="margin-top:22px">
+      <a class="author-badge" href="https://t.me/Asnejad" target="_blank" rel="noopener">✈️ Built by <b>A,S</b> · @Asnejad</a>
+    </div>
   </div>
 </div>
 
 <div class="wrap hidden" id="app">
   <header class="glass">
-    <div>
-      <h1>🚀 A,S Tunnel</h1>
-      <div class="sub" id="infoLine">loading…</div>
+    <div class="brand">
+      <div class="logo">🚀</div>
+      <div>
+        <h1>A,S Tunnel</h1>
+        <div class="sub" id="infoLine">loading…</div>
+      </div>
     </div>
     <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap">
       <span class="pill">🕒 Health check
@@ -1137,21 +1201,38 @@ write_webpanel_html(){
       </span>
       <button class="ghost" onclick="runOptimize()">🚀 Optimize</button>
       <button class="ghost" onclick="loadSlots()">⟳ Refresh</button>
+      <button class="ghost" onclick="logout()">🔒 Logout</button>
     </div>
   </header>
 
-  <div class="cols">
-    <div class="col">
-      <h2>🌍 EU</h2>
-      <div id="euList"></div>
+  <section>
+    <div class="sec-head"><h2>📊 Overview</h2></div>
+    <div class="stats-row">
+      <div class="stat glass"><span class="label">Version</span><span class="value" id="stVersion">—</span></div>
+      <div class="stat glass"><span class="label">Location</span><span class="value" id="stLocation">—</span></div>
+      <div class="stat glass"><span class="label">Datacenter</span><span class="value" id="stDatacenter">—</span></div>
+      <div class="stat glass"><span class="label">Active tunnels</span><span class="value" id="stActive">—</span></div>
     </div>
-    <div class="col">
-      <h2>🇮🇷 IRAN</h2>
-      <div id="iranList"></div>
-    </div>
-  </div>
+  </section>
 
-  <div class="footer-note">A,S Tunnel Web Panel · keep this URL and token private</div>
+  <section>
+    <div class="sec-head"><h2>🎛 Tunnels</h2><span class="sub" style="font-size:11px; color:var(--dim)">click a slot to configure</span></div>
+    <div class="cols">
+      <div class="col">
+        <div class="sec-head"><h2>🌍 EU</h2></div>
+        <div class="col-box glass" id="euList"></div>
+      </div>
+      <div class="col">
+        <div class="sec-head"><h2>🇮🇷 IRAN</h2></div>
+        <div class="col-box glass" id="iranList"></div>
+      </div>
+    </div>
+  </section>
+
+  <div class="footer-note">
+    <a class="author-badge" href="https://t.me/Asnejad" target="_blank" rel="noopener">✈️ Crafted by <b>A,S</b> · @Asnejad</a>
+    <span>Keep this URL and password private</span>
+  </div>
 </div>
 
 <!-- Slot config modal -->
@@ -1200,7 +1281,7 @@ write_webpanel_html(){
 <div id="toast" class="toast glass"></div>
 
 <script>
-let TOKEN = localStorage.getItem('as_token') || '';
+let AUTH = localStorage.getItem('as_auth') || '';
 let SLOTS = [];
 let CURRENT = null;
 
@@ -1253,10 +1334,10 @@ const FIELD_DEFS = {
 };
 
 function api(path, opts={}){
-  opts.headers = Object.assign({'Content-Type':'application/json','X-API-Key':TOKEN}, opts.headers||{});
+  opts.headers = Object.assign({'Content-Type':'application/json','Authorization':'Basic '+AUTH}, opts.headers||{});
   return fetch(path, opts).then(async r=>{
     const data = await r.json().catch(()=>({error:'bad_json'}));
-    if(r.status===401){ showGate('Invalid or expired token.'); throw new Error('unauthorized'); }
+    if(r.status===401){ showGate('Invalid username or password.'); throw new Error('unauthorized'); }
     return data;
   });
 }
@@ -1266,10 +1347,18 @@ function showGate(err){
   document.getElementById('app').classList.add('hidden');
   document.getElementById('gateError').textContent = err || '';
 }
-function submitToken(){
-  TOKEN = document.getElementById('tokenInput').value.trim();
-  localStorage.setItem('as_token', TOKEN);
+function submitLogin(){
+  const u = document.getElementById('userInput').value.trim();
+  const p = document.getElementById('passInput').value;
+  AUTH = btoa(u + ':' + p);
+  localStorage.setItem('as_auth', AUTH);
   boot();
+}
+function logout(){
+  localStorage.removeItem('as_auth');
+  AUTH = '';
+  document.getElementById('passInput').value = '';
+  showGate('');
 }
 
 function toast(msg, isErr){
@@ -1284,14 +1373,16 @@ function toast(msg, isErr){
 function closeModal(id){ document.getElementById(id).classList.add('hidden'); }
 
 async function boot(){
-  if(!TOKEN){ showGate(''); return; }
+  if(!AUTH){ showGate(''); return; }
   try{
     const info = await api('/api/info');
-    if(info.error){ showGate('Invalid token or server error.'); return; }
+    if(info.error){ showGate('Invalid credentials or server error.'); return; }
     document.getElementById('gate').classList.add('hidden');
     document.getElementById('app').classList.remove('hidden');
-    document.getElementById('infoLine').textContent =
-      `v${info.version || '?'} · ${info.location || 'Unknown'} · ${info.datacenter || 'Unknown'}`;
+    document.getElementById('infoLine').textContent = 'Multi-protocol tunnel dashboard';
+    document.getElementById('stVersion').textContent = 'v' + (info.version || '?');
+    document.getElementById('stLocation').textContent = info.location || 'Unknown';
+    document.getElementById('stDatacenter').textContent = info.datacenter || 'Unknown';
     loadSlots();
   }catch(e){ /* gate already shown */ }
 }
@@ -1301,6 +1392,7 @@ async function loadSlots(){
   if(!Array.isArray(data)) return;
   SLOTS = data;
   renderList('eu'); renderList('iran');
+  document.getElementById('stActive').textContent = SLOTS.filter(s=>s.running).length + ' / ' + SLOTS.length;
 }
 
 function slotFor(role,i){ return SLOTS.find(s=>s.role===role && s.slot===i); }
@@ -1311,7 +1403,7 @@ function renderList(role){
   for(let i=1;i<=10;i++){
     const s = slotFor(role,i);
     const div = document.createElement('div');
-    div.className = 'slot glass';
+    div.className = 'slot' + (s && s.running ? ' is-on' : '');
     const dotClass = !s ? 'empty' : (s.running ? 'on' : 'off');
     div.innerHTML = `
       <div>
@@ -1331,7 +1423,7 @@ function openSlot(role, i, existing){
   document.getElementById('slotMsg').textContent = '';
   const sel = document.getElementById('methodSelect');
   sel.value = existing ? existing.method : 'asnative';
-  renderFields(existing ? null : null);
+  renderFields();
   if(existing){
     api('/api/slots/'+CURRENT.prof).then(d=>{
       if(d.fields){ fillFields(d.fields); }
@@ -1433,7 +1525,8 @@ async function runOptimize(){
   toast(res.log ? 'Optimize done ✔' : 'Failed', !res.log);
 }
 
-document.getElementById('tokenInput').addEventListener('keydown', e=>{ if(e.key==='Enter') submitToken(); });
+document.getElementById('passInput').addEventListener('keydown', e=>{ if(e.key==='Enter') submitLogin(); });
+document.getElementById('userInput').addEventListener('keydown', e=>{ if(e.key==='Enter') document.getElementById('passInput').focus(); });
 boot();
 </script>
 </body>
@@ -1441,35 +1534,60 @@ boot();
 HTMLEOF
 }
 
+gen_password(){ head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 14; }
+gen_username(){ echo "admin_$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
+gen_port(){ if have shuf; then shuf -i 20000-59999 -n1; else echo $(( (RANDOM % 40000) + 20000 )); fi; }
+hash_password(){ python3 -c "from werkzeug.security import generate_password_hash; import sys; print(generate_password_hash(sys.argv[1]))" "$1"; }
+
+make_selfsigned_cert(){
+  local ip="$1" dir="$WEBPANEL_DIR/certs"
+  mkdir -p "$dir"
+  have openssl || apt_try_install openssl
+  openssl req -x509 -newkey rsa:2048 -keyout "$dir/key.pem" -out "$dir/cert.pem" \
+    -days 825 -nodes -subj "/CN=${ip:-A,S-tunnel}" >/dev/null 2>&1
+  echo "$dir/cert.pem|$dir/key.pem"
+}
+
 install_webpanel(){
   echo "" > /dev/tty
   echo "[*] Setting up Web Panel..." > /dev/tty
   have python3 || apt_try_install python3
-  python3 -c "import flask" >/dev/null 2>&1 || { pip3 install --break-system-packages flask >/dev/null 2>&1 || apt_try_install python3-flask; }
+  python3 -c "import flask, werkzeug" >/dev/null 2>&1 || { pip3 install --break-system-packages flask >/dev/null 2>&1 || apt_try_install python3-flask; }
 
   mkdir -p "$WEBPANEL_DIR"
 
-  local PORT="" TOKEN="" port token
+  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
   if [[ -f "$WEBPANEL_ENV" ]]; then
     # shellcheck disable=SC1090
     source "$WEBPANEL_ENV"
   fi
-  read -r -p "Panel port (default ${PORT:-8088}): " port < /dev/tty
-  port="${port:-${PORT:-8088}}"
-  if [[ -z "${TOKEN:-}" ]]; then
-    token="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  else
-    read -r -p "Keep existing access token? (y/n): " keep < /dev/tty
-    if [[ "${keep,,}" == "n" ]]; then
-      token="$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-    else
-      token="$TOKEN"
-    fi
+
+  local detected; detected="$(get_public_ip)"
+  read -r -p "Panel IP (Enter to auto-detect: ${detected:-unknown}): " ip_in < /dev/tty
+  local panel_ip="${ip_in:-${detected:-$PANEL_IP}}"
+
+  read -r -p "Enable HTTPS with a self-signed cert? (y/n, default n): " https_in < /dev/tty
+  local https="false"; [[ "${https_in,,}" == "y" ]] && https="true"
+
+  local port; port="$(gen_port)"
+  local username; username="$(gen_username)"
+  local password; password="$(gen_password)"
+  local phash; phash="$(hash_password "$password")"
+
+  local cert_file="" key_file=""
+  if [[ "$https" == "true" ]]; then
+    local pair; pair="$(make_selfsigned_cert "$panel_ip")"
+    cert_file="${pair%|*}"; key_file="${pair#*|}"
   fi
 
   cat > "$WEBPANEL_ENV" <<EOF
+PANEL_IP=$panel_ip
+HTTPS=$https
 PORT=$port
-TOKEN=$token
+USERNAME=$username
+PASSWORD_HASH=$phash
+CERT_FILE=$cert_file
+KEY_FILE=$key_file
 EOF
 
   write_webpanel_app
@@ -1499,12 +1617,65 @@ EOF
   systemctl enable "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   systemctl restart "$WEBPANEL_UNIT"
 
-  local ip; ip="$(get_public_ip)"
+  local scheme="http"; [[ "$https" == "true" ]] && scheme="https"
   echo "" > /dev/tty
   echo -e "${CLR_GREEN}[+] Web panel is running.${CLR_RESET}" > /dev/tty
-  echo -e "URL:   ${CLR_CYAN}http://${ip:-<server-ip>}:${port}/${CLR_RESET}" > /dev/tty
-  echo -e "Token: ${CLR_YELLOW}${token}${CLR_RESET}" > /dev/tty
-  echo -e "${CLR_DIM}Keep this URL/token private — it's equivalent to root access. Restrict the port with a firewall where possible.${CLR_RESET}" > /dev/tty
+  echo -e "URL:      ${CLR_CYAN}${scheme}://${panel_ip:-<server-ip>}:${port}/${CLR_RESET}" > /dev/tty
+  echo -e "Username: ${CLR_YELLOW}${username}${CLR_RESET}" > /dev/tty
+  echo -e "Password: ${CLR_YELLOW}${password}${CLR_RESET}" > /dev/tty
+  [[ "$https" == "true" ]] && echo -e "${CLR_DIM}Self-signed cert — your browser will warn once, that's expected.${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}The password is only shown now — write it down. Use menu 4/5 to change or reset it later.${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}Keep this URL/credentials private — equivalent to root access. Restrict the port with a firewall where possible.${CLR_RESET}" > /dev/tty
+}
+
+change_webpanel_credentials(){
+  if [[ ! -f "$WEBPANEL_ENV" ]]; then echo "[-] Web panel not installed yet." > /dev/tty; return; fi
+  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
+  # shellcheck disable=SC1090
+  source "$WEBPANEL_ENV"
+  read -r -p "New username (Enter to keep '${USERNAME}'): " u < /dev/tty
+  read -r -p "New password (Enter to auto-generate): " p < /dev/tty
+  [[ -n "$u" ]] && USERNAME="$u"
+  [[ -z "$p" ]] && p="$(gen_password)"
+  PASSWORD_HASH="$(hash_password "$p")"
+  cat > "$WEBPANEL_ENV" <<EOF
+PANEL_IP=$PANEL_IP
+HTTPS=$HTTPS
+PORT=$PORT
+USERNAME=$USERNAME
+PASSWORD_HASH=$PASSWORD_HASH
+CERT_FILE=$CERT_FILE
+KEY_FILE=$KEY_FILE
+EOF
+  systemctl restart "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
+  echo "" > /dev/tty
+  echo -e "${CLR_GREEN}[+] Credentials updated.${CLR_RESET}" > /dev/tty
+  echo -e "Username: ${CLR_YELLOW}${USERNAME}${CLR_RESET}" > /dev/tty
+  echo -e "Password: ${CLR_YELLOW}${p}${CLR_RESET}" > /dev/tty
+}
+
+reset_webpanel_credentials(){
+  if [[ ! -f "$WEBPANEL_ENV" ]]; then echo "[-] Web panel not installed yet." > /dev/tty; return; fi
+  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
+  # shellcheck disable=SC1090
+  source "$WEBPANEL_ENV"
+  USERNAME="$(gen_username)"
+  local p; p="$(gen_password)"
+  PASSWORD_HASH="$(hash_password "$p")"
+  cat > "$WEBPANEL_ENV" <<EOF
+PANEL_IP=$PANEL_IP
+HTTPS=$HTTPS
+PORT=$PORT
+USERNAME=$USERNAME
+PASSWORD_HASH=$PASSWORD_HASH
+CERT_FILE=$CERT_FILE
+KEY_FILE=$KEY_FILE
+EOF
+  systemctl restart "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
+  echo "" > /dev/tty
+  echo -e "${CLR_GREEN}[+] Credentials reset.${CLR_RESET}" > /dev/tty
+  echo -e "Username: ${CLR_YELLOW}${USERNAME}${CLR_RESET}" > /dev/tty
+  echo -e "Password: ${CLR_YELLOW}${p}${CLR_RESET}" > /dev/tty
 }
 
 disable_webpanel(){
@@ -1515,15 +1686,16 @@ disable_webpanel(){
 
 show_webpanel_info(){
   if [[ ! -f "$WEBPANEL_ENV" ]]; then echo "[-] Web panel not installed yet." > /dev/tty; return; fi
-  local PORT="" TOKEN=""
+  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
   # shellcheck disable=SC1090
   source "$WEBPANEL_ENV"
-  local ip; ip="$(get_public_ip)"
   local active="inactive"
   systemctl is-active --quiet "$WEBPANEL_UNIT" && active="active"
-  echo -e "Status: ${active}" > /dev/tty
-  echo -e "URL:    http://${ip:-<server-ip>}:${PORT}/" > /dev/tty
-  echo -e "Token:  ${TOKEN}" > /dev/tty
+  local scheme="http"; [[ "$HTTPS" == "true" ]] && scheme="https"
+  echo -e "Status:   ${active}" > /dev/tty
+  echo -e "URL:      ${scheme}://${PANEL_IP:-<server-ip>}:${PORT}/" > /dev/tty
+  echo -e "Username: ${USERNAME}" > /dev/tty
+  echo -e "${CLR_DIM}(Password is stored hashed — use menu 4/5 to set a new one if forgotten.)${CLR_RESET}" > /dev/tty
 }
 
 webpanel_menu(){
@@ -1534,7 +1706,9 @@ webpanel_menu(){
     echo -e "${CLR_DIM}├───────────────────────────────────────┤${CLR_RESET}" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) Install / Reconfigure" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) Disable" > /dev/tty
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Show URL & Token" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Show URL & Username" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}4${CLR_RESET}) Change username/password" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}5${CLR_RESET}) Reset to random credentials" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_DIM}0) Back${CLR_RESET}" > /dev/tty
     echo -e "${CLR_DIM}└───────────────────────────────────────┘${CLR_RESET}" > /dev/tty
     read -r -p "Select: " c < /dev/tty
@@ -1542,6 +1716,8 @@ webpanel_menu(){
       1) install_webpanel; pause ;;
       2) disable_webpanel; pause ;;
       3) show_webpanel_info; pause ;;
+      4) change_webpanel_credentials; pause ;;
+      5) reset_webpanel_credentials; pause ;;
       0) return ;;
       *) echo "Invalid." > /dev/tty ;;
     esac
