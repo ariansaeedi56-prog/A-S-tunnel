@@ -19,6 +19,9 @@ INSTALL_PATH="/usr/local/bin/A,S-tunnel"
 BASE="/etc/A,S_manager"
 CONF="$BASE/profiles"
 BIN_DIR="/opt/A,S/bin"
+# Prepended to every screen session so all protocols (not just A,S native) get
+# the same higher file-descriptor ceiling for handling many connections.
+ULIMIT_PREFIX='ulimit -Hn 1048576 >/dev/null 2>&1 || true; ulimit -Sn 1048576 >/dev/null 2>&1 || true; '
 MAX=10
 
 HC_SCRIPT="/usr/local/bin/A,S-health-check"
@@ -226,9 +229,42 @@ disable_cron_healthcheck(){
   echo "[+] Cron disabled." > /dev/tty
 }
 
+# ---- Per-slot scheduled restart (independent of the health-check cron) ----
+# Health-check only restarts a slot if it's found stopped; this restarts a
+# slot on a fixed schedule regardless of state — useful for flushing stale
+# connections/memory on long-running tunnels.
+slot_restart_tag(){ echo "# A,SSlotRestart:$1"; }
+
+set_slot_restart_cron(){
+  local prof="$1" hours="$2" tag; tag="$(slot_restart_tag "$prof")"
+  [[ "$hours" =~ ^[0-9]+$ ]] || hours=6
+  [[ "$hours" -lt 1 ]] && hours=1
+  local line="0 */$hours * * * ${INSTALL_PATH} --api restart ${prof} >/dev/null 2>&1 ${tag}"
+  local tmp; tmp="$(mktemp)"
+  (crontab -l 2>/dev/null || true) | grep -vF "$tag" >"$tmp" || true
+  echo "$line" >>"$tmp"
+  crontab "$tmp"
+  rm -f "$tmp"
+}
+
+clear_slot_restart_cron(){
+  local prof="$1" tag; tag="$(slot_restart_tag "$prof")"
+  local tmp; tmp="$(mktemp)"
+  (crontab -l 2>/dev/null || true) | grep -vF "$tag" >"$tmp" || true
+  crontab "$tmp"
+  rm -f "$tmp"
+}
+
+get_slot_restart_hours(){
+  local prof="$1" tag; tag="$(slot_restart_tag "$prof")"
+  local line; line="$(crontab -l 2>/dev/null | grep -F "$tag" || true)"
+  [[ -n "$line" ]] || { echo ""; return; }
+  echo "$line" | sed -n 's#^0 \*/\([0-9]\+\) .*#\1#p'
+}
+
 optimize_server(){
   echo "" > /dev/tty
-  echo "[*] Optimizing network settings and enabling BBR if supported..." > /dev/tty
+  echo "[*] Optimizing network settings and hardening the kernel (applies to every tunnel protocol)..." > /dev/tty
 
   # Ensure tools that are commonly missing on minimal images
   have sysctl  || apt_try_install procps
@@ -241,36 +277,73 @@ optimize_server(){
   # Try loading BBR module (no hard fail)
   modprobe tcp_bbr >/dev/null 2>&1 || true
 
+  local cc="cubic" qdisc="pfifo_fast"
   if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
-    echo "[+] BBR is available." > /dev/tty
-
-    # Apply runtime settings
+    cc="bbr"; qdisc="fq"
     sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
     sysctl -w net.ipv4.tcp_congestion_control=bbr >/dev/null 2>&1 || true
+    echo "[+] BBR is available and enabled." > /dev/tty
+  else
+    echo "[!] BBR is NOT available on this kernel — keeping the default congestion control." > /dev/tty
+  fi
 
-    # Persist settings (idempotent, separate file)
-    local conf="/etc/sysctl.d/99-A,S-tunnel.conf"
-    cat > "$conf" <<'EOF'
-# A,S Tunnel - network tuning
-net.core.default_qdisc=fq
-net.ipv4.tcp_congestion_control=bbr
+  # Persist settings (idempotent, separate file). This always applies — not just
+  # when BBR is available — since every protocol (Backhaul/Rathole/FRP/Gost/GRE/
+  # A,S native) benefits from the same backlog, keepalive and anti-spoofing tuning.
+  local conf="/etc/sysctl.d/99-A,S-tunnel.conf"
+  cat > "$conf" <<EOF
+# A,S Tunnel — network performance + security tuning (shared by every protocol)
+net.core.default_qdisc=$qdisc
+net.ipv4.tcp_congestion_control=$cc
 
-# Socket buffer ceilings (reasonable defaults)
+# Socket buffer ceilings
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
 net.ipv4.tcp_rmem=4096 87380 16777216
 net.ipv4.tcp_wmem=4096 65536 16777216
+
+# Connection handling under load: bigger backlog, faster stale-connection reuse
+net.core.somaxconn=65535
+net.core.netdev_max_backlog=65535
+net.ipv4.tcp_max_syn_backlog=65535
+net.ipv4.tcp_fin_timeout=15
+net.ipv4.tcp_keepalive_time=300
+net.ipv4.tcp_keepalive_intvl=30
+net.ipv4.tcp_keepalive_probes=5
+net.ipv4.ip_local_port_range=1024 65535
+fs.file-max=1000000
+
+# Security hardening: SYN-flood protection, anti-spoofing, no source routing/redirects.
+# rp_filter uses loose mode (2), not strict (1) — reverse tunnels legitimately see
+# asymmetric routing, and strict mode can silently drop their own traffic.
+net.ipv4.tcp_syncookies=1
+net.ipv4.conf.all.rp_filter=2
+net.ipv4.conf.default.rp_filter=2
+net.ipv4.conf.all.accept_redirects=0
+net.ipv4.conf.default.accept_redirects=0
+net.ipv4.conf.all.send_redirects=0
+net.ipv4.conf.all.accept_source_route=0
+net.ipv4.icmp_echo_ignore_broadcasts=1
 EOF
 
-    sysctl --system >/dev/null 2>&1 || sysctl -p >/dev/null 2>&1 || true
+  sysctl --system >/dev/null 2>&1 || sysctl -p "$conf" >/dev/null 2>&1 || true
 
-    echo "[+] Applied sysctl tuning." > /dev/tty
-    echo "[i] tcp_congestion_control: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" > /dev/tty
-    echo "[i] default_qdisc:         $(sysctl -n net.core.default_qdisc 2>/dev/null)" > /dev/tty
-  else
-    echo "[!] BBR is NOT available on this kernel." > /dev/tty
-    echo "[i] Available: $(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null || echo unknown)" > /dev/tty
-    echo "[i] Hint: upgrade kernel to use BBR." > /dev/tty
+  # Raise the system-wide open-file ceiling too, backing up the per-session
+  # ulimit bump every protocol's screen session already applies at start.
+  local limits_conf="/etc/security/limits.d/99-A,S-tunnel.conf"
+  cat > "$limits_conf" <<'EOF'
+* soft nofile 1048576
+* hard nofile 1048576
+root soft nofile 1048576
+root hard nofile 1048576
+EOF
+
+  echo "[+] Applied sysctl + file-descriptor hardening (performance and security)." > /dev/tty
+  echo "[i] tcp_congestion_control: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" > /dev/tty
+  echo "[i] default_qdisc:         $(sysctl -n net.core.default_qdisc 2>/dev/null)" > /dev/tty
+  echo "[i] tcp_syncookies:        $(sysctl -n net.ipv4.tcp_syncookies 2>/dev/null)" > /dev/tty
+  if [[ "$cc" != "bbr" ]]; then
+    echo "[i] Hint: upgrade the kernel to also get BBR congestion control." > /dev/tty
   fi
 }
 
@@ -439,7 +512,7 @@ edit_profile_backhaul(){
   echo "1) Server (listens; opens the control port + forwarded ports)" > /dev/tty
   echo "2) Client (dials out to the Server)" > /dev/tty
   read -r -p "This profile is: " bhr < /dev/tty
-  read -r -p "Shared token (same on both sides): " TOKEN < /dev/tty
+  TOKEN="$(prompt_token)"
   read -r -p "Transport [tcp/ws/wss] (default tcp): " TRANSPORT < /dev/tty
   TRANSPORT="${TRANSPORT:-tcp}"
   if [[ "$bhr" == "1" ]]; then
@@ -475,7 +548,7 @@ edit_profile_rathole(){
   echo "1) Server (public side, exposes the ports)" > /dev/tty
   echo "2) Client (behind NAT/filtering, forwards local services out)" > /dev/tty
   read -r -p "This profile is: " rtr < /dev/tty
-  read -r -p "Shared token (same on both sides): " TOKEN < /dev/tty
+  TOKEN="$(prompt_token)"
   read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
   if [[ "$rtr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 2333): " BIND_PORT < /dev/tty
@@ -508,7 +581,7 @@ edit_profile_frp(){
   echo "1) Server (frps, public side)" > /dev/tty
   echo "2) Client (frpc, dials out to the Server)" > /dev/tty
   read -r -p "This profile is: " fr < /dev/tty
-  read -r -p "Shared token (same on both sides): " TOKEN < /dev/tty
+  TOKEN="$(prompt_token)"
   if [[ "$fr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 7000): " BIND_PORT < /dev/tty
     cat >"$f" <<EOF
@@ -566,9 +639,15 @@ RANGE_END=$RANGE_END
 PROTO=$PROTO
 EOF
   echo "[+] Saved $f" > /dev/tty
+  if [[ "$PROTO" == "tcp" || "$PROTO" == "udp" ]]; then
+    echo -e "${CLR_DIM}[i] Plain ${PROTO} forwarding isn't encrypted between the two ends.${CLR_RESET}" > /dev/tty
+    echo -e "${CLR_DIM}    Use protocol 3 (grpc) instead if the traffic itself needs TLS, or make sure${CLR_RESET}" > /dev/tty
+    echo -e "${CLR_DIM}    whatever you're forwarding (HTTPS, SSH, etc.) is already encrypted end-to-end.${CLR_RESET}" > /dev/tty
+  fi
 }
 edit_profile_gre(){
   local prof="$1" f="$2" role="$3"
+  read -r -p "This host's public IP (local): " LOCAL_IP < /dev/tty
   read -r -p "Peer public IP (remote): " PEER_IP < /dev/tty
   local SELF_TUN_IP PEER_TUN_IP
   if [[ "$role" == "eu" ]]; then
@@ -585,6 +664,10 @@ SELF_TUN_IP=$SELF_TUN_IP
 PEER_TUN_IP=$PEER_TUN_IP
 EOF
   echo "[+] Saved $f (GRE tunnel IP: $SELF_TUN_IP <-> $PEER_TUN_IP)" > /dev/tty
+  echo -e "${CLR_YELLOW}[!] GRE carries traffic in plaintext — anyone on the path can read it.${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}    Restrict the interface to this one peer with iptables, e.g.:${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}    iptables -A INPUT -p gre ! -s ${PEER_IP} -j DROP${CLR_RESET}" > /dev/tty
+  echo -e "${CLR_DIM}    Add IPsec on top if the traffic itself needs confidentiality.${CLR_RESET}" > /dev/tty
 }
 
 # ---- Config file generators (called right before starting each backend) ----
@@ -716,7 +799,7 @@ run_backhaul_slot(){
   write_backhaul_config "$prof"
   local s; s="$(session_name "$prof")"
   screen -S "$s" -X quit >/dev/null 2>&1 || true
-  screen -dmS "$s" bash -lc "'$BIN_DIR/backhaul' -c '$CONF/${prof}.toml'"
+  screen -dmS "$s" bash -lc "${ULIMIT_PREFIX}'$BIN_DIR/backhaul' -c '$CONF/${prof}.toml'"
   echo "[+] Started: $s (backhaul)" > /dev/tty
 }
 
@@ -729,7 +812,7 @@ run_rathole_slot(){
   local s flag; s="$(session_name "$prof")"
   [[ "$RT_ROLE" == "server" ]] && flag="--server" || flag="--client"
   screen -S "$s" -X quit >/dev/null 2>&1 || true
-  screen -dmS "$s" bash -lc "'$BIN_DIR/rathole' $flag '$CONF/${prof}.toml'"
+  screen -dmS "$s" bash -lc "${ULIMIT_PREFIX}'$BIN_DIR/rathole' $flag '$CONF/${prof}.toml'"
   echo "[+] Started: $s (rathole)" > /dev/tty
 }
 
@@ -742,7 +825,7 @@ run_frp_slot(){
   local s bin; s="$(session_name "$prof")"
   [[ "$FRP_ROLE" == "server" ]] && bin="frps" || bin="frpc"
   screen -S "$s" -X quit >/dev/null 2>&1 || true
-  screen -dmS "$s" bash -lc "'$BIN_DIR/$bin' -c '$CONF/${prof}.toml'"
+  screen -dmS "$s" bash -lc "${ULIMIT_PREFIX}'$BIN_DIR/$bin' -c '$CONF/${prof}.toml'"
   echo "[+] Started: $s (frp $FRP_ROLE)" > /dev/tty
 }
 
@@ -771,7 +854,7 @@ run_gost_slot(){
   [[ -n "$args" ]] || { echo "[-] No ports to forward." > /dev/tty; return 1; }
   local s; s="$(session_name "$prof")"
   screen -S "$s" -X quit >/dev/null 2>&1 || true
-  screen -dmS "$s" bash -lc "'$BIN_DIR/gost'$args"
+  screen -dmS "$s" bash -lc "${ULIMIT_PREFIX}'$BIN_DIR/gost'$args"
   echo "[+] Started: $s (gost, ${n} port(s) -> ${DEST_IP})" > /dev/tty
 }
 
@@ -852,6 +935,7 @@ status_slot(){
 delete_slot(){
   local prof="$1" f="$CONF/${prof}.env"
   stop_slot "$prof" >/dev/null 2>&1 || true
+  clear_slot_restart_cron "$prof" >/dev/null 2>&1 || true
   rm -f "$CONF/${prof}.toml" >/dev/null 2>&1 || true
   if [[ -f "$f" ]]; then rm -f "$f"; echo "[+] Deleted: $f" > /dev/tty; else echo "[-] Not found: $f" > /dev/tty; fi
 }
@@ -1016,6 +1100,14 @@ def healthcheck():
     body = request.get_json(force=True, silent=True) or {}
     minutes = str(body.get("minutes", 1))
     data, code = run_api(["hc", "on" if body.get("enabled") else "off", minutes])
+    return jsonify(data), code
+
+
+@app.post("/api/slots/<prof>/restartcron")
+def slot_restartcron(prof):
+    body = request.get_json(force=True, silent=True) or {}
+    hours = str(body.get("hours", 6))
+    data, code = run_api(["restartcron", prof, "on" if body.get("enabled") else "off", hours])
     return jsonify(data), code
 
 
@@ -1265,6 +1357,14 @@ write_webpanel_html(){
       <button onclick="showLogs()">📜 Logs</button>
       <button class="danger" onclick="deleteSlot()">🗑 Delete</button>
     </div>
+
+    <label style="margin-top:18px">⏱ Scheduled restart <span style="color:var(--dim)">(regardless of status)</span></label>
+    <div style="display:flex; gap:10px; align-items:center; margin-top:6px">
+      <label class="switch"><input type="checkbox" id="rcToggle"><span class="slider"></span></label>
+      <input id="rcHours" type="text" placeholder="every N hours" style="margin-top:0; max-width:140px">
+      <button onclick="saveRestartCron()">💾 Save</button>
+    </div>
+
     <div id="slotMsg" style="font-size:12px; margin-top:10px; color:var(--dim)"></div>
   </div>
 </div>
@@ -1425,9 +1525,15 @@ function openSlot(role, i, existing){
   const sel = document.getElementById('methodSelect');
   sel.value = existing ? existing.method : 'asnative';
   renderFields();
+  document.getElementById('rcToggle').checked = false;
+  document.getElementById('rcHours').value = '';
   if(existing){
     api('/api/slots/'+CURRENT.prof).then(d=>{
       if(d.fields){ fillFields(d.fields); }
+      if(d.restart_hours){
+        document.getElementById('rcToggle').checked = true;
+        document.getElementById('rcHours').value = d.restart_hours;
+      }
     });
   }
   document.getElementById('slotModal').classList.remove('hidden');
@@ -1503,6 +1609,14 @@ async function deleteSlot(){
   else { toast('Delete failed', true); }
 }
 
+async function saveRestartCron(){
+  const enabled = document.getElementById('rcToggle').checked;
+  const hours = document.getElementById('rcHours').value || '6';
+  const res = await api('/api/slots/'+CURRENT.prof+'/restartcron', {method:'POST', body: JSON.stringify({enabled, hours})});
+  if(res.ok){ toast(enabled ? 'Scheduled every '+hours+'h ✔' : 'Schedule disabled ✔'); }
+  else { toast('Failed', true); document.getElementById('slotMsg').textContent = res.error || ''; }
+}
+
 async function showLogs(){
   document.getElementById('logsModal').classList.remove('hidden');
   document.getElementById('logsBox').textContent = 'Loading…';
@@ -1539,6 +1653,35 @@ gen_password(){ head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 
 gen_username(){ echo "admin_$(head -c 4 /dev/urandom | od -An -tx1 | tr -d ' \n')"; }
 gen_port(){ if have shuf; then shuf -i 20000-59999 -n1; else echo $(( (RANDOM % 40000) + 20000 )); fi; }
 hash_password(){ python3 -c "from werkzeug.security import generate_password_hash; import sys; print(generate_password_hash(sys.argv[1]))" "$1"; }
+gen_strong_token(){ head -c 32 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 32; }
+
+# An empty shared token effectively disables auth on Backhaul/Rathole/FRP —
+# never leave it blank; auto-generate a strong one instead.
+prompt_token(){
+  local t
+  read -r -p "Shared token (Enter to auto-generate a strong one): " t < /dev/tty
+  if [[ -z "$t" ]]; then
+    t="$(gen_strong_token)"
+    echo -e "${CLR_DIM}[+] Generated token: ${CLR_YELLOW}${t}${CLR_RESET}${CLR_DIM} — use the exact same value on the other side.${CLR_RESET}" > /dev/tty
+  fi
+  echo "$t"
+}
+
+# Single-quotes every value: PASSWORD_HASH looks like "pbkdf2:sha256:N$salt$hash" and
+# an unquoted '$' in the file gets re-interpreted as a variable reference the next
+# time this file is `source`d — under `set -u` that crashes with "unbound variable".
+write_webpanel_env(){
+  local panel_ip="$1" https="$2" port="$3" username="$4" phash="$5" cert="$6" key="$7"
+  cat > "$WEBPANEL_ENV" <<EOF
+PANEL_IP='${panel_ip}'
+HTTPS='${https}'
+PORT='${port}'
+USERNAME='${username}'
+PASSWORD_HASH='${phash}'
+CERT_FILE='${cert}'
+KEY_FILE='${key}'
+EOF
+}
 
 make_selfsigned_cert(){
   local ip="$1" dir="$WEBPANEL_DIR/certs"
@@ -1587,15 +1730,7 @@ install_webpanel(){
     cert_file="${pair%|*}"; key_file="${pair#*|}"
   fi
 
-  cat > "$WEBPANEL_ENV" <<EOF
-PANEL_IP=$panel_ip
-HTTPS=$https
-PORT=$port
-USERNAME=$username
-PASSWORD_HASH=$phash
-CERT_FILE=$cert_file
-KEY_FILE=$key_file
-EOF
+  write_webpanel_env "$panel_ip" "$https" "$port" "$username" "$phash" "$cert_file" "$key_file"
 
   write_webpanel_app
   write_webpanel_html
@@ -1645,15 +1780,7 @@ change_webpanel_credentials(){
   [[ -n "$u" ]] && USERNAME="$u"
   [[ -z "$p" ]] && p="$(gen_password)"
   PASSWORD_HASH="$(hash_password "$p")"
-  cat > "$WEBPANEL_ENV" <<EOF
-PANEL_IP=$PANEL_IP
-HTTPS=$HTTPS
-PORT=$PORT
-USERNAME=$USERNAME
-PASSWORD_HASH=$PASSWORD_HASH
-CERT_FILE=$CERT_FILE
-KEY_FILE=$KEY_FILE
-EOF
+  write_webpanel_env "$PANEL_IP" "$HTTPS" "$PORT" "$USERNAME" "$PASSWORD_HASH" "$CERT_FILE" "$KEY_FILE"
   systemctl restart "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   echo "" > /dev/tty
   echo -e "${CLR_GREEN}[+] Credentials updated.${CLR_RESET}" > /dev/tty
@@ -1669,15 +1796,7 @@ reset_webpanel_credentials(){
   USERNAME="$(gen_username)"
   local p; p="$(gen_password)"
   PASSWORD_HASH="$(hash_password "$p")"
-  cat > "$WEBPANEL_ENV" <<EOF
-PANEL_IP=$PANEL_IP
-HTTPS=$HTTPS
-PORT=$PORT
-USERNAME=$USERNAME
-PASSWORD_HASH=$PASSWORD_HASH
-CERT_FILE=$CERT_FILE
-KEY_FILE=$KEY_FILE
-EOF
+  write_webpanel_env "$PANEL_IP" "$HTTPS" "$PORT" "$USERNAME" "$PASSWORD_HASH" "$CERT_FILE" "$KEY_FILE"
   systemctl restart "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   echo "" > /dev/tty
   echo -e "${CLR_GREEN}[+] Credentials reset.${CLR_RESET}" > /dev/tty
@@ -1689,6 +1808,19 @@ disable_webpanel(){
   systemctl stop "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   systemctl disable "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   echo "[+] Web panel stopped and disabled (config kept)." > /dev/tty
+}
+
+uninstall_webpanel(){
+  read -r -p "This removes the web panel completely (service, files, certs, credentials). Continue? (y/n): " c < /dev/tty
+  [[ "${c,,}" == "y" ]] || { echo "Cancelled." > /dev/tty; return; }
+  systemctl stop "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
+  systemctl disable "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
+  rm -f "$WEBPANEL_SERVICE" 2>/dev/null || true
+  rm -f "/etc/systemd/system/A,S-webpanel.service" 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  rm -rf "$WEBPANEL_DIR" 2>/dev/null || true
+  rm -f "$WEBPANEL_ENV" 2>/dev/null || true
+  echo "[+] Web panel fully removed." > /dev/tty
 }
 
 show_webpanel_info(){
@@ -1716,6 +1848,7 @@ webpanel_menu(){
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Show URL & Username" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}4${CLR_RESET}) Change username/password" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}5${CLR_RESET}) Reset to random credentials" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_RED}6${CLR_RESET}) Uninstall web panel  ${CLR_DIM}(remove everything)${CLR_RESET}" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_DIM}0) Back${CLR_RESET}" > /dev/tty
     echo -e "${CLR_DIM}└───────────────────────────────────────┘${CLR_RESET}" > /dev/tty
     read -r -p "Select: " c < /dev/tty
@@ -1725,6 +1858,7 @@ webpanel_menu(){
       3) show_webpanel_info; pause ;;
       4) change_webpanel_credentials; pause ;;
       5) reset_webpanel_credentials; pause ;;
+      6) uninstall_webpanel; pause ;;
       0) return ;;
       *) echo "Invalid." > /dev/tty ;;
     esac
@@ -1760,6 +1894,8 @@ manage_slot_menu(){
   local prof="$1"
   while true; do
     local st="${CLR_RED}● OFF${CLR_RESET}"; is_running "$prof" 2>/dev/null && st="${CLR_GREEN}● ON${CLR_RESET}"
+    local rc; rc="$(get_slot_restart_hours "$prof")"
+    local rc_label="${CLR_DIM}off${CLR_RESET}"; [[ -n "$rc" ]] && rc_label="${CLR_GREEN}every ${rc}h${CLR_RESET}"
     echo "" > /dev/tty
     echo -e "${CLR_DIM}┌───────────────────────────────────────────┐${CLR_RESET}" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_YELLOW}${CLR_BOLD}${prof}${CLR_RESET}  ${CLR_DIM}[$(get_method "$prof")]${CLR_RESET}  ${st}" > /dev/tty
@@ -1770,6 +1906,7 @@ manage_slot_menu(){
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}4${CLR_RESET}) 🔁 Restart" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}5${CLR_RESET}) 📊 Status" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}6${CLR_RESET}) 📜 Logs" > /dev/tty
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}8${CLR_RESET}) ⏱  Scheduled restart  ${CLR_DIM}(${rc_label}${CLR_DIM})${CLR_RESET}" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_RED}7${CLR_RESET}) 🗑  Delete slot" > /dev/tty
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_DIM}0) ↩ Back${CLR_RESET}" > /dev/tty
     echo -e "${CLR_DIM}└───────────────────────────────────────────┘${CLR_RESET}" > /dev/tty
@@ -1782,10 +1919,37 @@ manage_slot_menu(){
       5) status_slot "$prof"; pause ;;
       6) logs_slot "$prof" ;;
       7) delete_slot "$prof"; pause ;;
+      8) schedule_restart_menu "$prof"; pause ;;
       0) return ;;
       *) echo "Invalid." > /dev/tty ;;
     esac
   done
+}
+
+schedule_restart_menu(){
+  local prof="$1" cur; cur="$(get_slot_restart_hours "$prof")"
+  echo "" > /dev/tty
+  if [[ -n "$cur" ]]; then
+    echo -e "Current: restarts automatically every ${CLR_GREEN}${cur}h${CLR_RESET}, regardless of status." > /dev/tty
+  else
+    echo -e "Current: ${CLR_DIM}no scheduled restart${CLR_RESET}" > /dev/tty
+  fi
+  echo "1) Enable / update interval" > /dev/tty
+  echo "2) Disable" > /dev/tty
+  read -r -p "Select: " c < /dev/tty
+  case "$c" in
+    1)
+      read -r -p "Restart every N hours (default 6): " h < /dev/tty
+      h="${h:-6}"
+      set_slot_restart_cron "$prof" "$h"
+      echo "[+] ${prof} will restart every ${h}h." > /dev/tty
+      ;;
+    2)
+      clear_slot_restart_cron "$prof"
+      echo "[+] Scheduled restart disabled for ${prof}." > /dev/tty
+      ;;
+    *) echo "Invalid." > /dev/tty ;;
+  esac
 }
 
 # ===================== Non-interactive API (used by the web panel) =====================
@@ -1823,7 +1987,8 @@ api_get(){
   [[ -f "$f" ]] || { echo '{"error":"not_found"}'; return 1; }
   local m; m="$(get_method "$prof")"
   local running=false; is_running "$prof" 2>/dev/null && running=true
-  printf '{%s,%s,"running":%s,"fields":{' "$(api_json_field prof "$prof")" "$(api_json_field method "$m")" "$running"
+  local rc; rc="$(get_slot_restart_hours "$prof")"
+  printf '{%s,%s,"running":%s,%s,"fields":{' "$(api_json_field prof "$prof")" "$(api_json_field method "$m")" "$running" "$(api_json_field restart_hours "$rc")"
   local first=1 line k v
   while IFS='=' read -r k v; do
     [[ -n "$k" ]] || continue
@@ -1920,6 +2085,18 @@ api_hc(){
   echo '{"ok":true}'
 }
 
+api_restartcron(){
+  local prof="$1" onoff="$2" hours="${3:-6}"
+  valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
+  [[ -f "$CONF/${prof}.env" ]] || { echo '{"error":"not_found"}'; return 1; }
+  if [[ "$onoff" == "on" ]]; then
+    set_slot_restart_cron "$prof" "$hours"
+  else
+    clear_slot_restart_cron "$prof"
+  fi
+  echo '{"ok":true}'
+}
+
 api_optimize(){ local out; out="$(optimize_server 2>&1)"; printf '{"log":%s}\n' "$(json_str "$out")"; }
 
 api_info(){
@@ -1945,6 +2122,7 @@ if [[ "${1:-}" == "--api" ]]; then
     status)   api_status "${1:-}" ;;
     logs)     api_logs "${1:-}" ;;
     hc)       api_hc "${1:-off}" "${2:-1}" ;;
+    restartcron) api_restartcron "${1:-}" "${2:-off}" "${3:-6}" ;;
     optimize) api_optimize ;;
     info)     api_info ;;
     *) echo '{"error":"unknown_command"}' ;;
