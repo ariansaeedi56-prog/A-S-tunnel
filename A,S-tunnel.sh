@@ -54,7 +54,9 @@ apt_try_install(){
 }
 
 fetch_url_to(){
-  local url="$1" out="$2"
+  local url out
+  url="$1"
+  out="$2"
   if have curl; then
     curl -fsSL "$url" -o "$out"
   else
@@ -74,7 +76,9 @@ detect_arch(){
 
 # $1 = owner/repo   $2 = regex (POSIX ERE) to match against asset filename
 gh_latest_asset_url(){
-  local repo="$1" pattern="$2"
+  local repo pattern
+  repo="$1"
+  pattern="$2"
   have jq || apt_try_install jq
   curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: A,S-tunnel" \
     "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
@@ -277,7 +281,9 @@ optimize_server(){
   # Try loading BBR module (no hard fail)
   modprobe tcp_bbr >/dev/null 2>&1 || true
 
-  local cc="cubic" qdisc="pfifo_fast"
+  local cc qdisc
+  cc="cubic"
+  qdisc="pfifo_fast"
   if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
     cc="bbr"; qdisc="fq"
     sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
@@ -357,7 +363,9 @@ uninstall_script(){
 # Info (best-effort)
 get_public_ip(){ curl -fsSL --max-time 3 https://api.ipify.org 2>/dev/null || true; }
 get_ipinfo_field(){
-  local field="$1" ip="$2"
+  local field ip
+  field="$1"
+  ip="$2"
   [[ -n "$ip" ]] || { echo ""; return 0; }
   local json
   json="$(curl -fsSL --max-time 4 "https://ipinfo.io/${ip}/json" 2>/dev/null || true)"
@@ -400,7 +408,10 @@ pick_role(){
   done
 }
 slot_status(){
-  local role="$1" i="$2" prof="${role}${i}"
+  local role i prof
+  role="$1"
+  i="$2"
+  prof="${role}${i}"
   if [[ -f "$CONF/${prof}.env" ]]; then
     local m; m="$(get_method "$prof")"
     if is_running "$prof" 2>/dev/null; then
@@ -413,7 +424,9 @@ slot_status(){
   fi
 }
 pick_slot(){
-  local role="$1" title="EU"; [[ "$role" == "iran" ]] && title="IRAN"
+  local role title
+  role="$1"
+  title="EU"; [[ "$role" == "iran" ]] && title="IRAN"
   echo "" > /dev/tty
   echo -e "${CLR_DIM}┌───────────────────────────────────────┐${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}${title} slots${CLR_RESET}  ${CLR_DIM}(● on  ● off  ○ empty)${CLR_RESET}   ${CLR_DIM}│${CLR_RESET}" > /dev/tty
@@ -430,7 +443,10 @@ pick_slot(){
 # ===================== Tunnel method selection =====================
 
 edit_profile(){
-  local prof="$1" f="$CONF/${prof}.env" role="${prof%%[0-9]*}"
+  local prof f role
+  prof="$1"
+  f="$CONF/${prof}.env"
+  role="${prof%%[0-9]*}"
   echo "" > /dev/tty
   echo -e "${CLR_DIM}┌───────────────────────────────────────────────────┐${CLR_RESET}" > /dev/tty
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_YELLOW}${CLR_BOLD}⚙  Configuring: ${prof}${CLR_RESET}" > /dev/tty
@@ -444,26 +460,29 @@ edit_profile(){
   echo -e "${CLR_DIM}└───────────────────────────────────────────────────┘${CLR_RESET}" > /dev/tty
   read -r -p "Select [1-6]: " m < /dev/tty
   case "$m" in
-    1) edit_profile_asnative "$prof" "$f" "$role" ;;
-    2) edit_profile_backhaul "$prof" "$f" "$role" ;;
-    3) edit_profile_rathole  "$prof" "$f" "$role" ;;
-    4) edit_profile_gre      "$prof" "$f" "$role" ;;
-    5) edit_profile_frp      "$prof" "$f" "$role" ;;
-    6) edit_profile_gost     "$prof" "$f" "$role" ;;
+    1) edit_profile_asnative "$prof" "$f" "$role" || true ;;
+    2) edit_profile_backhaul "$prof" "$f" "$role" || true ;;
+    3) edit_profile_rathole  "$prof" "$f" "$role" || true ;;
+    4) edit_profile_gre      "$prof" "$f" "$role" || true ;;
+    5) edit_profile_frp      "$prof" "$f" "$role" || true ;;
+    6) edit_profile_gost     "$prof" "$f" "$role" || true ;;
     *) echo "Invalid." > /dev/tty; return 1 ;;
   esac
 
   if [[ -f "$f" ]]; then
     echo "" > /dev/tty
     echo -e "${CLR_CYAN}▶ Starting tunnel...${CLR_RESET}" > /dev/tty
-    run_slot "$prof"
+    run_slot "$prof" || true
     echo "" > /dev/tty
-    status_slot "$prof"
+    status_slot "$prof" || true
   fi
 }
 
 edit_profile_asnative(){
-  local prof="$1" f="$2" role="$3"
+  local prof f role
+  prof="$1"
+  f="$2"
+  role="$3"
   if [[ "$role" == "eu" ]]; then
     read -r -p "Iran IP: " IRAN_IP < /dev/tty
     read -r -p "Bridge port (e.g. 7000): " BRIDGE < /dev/tty
@@ -508,7 +527,10 @@ EOF
 # it. Ask explicitly rather than guessing from eu/iran, since either box can
 # play either role depending on your firewall situation.
 edit_profile_backhaul(){
-  local prof="$1" f="$2" role="$3"
+  local prof f role
+  prof="$1"
+  f="$2"
+  role="$3"
   echo "1) Server (listens; opens the control port + forwarded ports)" > /dev/tty
   echo "2) Client (dials out to the Server)" > /dev/tty
   read -r -p "This profile is: " bhr < /dev/tty
@@ -544,7 +566,10 @@ EOF
 }
 
 edit_profile_rathole(){
-  local prof="$1" f="$2" role="$3"
+  local prof f role
+  prof="$1"
+  f="$2"
+  role="$3"
   echo "1) Server (public side, exposes the ports)" > /dev/tty
   echo "2) Client (behind NAT/filtering, forwards local services out)" > /dev/tty
   read -r -p "This profile is: " rtr < /dev/tty
@@ -577,7 +602,10 @@ EOF
 }
 
 edit_profile_frp(){
-  local prof="$1" f="$2" role="$3"
+  local prof f role
+  prof="$1"
+  f="$2"
+  role="$3"
   echo "1) Server (frps, public side)" > /dev/tty
   echo "2) Client (frpc, dials out to the Server)" > /dev/tty
   read -r -p "This profile is: " fr < /dev/tty
@@ -609,7 +637,10 @@ EOF
 }
 
 edit_profile_gost(){
-  local prof="$1" f="$2" role="$3"
+  local prof f role
+  prof="$1"
+  f="$2"
+  role="$3"
   read -r -p "Destination (Kharej) IP — where traffic gets forwarded to: " DEST_IP < /dev/tty
   echo "1) Manual ports (comma separated)" > /dev/tty
   echo "2) Port range" > /dev/tty
@@ -646,7 +677,10 @@ EOF
   fi
 }
 edit_profile_gre(){
-  local prof="$1" f="$2" role="$3"
+  local prof f role
+  prof="$1"
+  f="$2"
+  role="$3"
   read -r -p "This host's public IP (local): " LOCAL_IP < /dev/tty
   read -r -p "Peer public IP (remote): " PEER_IP < /dev/tty
   local SELF_TUN_IP PEER_TUN_IP
@@ -682,7 +716,10 @@ csv_ports_to_array(){
 }
 
 write_backhaul_config(){
-  local prof="$1" f="$CONF/${prof}.env" cfg="$CONF/${prof}.toml"
+  local prof f cfg
+  prof="$1"
+  f="$CONF/${prof}.env"
+  cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
   source "$f"
   if [[ "$BH_ROLE" == "server" ]]; then
@@ -710,7 +747,10 @@ EOF
 }
 
 write_rathole_config(){
-  local prof="$1" f="$CONF/${prof}.env" cfg="$CONF/${prof}.toml"
+  local prof f cfg
+  prof="$1"
+  f="$CONF/${prof}.env"
+  cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
   source "$f"
   if [[ "$RT_ROLE" == "server" ]]; then
@@ -731,7 +771,10 @@ write_rathole_config(){
 }
 
 write_frp_config(){
-  local prof="$1" f="$CONF/${prof}.env" cfg="$CONF/${prof}.toml"
+  local prof f cfg
+  prof="$1"
+  f="$CONF/${prof}.env"
+  cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
   source "$f"
   if [[ "$FRP_ROLE" == "server" ]]; then
@@ -768,14 +811,18 @@ EOF
 session_name(){ echo "A,S_$1"; }
 
 get_method(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   [[ -f "$f" ]] || { echo "asnative"; return; }
   local m; m="$(grep -m1 '^METHOD=' "$f" | cut -d= -f2-)"
   echo "${m:-asnative}"
 }
 
 run_slot_asnative(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   # shellcheck disable=SC1090
   source "$f"
   local s; s="$(session_name "$prof")"
@@ -804,7 +851,9 @@ run_backhaul_slot(){
 }
 
 run_rathole_slot(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   # shellcheck disable=SC1090
   source "$f"
   install_rathole || return 1
@@ -817,7 +866,9 @@ run_rathole_slot(){
 }
 
 run_frp_slot(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   # shellcheck disable=SC1090
   source "$f"
   install_frp || return 1
@@ -830,7 +881,9 @@ run_frp_slot(){
 }
 
 gost_port_list(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   # shellcheck disable=SC1090
   source "$f"
   if [[ "${PORT_MODE:-manual}" == "range" ]]; then
@@ -841,7 +894,9 @@ gost_port_list(){
 }
 
 run_gost_slot(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   # shellcheck disable=SC1090
   source "$f"
   install_gost || return 1
@@ -859,7 +914,9 @@ run_gost_slot(){
 }
 
 run_gre_slot(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   # shellcheck disable=SC1090
   source "$f"
   local ifname="gre${prof}"
@@ -871,12 +928,16 @@ run_gre_slot(){
   echo "[i] You can now route/NAT specific ports across this tunnel with iptables as needed." > /dev/tty
 }
 stop_gre_slot(){
-  local prof="$1" ifname="gre${prof}"
+  local prof ifname
+  prof="$1"
+  ifname="gre${prof}"
   ip link del "$ifname" >/dev/null 2>&1 || true
   echo "[+] GRE down: $ifname" > /dev/tty
 }
 status_gre_slot(){
-  local prof="$1" ifname="gre${prof}"
+  local prof ifname
+  prof="$1"
+  ifname="gre${prof}"
   if ip link show "$ifname" >/dev/null 2>&1; then
     echo -e "Profile: $prof | Method: gre | Interface: $ifname | Running: ${CLR_GREEN}ON${CLR_RESET}" > /dev/tty
   else
@@ -895,7 +956,9 @@ is_running(){
 }
 
 run_slot(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   [[ -f "$f" ]] || { echo "Profile not found: $prof" > /dev/tty; return 1; }
   local m; m="$(get_method "$prof")"
   case "$m" in
@@ -921,7 +984,9 @@ stop_slot(){
 }
 restart_slot(){ local prof="$1"; stop_slot "$prof" >/dev/null 2>&1 || true; sleep 0.5; run_slot "$prof"; }
 status_slot(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   [[ -f "$f" ]] || { echo "Profile not found: $prof" > /dev/tty; return 1; }
   local m; m="$(get_method "$prof")"
   if [[ "$m" == "gre" ]]; then
@@ -933,7 +998,9 @@ status_slot(){
   fi
 }
 delete_slot(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   stop_slot "$prof" >/dev/null 2>&1 || true
   clear_slot_restart_cron "$prof" >/dev/null 2>&1 || true
   rm -f "$CONF/${prof}.toml" >/dev/null 2>&1 || true
@@ -1671,7 +1738,14 @@ prompt_token(){
 # an unquoted '$' in the file gets re-interpreted as a variable reference the next
 # time this file is `source`d — under `set -u` that crashes with "unbound variable".
 write_webpanel_env(){
-  local panel_ip="$1" https="$2" port="$3" username="$4" phash="$5" cert="$6" key="$7"
+  local panel_ip https port username phash cert key
+  panel_ip="$1"
+  https="$2"
+  port="$3"
+  username="$4"
+  phash="$5"
+  cert="$6"
+  key="$7"
   cat > "$WEBPANEL_ENV" <<EOF
 PANEL_IP='${panel_ip}'
 HTTPS='${https}'
@@ -1684,7 +1758,9 @@ EOF
 }
 
 make_selfsigned_cert(){
-  local ip="$1" dir="$WEBPANEL_DIR/certs"
+  local ip dir
+  ip="$1"
+  dir="$WEBPANEL_DIR/certs"
   mkdir -p "$dir"
   have openssl || apt_try_install openssl
   openssl req -x509 -newkey rsa:2048 -keyout "$dir/key.pem" -out "$dir/cert.pem" \
@@ -1706,7 +1782,14 @@ install_webpanel(){
 
   mkdir -p "$WEBPANEL_DIR"
 
-  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
+  local PANEL_IP HTTPS PORT USERNAME PASSWORD_HASH CERT_FILE KEY_FILE
+  PANEL_IP=""
+  HTTPS=""
+  PORT=""
+  USERNAME=""
+  PASSWORD_HASH=""
+  CERT_FILE=""
+  KEY_FILE=""
   if [[ -f "$WEBPANEL_ENV" ]]; then
     # shellcheck disable=SC1090
     source "$WEBPANEL_ENV"
@@ -1724,7 +1807,9 @@ install_webpanel(){
   local password; password="$(gen_password)"
   local phash; phash="$(hash_password "$password")"
 
-  local cert_file="" key_file=""
+  local cert_file key_file
+  cert_file=""
+  key_file=""
   if [[ "$https" == "true" ]]; then
     local pair; pair="$(make_selfsigned_cert "$panel_ip")"
     cert_file="${pair%|*}"; key_file="${pair#*|}"
@@ -1772,7 +1857,14 @@ EOF
 
 change_webpanel_credentials(){
   if [[ ! -f "$WEBPANEL_ENV" ]]; then echo "[-] Web panel not installed yet." > /dev/tty; return; fi
-  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
+  local PANEL_IP HTTPS PORT USERNAME PASSWORD_HASH CERT_FILE KEY_FILE
+  PANEL_IP=""
+  HTTPS=""
+  PORT=""
+  USERNAME=""
+  PASSWORD_HASH=""
+  CERT_FILE=""
+  KEY_FILE=""
   # shellcheck disable=SC1090
   source "$WEBPANEL_ENV"
   read -r -p "New username (Enter to keep '${USERNAME}'): " u < /dev/tty
@@ -1790,7 +1882,14 @@ change_webpanel_credentials(){
 
 reset_webpanel_credentials(){
   if [[ ! -f "$WEBPANEL_ENV" ]]; then echo "[-] Web panel not installed yet." > /dev/tty; return; fi
-  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
+  local PANEL_IP HTTPS PORT USERNAME PASSWORD_HASH CERT_FILE KEY_FILE
+  PANEL_IP=""
+  HTTPS=""
+  PORT=""
+  USERNAME=""
+  PASSWORD_HASH=""
+  CERT_FILE=""
+  KEY_FILE=""
   # shellcheck disable=SC1090
   source "$WEBPANEL_ENV"
   USERNAME="$(gen_username)"
@@ -1825,7 +1924,14 @@ uninstall_webpanel(){
 
 show_webpanel_info(){
   if [[ ! -f "$WEBPANEL_ENV" ]]; then echo "[-] Web panel not installed yet." > /dev/tty; return; fi
-  local PANEL_IP="" HTTPS="" PORT="" USERNAME="" PASSWORD_HASH="" CERT_FILE="" KEY_FILE=""
+  local PANEL_IP HTTPS PORT USERNAME PASSWORD_HASH CERT_FILE KEY_FILE
+  PANEL_IP=""
+  HTTPS=""
+  PORT=""
+  USERNAME=""
+  PASSWORD_HASH=""
+  CERT_FILE=""
+  KEY_FILE=""
   # shellcheck disable=SC1090
   source "$WEBPANEL_ENV"
   local active="inactive"
@@ -1853,12 +1959,12 @@ webpanel_menu(){
     echo -e "${CLR_DIM}└───────────────────────────────────────┘${CLR_RESET}" > /dev/tty
     read -r -p "Select: " c < /dev/tty
     case "$c" in
-      1) install_webpanel; pause ;;
-      2) disable_webpanel; pause ;;
-      3) show_webpanel_info; pause ;;
-      4) change_webpanel_credentials; pause ;;
-      5) reset_webpanel_credentials; pause ;;
-      6) uninstall_webpanel; pause ;;
+      1) install_webpanel || true; pause ;;
+      2) disable_webpanel || true; pause ;;
+      3) show_webpanel_info || true; pause ;;
+      4) change_webpanel_credentials || true; pause ;;
+      5) reset_webpanel_credentials || true; pause ;;
+      6) uninstall_webpanel || true; pause ;;
       0) return ;;
       *) echo "Invalid." > /dev/tty ;;
     esac
@@ -1913,13 +2019,13 @@ manage_slot_menu(){
     read -r -p "Select: " c < /dev/tty
     case "$c" in
       1) cat "$CONF/${prof}.env" 2>/dev/null > /dev/tty || echo "Profile not found." > /dev/tty; pause ;;
-      2) run_slot "$prof"; pause ;;
-      3) stop_slot "$prof"; pause ;;
-      4) restart_slot "$prof"; pause ;;
-      5) status_slot "$prof"; pause ;;
-      6) logs_slot "$prof" ;;
-      7) delete_slot "$prof"; pause ;;
-      8) schedule_restart_menu "$prof"; pause ;;
+      2) run_slot "$prof" || true; pause ;;
+      3) stop_slot "$prof" || true; pause ;;
+      4) restart_slot "$prof" || true; pause ;;
+      5) status_slot "$prof" || true; pause ;;
+      6) logs_slot "$prof" || true ;;
+      7) delete_slot "$prof" || true; pause ;;
+      8) schedule_restart_menu "$prof" || true; pause ;;
       0) return ;;
       *) echo "Invalid." > /dev/tty ;;
     esac
@@ -1941,11 +2047,11 @@ schedule_restart_menu(){
     1)
       read -r -p "Restart every N hours (default 6): " h < /dev/tty
       h="${h:-6}"
-      set_slot_restart_cron "$prof" "$h"
+      set_slot_restart_cron "$prof" "$h" || true
       echo "[+] ${prof} will restart every ${h}h." > /dev/tty
       ;;
     2)
-      clear_slot_restart_cron "$prof"
+      clear_slot_restart_cron "$prof" || true
       echo "[+] Scheduled restart disabled for ${prof}." > /dev/tty
       ;;
     *) echo "Invalid." > /dev/tty ;;
@@ -1982,7 +2088,9 @@ api_list(){
 }
 
 api_get(){
-  local prof="$1" f="$CONF/${prof}.env"
+  local prof f
+  prof="$1"
+  f="$CONF/${prof}.env"
   valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
   [[ -f "$f" ]] || { echo '{"error":"not_found"}'; return 1; }
   local m; m="$(get_method "$prof")"
@@ -2001,7 +2109,10 @@ api_get(){
 }
 
 api_save(){
-  local prof="$1" f="$CONF/${prof}.env" role="${prof%%[0-9]*}"
+  local prof f role
+  prof="$1"
+  f="$CONF/${prof}.env"
+  role="${prof%%[0-9]*}"
   valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
   local body; body="$(cat)"
   local method; method="$(printf '%s' "$body" | jq -r '.method // empty' 2>/dev/null)"
@@ -2034,15 +2145,19 @@ api_save(){
     else printf 'SELF_TUN_IP=10.10.10.2\nPEER_TUN_IP=10.10.10.1\n' >> "$f"; fi
   fi
 
-  local log; log="$(run_slot "$prof" 2>&1)"; local ok=$?
+  local log ok
+  log="$(run_slot "$prof" 2>&1)" && ok=0 || ok=$?
   if [[ $ok -eq 0 ]]; then echo '{"ok":true}'; else printf '{"ok":false,"log":%s}\n' "$(json_str "$log")"; fi
 }
 
 api_simple(){
-  local action="$1" prof="$2"
+  local action prof
+  action="$1"
+  prof="$2"
   valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
   [[ -f "$CONF/${prof}.env" ]] || { echo '{"error":"not_found"}'; return 1; }
-  local log; log="$("${action}_slot" "$prof" 2>&1)"; local ok=$?
+  local log ok
+  log="$("${action}_slot" "$prof" 2>&1)" && ok=0 || ok=$?
   if [[ $ok -eq 0 ]]; then echo '{"ok":true}'; else printf '{"ok":false,"log":%s}\n' "$(json_str "$log")"; fi
 }
 
@@ -2086,7 +2201,10 @@ api_hc(){
 }
 
 api_restartcron(){
-  local prof="$1" onoff="$2" hours="${3:-6}"
+  local prof onoff hours
+  prof="$1"
+  onoff="$2"
+  hours="${3:-6}"
   valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
   [[ -f "$CONF/${prof}.env" ]] || { echo '{"error":"not_found"}'; return 1; }
   if [[ "$onoff" == "on" ]]; then
@@ -2167,15 +2285,15 @@ while true; do
 
   read -r -p "Select: " c < /dev/tty
   case "$c" in
-    1) role="$(pick_role)"; prof="$(pick_slot "$role")"; edit_profile "$prof"; pause ;;
-    2) role="$(pick_role)"; prof="$(pick_slot "$role")"; manage_slot_menu "$prof" ;;
-    3) enable_cron_healthcheck; pause ;;
-    4) disable_cron_healthcheck; pause ;;
-    5) install_script; pause ;;
-    6) update_script; pause ;;
-    7) uninstall_script; pause ;;
-    8) optimize_server; pause ;;
-    9) webpanel_menu ;;
+    1) role="$(pick_role)"; prof="$(pick_slot "$role")"; edit_profile "$prof" || true; pause ;;
+    2) role="$(pick_role)"; prof="$(pick_slot "$role")"; manage_slot_menu "$prof" || true ;;
+    3) enable_cron_healthcheck || true; pause ;;
+    4) disable_cron_healthcheck || true; pause ;;
+    5) install_script || true; pause ;;
+    6) update_script || true; pause ;;
+    7) uninstall_script || true; pause ;;
+    8) optimize_server || true; pause ;;
+    9) webpanel_menu || true ;;
     0) exit 0 ;;
     *) echo "Invalid."; sleep 1 ;;
   esac
