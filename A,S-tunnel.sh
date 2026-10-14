@@ -36,7 +36,6 @@ LOG_DIR="/var/log/A,S"
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
 PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC"
-MAX=10
 
 HC_SCRIPT="/usr/local/bin/A,S-health-check"
 HC_CRON_TAG="# A,STunnelHealthCheck"
@@ -406,53 +405,66 @@ get_datacenter_string(){
   [[ -n "$org" ]] && echo "$org" || echo "Unknown"
 }
 
-# Profiles
-pick_role(){
+# Profiles — each tunnel is identified by a name the user picks (like the
+# Paqet/Backhaul manager scripts), not a fixed numbered slot.
+
+clean_profile_name(){
+  local n
+  n="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+  n="${n:0:32}"
+  echo "${n:-tunnel}"
+}
+
+list_profiles(){
+  local f
+  shopt -s nullglob
+  for f in "$CONF"/*.env; do basename "$f" .env; done | sort
+  shopt -u nullglob
+}
+
+get_role(){
+  local f r
+  f="$CONF/$1.env"
+  [[ -f "$f" ]] || { echo "iran"; return; }
+  r="$(grep -m1 '^ROLE=' "$f" | cut -d= -f2- || true)"
+  echo "${r:-iran}"
+}
+
+# Internal value stays eu/iran (eu = abroad/kharej side) so every existing
+# ROLE check keeps working; only the wording shown to the user changes.
+pick_side(){
+  local x
   while true; do
     echo "" > "$TTY_OUT"
-    echo -e "${CLR_DIM}┌───────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}Which side is this?${CLR_RESET}     ${CLR_DIM}│${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}├───────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) 🌍  EU (foreign)         ${CLR_DIM}│${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) 🇮🇷  IRAN                ${CLR_DIM}│${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}└───────────────────────────┘${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}┌─────────────────────────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}Server or Client?${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}├─────────────────────────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) 🌍 Server  ${CLR_DIM}(Abroad / Kharej)${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) 🇮🇷 Client  ${CLR_DIM}(Iran)${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}└─────────────────────────────────────────────┘${CLR_RESET}" > "$TTY_OUT"
     read -r -p "Select: " x < /dev/tty
     if [[ "$x" == "1" ]]; then echo "eu"; return 0; fi
     if [[ "$x" == "2" ]]; then echo "iran"; return 0; fi
     echo -e "${CLR_RED}Invalid.${CLR_RESET}" > "$TTY_OUT"
   done
 }
-slot_status(){
-  local role i prof
-  role="$1"
-  i="$2"
-  prof="${role}${i}"
-  if [[ -f "$CONF/${prof}.env" ]]; then
-    local m; m="$(get_method "$prof")"
-    if is_running "$prof" 2>/dev/null; then
-      echo -e "${CLR_GREEN}●${CLR_RESET} ${CLR_DIM}[$m]${CLR_RESET}"
-    else
-      echo -e "${CLR_RED}●${CLR_RESET} ${CLR_DIM}[$m]${CLR_RESET}"
-    fi
-  else
-    echo -e "${CLR_DIM}○ empty${CLR_RESET}"
-  fi
+
+role_badge(){
+  if [[ "$1" == "eu" ]]; then echo "🌍 Server (Abroad)"; else echo "🇮🇷 Client (Iran)"; fi
 }
-pick_slot(){
-  local role title
-  role="$1"
-  title="EU"; [[ "$role" == "iran" ]] && title="IRAN"
-  echo "" > "$TTY_OUT"
-  echo -e "${CLR_DIM}┌───────────────────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}${title} slots${CLR_RESET}  ${CLR_DIM}(● on  ● off  ○ empty)${CLR_RESET}   ${CLR_DIM}│${CLR_RESET}" > "$TTY_OUT"
-  echo -e "${CLR_DIM}├───────────────────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
-  for i in $(seq 1 "$MAX"); do
-    printf "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}%2s${CLR_RESET}) %-6s  %b\n" "$i" "${role}${i}" "$(slot_status "$role" "$i")" > "$TTY_OUT"
+
+prompt_tunnel_name(){
+  local raw name ow
+  while true; do
+    read -r -p "Tunnel name (e.g. server1, myclient): " raw < /dev/tty
+    name="$(clean_profile_name "$raw")"
+    if [[ -f "$CONF/${name}.env" ]]; then
+      read -r -p "A tunnel named '${name}' already exists. Overwrite? (y/n): " ow < /dev/tty
+      [[ "${ow,,}" == "y" ]] || continue
+    fi
+    echo "$name"
+    return 0
   done
-  echo -e "${CLR_DIM}└───────────────────────────────────────┘${CLR_RESET}" > "$TTY_OUT"
-  read -r -p "Slot number: " slot < /dev/tty
-  [[ "$slot" =~ ^[0-9]+$ ]] && [[ "$slot" -ge 1 ]] && [[ "$slot" -le "$MAX" ]] || { echo "Invalid"; exit 1; }
-  echo "${role}${slot}"
 }
 
 # ===================== Tunnel method selection =====================
@@ -461,7 +473,7 @@ edit_profile(){
   local prof f role
   prof="$1"
   f="$CONF/${prof}.env"
-  role="${prof%%[0-9]*}"
+  role="$(pick_side)"
   echo "" > "$TTY_OUT"
   echo -e "${CLR_DIM}┌───────────────────────────────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_YELLOW}${CLR_BOLD}⚙  Configuring: ${prof}${CLR_RESET}" > "$TTY_OUT"
@@ -548,9 +560,8 @@ edit_profile_backhaul(){
   prof="$1"
   f="$2"
   role="$3"
-  echo "1) Server (listens; opens the control port + forwarded ports)" > "$TTY_OUT"
-  echo "2) Client (dials out to the Server)" > "$TTY_OUT"
-  read -r -p "This profile is: " bhr < /dev/tty
+  bhr="1"; [[ "$role" == "iran" ]] && bhr="2"
+  echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$bhr")"
   read -r -p "Transport [tcp/ws/wss] (default tcp): " TRANSPORT < /dev/tty
   TRANSPORT="${TRANSPORT:-tcp}"
@@ -587,9 +598,8 @@ edit_profile_rathole(){
   prof="$1"
   f="$2"
   role="$3"
-  echo "1) Server (public side, exposes the ports)" > "$TTY_OUT"
-  echo "2) Client (behind NAT/filtering, forwards local services out)" > "$TTY_OUT"
-  read -r -p "This profile is: " rtr < /dev/tty
+  rtr="1"; [[ "$role" == "iran" ]] && rtr="2"
+  echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$rtr")"
   read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
   if [[ "$rtr" == "1" ]]; then
@@ -623,9 +633,8 @@ edit_profile_frp(){
   prof="$1"
   f="$2"
   role="$3"
-  echo "1) Server (frps, public side)" > "$TTY_OUT"
-  echo "2) Client (frpc, dials out to the Server)" > "$TTY_OUT"
-  read -r -p "This profile is: " fr < /dev/tty
+  fr="1"; [[ "$role" == "iran" ]] && fr="2"
+  echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$fr")"
   if [[ "$fr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 7000): " BIND_PORT < /dev/tty
@@ -669,9 +678,8 @@ edit_profile_paqet(){
   local prof f role pqr port key custom mode conn mtu block mac
   local traffic fports uports sport suser spass sip
   prof="$1"; f="$2"; role="$3"
-  echo "1) Server  (abroad / EU — waits for the client)" > "$TTY_OUT"
-  echo "2) Client  (Iran — dials the server and exposes forwarded ports or SOCKS5)" > "$TTY_OUT"
-  read -r -p "This profile is: " pqr < /dev/tty
+  pqr="1"; [[ "$role" == "iran" ]] && pqr="2"
+  echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   read -r -p "Tunnel port (default 8888): " port < /dev/tty
   port="${port:-8888}"
   key="$(prompt_token "$pqr")"
@@ -1818,17 +1826,8 @@ write_webpanel_html(){
   </section>
 
   <section>
-    <div class="sec-head"><h2>🎛 Tunnels</h2><span class="sub" style="font-size:11px; color:var(--dim)">click a slot to configure</span></div>
-    <div class="cols">
-      <div class="col">
-        <div class="sec-head"><h2>🌍 EU</h2></div>
-        <div class="col-box glass" id="euList"></div>
-      </div>
-      <div class="col">
-        <div class="sec-head"><h2>🇮🇷 IRAN</h2></div>
-        <div class="col-box glass" id="iranList"></div>
-      </div>
-    </div>
+    <div class="sec-head"><h2>🎛 Tunnels</h2><button class="primary" onclick="openNew()">➕ Add tunnel</button></div>
+    <div class="col-box glass" id="tunnelList"></div>
   </section>
 
   <div class="footer-note">
@@ -1841,7 +1840,7 @@ write_webpanel_html(){
 <div id="slotModal" class="modal-bg hidden">
   <div class="modal glass" style="position:relative">
     <span class="close" onclick="closeModal('slotModal')">✕</span>
-    <h3 id="modalTitle">Slot</h3>
+    <h3 id="modalTitle">Tunnel</h3>
     <div class="sub" id="modalSub" style="color:var(--dim); font-size:12px"></div>
 
     <div class="tabs">
@@ -1850,6 +1849,14 @@ write_webpanel_html(){
     </div>
 
     <div id="paneConfig">
+      <div class="field-grid">
+        <div><label>Tunnel name</label><input id="nameInput" type="text" placeholder="e.g. server1" maxlength="32"></div>
+        <div><label>Server or Client?</label>
+          <select id="roleSelect" onchange="renderFields()">
+            <option value="eu">🌍 Server (Abroad)</option>
+            <option value="iran">🇮🇷 Client (Iran)</option>
+          </select></div>
+      </div>
       <label>Protocol</label>
       <select id="methodSelect" onchange="renderFields()">
         <option value="asnative">A,S Native</option>
@@ -2032,44 +2039,58 @@ async function loadSlots(){
   const data = await api('/api/slots');
   if(!Array.isArray(data)) return;
   SLOTS = data;
-  renderList('eu'); renderList('iran');
+  renderList();
   document.getElementById('stActive').textContent = SLOTS.filter(s=>s.running).length + ' / ' + SLOTS.length;
 }
 
-function slotFor(role,i){ return SLOTS.find(s=>s.role===role && s.slot===i); }
+const ROLE_KEYS = ['BH_ROLE','RT_ROLE','FRP_ROLE','PQ_ROLE'];
+const ROLE_KEY_OF = {backhaul:'BH_ROLE', rathole:'RT_ROLE', frp:'FRP_ROLE', paqet:'PQ_ROLE'};
+const BADGE = {eu:'🌍 Server (Abroad)', iran:'🇮🇷 Client (Iran)'};
 
-function renderList(role){
-  const box = document.getElementById(role+'List');
+function cleanName(v){ return (v||'').toLowerCase().replace(/[^a-z0-9_-]/g,'').slice(0,32); }
+
+function renderList(){
+  const box = document.getElementById('tunnelList');
   box.innerHTML = '';
-  for(let i=1;i<=10;i++){
-    const s = slotFor(role,i);
+  if(!SLOTS.length){
+    box.innerHTML = '<div style="color:var(--dim); font-size:13px; padding:8px">No tunnels yet — click “Add tunnel”.</div>';
+    return;
+  }
+  SLOTS.forEach(s=>{
     const div = document.createElement('div');
-    div.className = 'slot' + (s && s.running ? ' is-on' : '');
-    const dotClass = !s ? 'empty' : (s.running ? 'on' : 'off');
+    div.className = 'slot' + (s.running ? ' is-on' : '');
     div.innerHTML = `
       <div>
-        <div class="name">${role}${i}</div>
-        <div class="meta">${s ? s.method : 'empty'}</div>
+        <div class="name"></div>
+        <div class="meta"></div>
       </div>
-      <span class="dot ${dotClass}"></span>`;
-    div.onclick = ()=>openSlot(role, i, s);
+      <span class="dot ${s.running ? 'on' : 'off'}"></span>`;
+    div.querySelector('.name').textContent = s.prof;
+    div.querySelector('.meta').textContent = s.method + ' · ' + (BADGE[s.role] || s.role);
+    div.onclick = ()=>openSlot(s);
     box.appendChild(div);
-  }
+  });
 }
 
-function openSlot(role, i, existing){
-  CURRENT = {prof: role+i, role, i};
-  document.getElementById('modalTitle').textContent = CURRENT.prof;
+function openNew(){ openSlot(null); }
+
+function openSlot(existing){
+  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing};
+  document.getElementById('modalTitle').textContent = existing ? existing.prof : 'New tunnel';
   paintStatus(existing ? !!existing.running : false, !!existing);
   setMsg('', '');
   switchTab('config');
-  const sel = document.getElementById('methodSelect');
-  sel.value = existing ? existing.method : 'asnative';
+  const nameEl = document.getElementById('nameInput');
+  nameEl.value = existing ? existing.prof : '';
+  nameEl.disabled = !!existing;
+  document.getElementById('roleSelect').value = existing ? existing.role : 'eu';
+  document.getElementById('methodSelect').value = existing ? existing.method : 'asnative';
   renderFields();
   document.getElementById('rcToggle').checked = false;
   document.getElementById('rcHours').value = '';
   if(existing){
     api('/api/slots/'+CURRENT.prof).then(d=>{
+      if(d.role){ document.getElementById('roleSelect').value = d.role; renderFields(); }
       if(d.fields){ fillFields(d.fields); }
       if(d.restart_hours){
         document.getElementById('rcToggle').checked = true;
@@ -2082,8 +2103,9 @@ function openSlot(role, i, existing){
 
 function fieldDefsFor(){
   const m = document.getElementById('methodSelect').value;
-  if(m === 'asnative') return FIELD_DEFS['asnative_' + CURRENT.role];
-  return FIELD_DEFS[m];
+  const role = document.getElementById('roleSelect').value;
+  const defs = (m === 'asnative') ? FIELD_DEFS['asnative_' + role] : FIELD_DEFS[m];
+  return defs.filter(f=>!ROLE_KEYS.includes(f.k));
 }
 
 function renderFields(){
@@ -2119,6 +2141,8 @@ function collectFields(){
     const el = document.getElementById('f_'+f.k);
     if(el && el.value !== '') out[f.k] = el.value;
   });
+  const rk = ROLE_KEY_OF[document.getElementById('methodSelect').value];
+  if(rk) out[rk] = document.getElementById('roleSelect').value === 'eu' ? 'server' : 'client';
   return out;
 }
 
@@ -2135,7 +2159,7 @@ function setBusy(on, label){
 }
 function paintStatus(running, known){
   const el = document.getElementById('modalSub');
-  el.textContent = known === false ? 'new slot' : (running ? '🟢 running' : '🔴 stopped');
+  el.textContent = known === false ? 'new tunnel' : (running ? '🟢 running' : '🔴 stopped');
 }
 async function refreshSlotState(){
   await loadSlots();
@@ -2146,11 +2170,21 @@ async function refreshSlotState(){
 
 async function saveSlot(){
   const method = document.getElementById('methodSelect').value;
+  const role = document.getElementById('roleSelect').value;
   const fields = collectFields();
+  if(CURRENT.isNew){
+    const nm = cleanName(document.getElementById('nameInput').value);
+    if(!nm){ setMsg('✖ Enter a tunnel name (letters, digits, - or _).', 'err'); return; }
+    if(SLOTS.some(x=>x.prof===nm) && !confirm('A tunnel named "'+nm+'" already exists. Overwrite it?')) return;
+    CURRENT.prof = nm; CURRENT.isNew = false;
+    document.getElementById('nameInput').value = nm;
+    document.getElementById('nameInput').disabled = true;
+    document.getElementById('modalTitle').textContent = nm;
+  }
   setBusy(true, 'Saving & applying…');
   setMsg('Saving and starting the tunnel…', '');
   try{
-    const res = await api('/api/slots/'+CURRENT.prof, {method:'POST', body: JSON.stringify({method, fields})});
+    const res = await api('/api/slots/'+CURRENT.prof, {method:'POST', body: JSON.stringify({method, role, fields})});
     await refreshSlotState();
     const t = new Date().toLocaleTimeString();
     if(res.ok){
@@ -2542,6 +2576,40 @@ print_banner(){
   echo -e "${CLR_DIM}============================================================${CLR_RESET}"
 }
 
+manage_tunnels_menu(){
+  local profiles n i p st role
+  while true; do
+    profiles=()
+    while IFS= read -r n; do [[ -n "$n" ]] && profiles+=("$n"); done < <(list_profiles)
+    if [[ ${#profiles[@]} -eq 0 ]]; then
+      echo -e "${CLR_DIM}No tunnels yet — use “Add new tunnel” first.${CLR_RESET}" > "$TTY_OUT"
+      pause
+      return 0
+    fi
+    echo "" > "$TTY_OUT"
+    echo -e "${CLR_DIM}┌───────────────────────────────────────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}Your tunnels${CLR_RESET}  ${CLR_DIM}(● on  ● off)${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}├───────────────────────────────────────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
+    i=1
+    for p in "${profiles[@]}"; do
+      st="${CLR_RED}●${CLR_RESET}"; if is_running "$p" 2>/dev/null; then st="${CLR_GREEN}●${CLR_RESET}"; fi
+      role="$(role_badge "$(get_role "$p")")"
+      printf "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}%2s${CLR_RESET}) %b %-20s ${CLR_DIM}[%s]${CLR_RESET}  %s\n" \
+        "$i" "$st" "$p" "$(get_method "$p")" "$role" > "$TTY_OUT"
+      i=$((i+1))
+    done
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_DIM}0) ↩ Back${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}└───────────────────────────────────────────────────────────┘${CLR_RESET}" > "$TTY_OUT"
+    read -r -p "Select tunnel: " n < /dev/tty
+    [[ "$n" == "0" ]] && return 0
+    if [[ "$n" =~ ^[0-9]+$ ]] && [[ "$n" -ge 1 ]] && [[ "$n" -le "${#profiles[@]}" ]]; then
+      manage_slot_menu "${profiles[$((n-1))]}" || true
+    else
+      echo "Invalid." > "$TTY_OUT"
+    fi
+  done
+}
+
 manage_slot_menu(){
   local prof="$1"
   while true; do
@@ -2550,7 +2618,7 @@ manage_slot_menu(){
     local rc_label="${CLR_DIM}off${CLR_RESET}"; [[ -n "$rc" ]] && rc_label="${CLR_GREEN}every ${rc}h${CLR_RESET}"
     echo "" > "$TTY_OUT"
     echo -e "${CLR_DIM}┌───────────────────────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_YELLOW}${CLR_BOLD}${prof}${CLR_RESET}  ${CLR_DIM}[$(get_method "$prof")]${CLR_RESET}  ${st}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_YELLOW}${CLR_BOLD}${prof}${CLR_RESET}  ${CLR_DIM}[$(get_method "$prof")]${CLR_RESET}  $(role_badge "$(get_role "$prof")")  ${st}" > "$TTY_OUT"
     echo -e "${CLR_DIM}├───────────────────────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) 📄 Show profile" > "$TTY_OUT"
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) ▶️  Start" > "$TTY_OUT"
@@ -2560,7 +2628,7 @@ manage_slot_menu(){
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}6${CLR_RESET}) 📜 Live log  ${CLR_DIM}(Ctrl+C to exit)${CLR_RESET}" > "$TTY_OUT"
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}8${CLR_RESET}) ⏱  Scheduled restart  ${CLR_DIM}(${rc_label}${CLR_DIM})${CLR_RESET}" > "$TTY_OUT"
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}9${CLR_RESET}) ✏️  Change config" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_RED}7${CLR_RESET}) 🗑  Delete slot" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_RED}7${CLR_RESET}) 🗑  Delete tunnel" > "$TTY_OUT"
     echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_DIM}0) ↩ Back${CLR_RESET}" > "$TTY_OUT"
     echo -e "${CLR_DIM}└───────────────────────────────────────────┘${CLR_RESET}" > "$TTY_OUT"
     read -r -p "Select: " c < /dev/tty
@@ -2614,24 +2682,20 @@ schedule_restart_menu(){
 
 json_str(){ printf '%s' "$1" | jq -Rs .; }
 api_json_field(){ printf '"%s":%s' "$1" "$(json_str "$2")"; }
-valid_prof(){ [[ "$1" =~ ^(eu|iran)([1-9]|10)$ ]]; }
+valid_prof(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; }
 
 api_list(){
   echo "["
-  local first=1 role i prof f m running
-  for role in eu iran; do
-    for i in $(seq 1 "$MAX"); do
-      prof="${role}${i}"; f="$CONF/${prof}.env"
-      [[ -f "$f" ]] || continue
-      m="$(get_method "$prof")"
-      running=false; is_running "$prof" 2>/dev/null && running=true
-      [[ $first -eq 1 ]] || echo ","
-      first=0
-      printf '{%s,%s,%s,"running":%s,"slot":%s}' \
-        "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
-        "$(api_json_field method "$m")" "$running" "$i"
-    done
-  done
+  local first=1 prof m running role
+  while IFS= read -r prof; do
+    [[ -n "$prof" ]] || continue
+    m="$(get_method "$prof")"; role="$(get_role "$prof")"
+    running=false; if is_running "$prof" 2>/dev/null; then running=true; fi
+    [[ $first -eq 1 ]] || echo ","
+    first=0
+    printf '{%s,%s,%s,"running":%s}' "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
+      "$(api_json_field method "$m")" "$running"
+  done < <(list_profiles)
   echo ""; echo "]"
 }
 
@@ -2644,7 +2708,7 @@ api_get(){
   m="$(get_method "$prof")"
   running=false; if is_running "$prof" 2>/dev/null; then running=true; fi
   rc="$(get_slot_restart_hours "$prof")"
-  printf '{%s,%s,"running":%s,%s,"fields":{' "$(api_json_field prof "$prof")" "$(api_json_field method "$m")" "$running" "$(api_json_field restart_hours "$rc")"
+  printf '{%s,%s,%s,"running":%s,%s,"fields":{' "$(api_json_field prof "$prof")" "$(api_json_field method "$m")" "$(api_json_field role "$(get_role "$prof")")" "$running" "$(api_json_field restart_hours "$rc")"
   first=1
   while IFS='=' read -r k _; do
     [[ -n "$k" ]] || continue
@@ -2663,11 +2727,12 @@ api_save(){
   local prof f role
   prof="$1"
   f="$CONF/${prof}.env"
-  role="${prof%%[0-9]*}"
   valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
   local body; body="$(cat)"
   local method; method="$(printf '%s' "$body" | jq -r '.method // empty' 2>/dev/null)"
   [[ -n "$method" ]] || { echo '{"error":"missing_method"}'; return 1; }
+  role="$(printf '%s' "$body" | jq -r '.role // empty' 2>/dev/null)"
+  [[ "$role" == "eu" || "$role" == "iran" ]] || role="iran"
 
   local allowed=""
   case "$method" in
@@ -2819,43 +2884,54 @@ fi
 
 # Internal entry point used by the cron health-check (see install_healthcheck_script).
 if [[ "${1:-}" == "--healthcheck" ]]; then
-  for role in eu iran; do
-    for i in $(seq 1 "$MAX"); do
-      prof="${role}${i}"
-      [[ -f "$CONF/${prof}.env" ]] || continue
-      is_running "$prof" || run_slot "$prof" >/dev/null 2>&1 || true
-    done
-  done
+  while IFS= read -r prof; do
+    [[ -n "$prof" ]] || continue
+    is_running "$prof" || run_slot "$prof" >/dev/null 2>&1 || true
+  done < <(list_profiles)
   exit 0
+fi
+
+# One command is enough: first run installs itself system-wide, then goes
+# straight into the menu (no separate "sudo A,S-tunnel" step needed).
+if ! is_installed; then
+  install_script >/dev/null 2>&1 || true
 fi
 
 while true; do
   clear || true
   print_banner
 
-  echo -e "${CLR_DIM}┌────────────────────────────────────────────────────┐${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}TUNNELS${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}1${CLR_RESET}) 🛠  Create/Update profile"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}2${CLR_RESET}) 🎛  Manage tunnel  ${CLR_DIM}(start/stop/status/logs)${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}RELIABILITY${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}3${CLR_RESET}) ✅ Enable cron health-check"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}4${CLR_RESET}) ❌ Disable cron health-check"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}8${CLR_RESET}) 🚀 Optimize server  ${CLR_DIM}(BBR + sysctl)${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}9${CLR_RESET}) 🌐 Web panel  ${CLR_DIM}(glass dashboard)${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}SCRIPT${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}5${CLR_RESET}) 📦 Install script  ${CLR_DIM}(system-wide)${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}6${CLR_RESET}) 🔄 Update script   ${CLR_DIM}(self-update)${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_WHITE}${CLR_BOLD}7${CLR_RESET}) 🗑  Uninstall script"
-  echo -e "${CLR_DIM}│${CLR_RESET}"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_RED}${CLR_BOLD}0${CLR_RESET}) 🚪 Exit"
-  echo -e "${CLR_DIM}└────────────────────────────────────────────────────┘${CLR_RESET}"
+  tcount="$(list_profiles | wc -l | tr -d ' ')"
+  ron=0
+  while IFS= read -r _p; do
+    [[ -n "$_p" ]] && is_running "$_p" 2>/dev/null && ron=$((ron+1))
+  done < <(list_profiles)
+  B="${CLR_DIM}│${CLR_RESET}"
+  echo -e "${CLR_CYAN}╔════════════════════════════════════════════════════╗${CLR_RESET}"
+  echo -e "${CLR_CYAN}║${CLR_RESET}  ${CLR_BOLD}${CLR_WHITE}🚀 A,S Tunnel Manager${CLR_RESET}   ${CLR_DIM}${tcount} tunnel(s) · ${CLR_GREEN}${ron} running${CLR_RESET}"
+  echo -e "${CLR_CYAN}╠════════════════════════════════════════════════════╣${CLR_RESET}"
+  echo -e "${B} ${CLR_YELLOW}${CLR_BOLD}TUNNELS${CLR_RESET}"
+  echo -e "${B}   ${CLR_CYAN}1${CLR_RESET}) ➕ Add new tunnel   ${CLR_DIM}(name + Server/Client)${CLR_RESET}"
+  echo -e "${B}   ${CLR_CYAN}2${CLR_RESET}) 🎛  Manage tunnels   ${CLR_DIM}(start · stop · logs · config)${CLR_RESET}"
+  echo -e "${B}"
+  echo -e "${B} ${CLR_YELLOW}${CLR_BOLD}RELIABILITY & SPEED${CLR_RESET}"
+  echo -e "${B}   ${CLR_CYAN}3${CLR_RESET}) ✅ Enable health-check cron"
+  echo -e "${B}   ${CLR_CYAN}4${CLR_RESET}) ❌ Disable health-check cron"
+  echo -e "${B}   ${CLR_CYAN}8${CLR_RESET}) ⚡ Optimize server   ${CLR_DIM}(BBR + sysctl hardening)${CLR_RESET}"
+  echo -e "${B}"
+  echo -e "${B} ${CLR_YELLOW}${CLR_BOLD}WEB & SCRIPT${CLR_RESET}"
+  echo -e "${B}   ${CLR_CYAN}9${CLR_RESET}) 🌐 Web panel        ${CLR_DIM}(glass dashboard)${CLR_RESET}"
+  echo -e "${B}   ${CLR_CYAN}5${CLR_RESET}) 📦 Install script   ${CLR_DIM}(system-wide)${CLR_RESET}"
+  echo -e "${B}   ${CLR_CYAN}6${CLR_RESET}) 🔄 Update script"
+  echo -e "${B}   ${CLR_CYAN}7${CLR_RESET}) 🗑  Uninstall script"
+  echo -e "${B}"
+  echo -e "${B}   ${CLR_RED}${CLR_BOLD}0${CLR_RESET}) 🚪 Exit"
+  echo -e "${CLR_CYAN}╚════════════════════════════════════════════════════╝${CLR_RESET}"
 
   read -r -p "Select: " c < /dev/tty
   case "$c" in
-    1) role="$(pick_role)"; prof="$(pick_slot "$role")"; edit_profile "$prof" || true; pause ;;
-    2) role="$(pick_role)"; prof="$(pick_slot "$role")"; manage_slot_menu "$prof" || true ;;
+    1) prof="$(prompt_tunnel_name)"; edit_profile "$prof" || true; pause ;;
+    2) manage_tunnels_menu || true ;;
     3) enable_cron_healthcheck || true; pause ;;
     4) disable_cron_healthcheck || true; pause ;;
     5) install_script || true; pause ;;
