@@ -1,7 +1,7 @@
 # 🚀 A,S Tunnel
 
 **Multi-Protocol Tunnel Manager for IR ⇄ EU Servers**
-Multi-Slot • Multi-Protocol • AutoSync • Health Check • BBR Optimization
+Named Tunnels • Multi-Protocol • AutoSync • Health Check • BBR Optimization
 
 ---
 
@@ -12,7 +12,7 @@ Multi-Slot • Multi-Protocol • AutoSync • Health Check • BBR Optimization
 <p align="center">
   <img src="https://img.shields.io/badge/version-3.0.0-cyan">
   <img src="https://img.shields.io/badge/protocols-6-brightgreen">
-  <img src="https://img.shields.io/badge/slots-1--10-blue">
+  <img src="https://img.shields.io/badge/tunnels-unlimited-blue">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
@@ -25,7 +25,7 @@ Multi-Slot • Multi-Protocol • AutoSync • Health Check • BBR Optimization
 - 🇮🇷 **IR** — Iran server
 - 🌍 **EU** — Foreign / outside server
 
-Instead of locking you into one tunneling technology, A,S Tunnel lets you pick — **per slot** — whichever protocol fits your situation, then handles installation, configuration, starting, stopping, health-checking, and auto-restart for you, all from one menu.
+Instead of locking you into one tunneling technology, A,S Tunnel lets you pick — **per tunnel** — whichever protocol fits your situation, then handles installation, configuration, starting, stopping, health-checking, and auto-restart for you, all from one menu.
 
 ---
 
@@ -40,7 +40,7 @@ Instead of locking you into one tunneling technology, A,S Tunnel lets you pick �
 | 5 | **FRP** | Fast reverse proxy | Battle-tested, widely used, rich proxy types |
 | 6 | **Gost** | Per-port IPv4/IPv6 forwarder (tcp/udp/grpc) | Simple 1:1 port forwarding, huge port ranges |
 
-Each slot remembers its own protocol, so you can run **A,S Native on slot `iran1`**, **Backhaul on `iran2`**, **Gost on `eu3`**, etc. — all at once, all managed from the same menu.
+Each tunnel remembers its own protocol, so you can run **A,S Native as `office`**, **Backhaul as `bh-main`**, **Gost as `fwd1`**, etc. — all at once, all managed from the same menu.
 
 ---
 
@@ -54,7 +54,7 @@ Client → IR Server ⇄ EU Server
         / GRE / FRP / Gost)
 ```
 
-Every slot is independent: pick a protocol, answer a short wizard, and the tunnel **starts automatically** — no extra "start" step needed.
+Every tunnel is independent: pick a protocol, answer a short wizard, and the tunnel **starts automatically** — no extra "start" step needed.
 
 ---
 
@@ -62,15 +62,15 @@ Every slot is independent: pick a protocol, answer a short wizard, and the tunne
 
 | Feature | Description |
 |---------|--------------|
-| 🔀 Multi-Protocol | Choose A,S Native / Backhaul / Rathole / GRE / FRP / Gost per slot |
-| 🎛 Multi-Slot (1–10) | Store up to 10 independent tunnel configs per side |
+| 🔀 Multi-Protocol | Choose A,S Native / Backhaul / Rathole / GRE / FRP / Gost / Paqet per tunnel |
+| 🏷 Named tunnels | Create as many tunnels as you like, each with its own name |
 | ⚡ Auto-Start | Tunnel starts immediately after you save its config |
 | 🔄 AutoSync | Automatic port creation & synchronization (A,S Native) |
 | 🕒 Cron Health Check | Auto-restarts any stopped tunnel, any protocol |
 | 🚀 BBR Optimization | Congestion control + sysctl network tuning |
 | 📦 Auto-Install | Official binaries for Backhaul / Rathole / FRP / Gost fetched straight from GitHub Releases |
 | 🖥 systemd/cron Integration | Health check survives reboot via cron |
-| 📊 Live Status | See which slots are running, and with which protocol, right in the menu |
+| 📊 Live Status | See which tunnels are running, and with which protocol, right in the menu |
 
 ---
 
@@ -82,11 +82,7 @@ Every slot is independent: pick a protocol, answer a short wizard, and the tunne
 bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main/install.sh)
 ```
 
-Once setup finishes, open the manager any time with:
-
-```bash
-sudo A,S-tunnel
-```
+That single command installs everything **and opens the menu right away**. Next time just run `sudo A,S-tunnel`.
 
 ### 🔵 Step 2 — Setup EU Server
 
@@ -103,16 +99,16 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 From the main menu:
 
 ```
-1) 🛠 Create/Update profile
+1) ➕ Add new tunnel
 ```
 
-1. Choose the side: **EU** or **IRAN**
-2. Choose a slot (**1–10**)
-3. Choose a protocol (**1–6**, see table above)
+1. Type a **name** for the tunnel (e.g. `server1`) — letters, digits, `-` and `_`
+2. Choose the side: **Server (Abroad / Kharej)** or **Client (Iran)**
+3. Choose a protocol (**1–7**, see table above)
 4. Answer the protocol's short wizard
 5. ✅ Done — the tunnel **starts automatically** and its status is shown right away
 
-Repeat on the **other server** with matching values (same token/port where required).
+Repeat on the **other server** with the matching side and values (same token / ports / key where required).
 
 ---
 
@@ -157,7 +153,7 @@ Binary is auto-downloaded from `rapiz1/rathole` releases.
 
 ---
 
-### 4️⃣ GRE (just run in IRAN)
+### 4️⃣ GRE
 
 | Field | Both sides |
 |---|---|
@@ -200,7 +196,7 @@ One-sided per-port forwarder — no matching config needed on the other end. Bin
 2) 🎛 Manage tunnel
 ```
 
-For any slot you get:
+For any tunnel you get:
 
 ```
 1) 📄 Show profile
@@ -209,10 +205,10 @@ For any slot you get:
 4) 🔁 Restart
 5) 📊 Status
 6) 📜 Logs
-7) 🗑  Delete slot
+7) 🗑  Delete tunnel
 ```
 
-Slot lists show live status at a glance: 🟢 running, 🔴 stopped, ⚪ empty — with the active protocol shown next to each.
+The tunnel list shows live status at a glance (🟢 running, 🔴 stopped) with the protocol and side next to each name.
 
 ---
 
@@ -222,7 +218,7 @@ Slot lists show live status at a glance: 🟢 running, 🔴 stopped, ⚪ empty �
 3) ✅ Enable cron health-check
 ```
 
-Pick an interval in minutes — any slot found stopped is automatically restarted with its own protocol, no matter which one it uses.
+Pick an interval in minutes — any tunnel found stopped is automatically restarted with its own protocol, no matter which one it uses.
 
 Disable any time with:
 
@@ -258,7 +254,7 @@ Enables, when supported by the kernel:
 
 ## 🛠 Troubleshooting
 
-Check a slot's screen session directly:
+Check a tunnel's screen session directly:
 
 ```bash
 screen -ls
@@ -279,7 +275,7 @@ nc -zv IR_IP <bridge_or_control_port>
 For GRE, check the interface:
 
 ```bash
-ip -s link show gre<slot_name>
+ip -s link show gre<tunnel_name>
 ```
 
 ---
@@ -290,7 +286,7 @@ ip -s link show gre<slot_name>
 - Enable Cron Health Check
 - Pick the protocol that matches your traffic pattern (Gost for simple 1:1 forwarding, Backhaul/Rathole/FRP for multiplexed tunneling, A,S Native when you want zero external dependencies)
 - Keep tokens/ports identical on both sides
-- Monitor slot status regularly from the main menu
+- Monitor tunnel status regularly from the main menu
 
 ---
 
@@ -300,10 +296,10 @@ ip -s link show gre<slot_name>
 Yes — a protocol pairs two matching sides (except Gost, which is one-sided).
 
 **Q: Can I run multiple tunnels at once?**
-Yes — use different slots (1–10), each with its own protocol if you like.
+Yes — create as many named tunnels as you like, each with its own protocol if you like.
 
 **Q: What if a tunnel stops?**
-Enable Cron Health Check — it restarts any slot regardless of protocol.
+Enable Cron Health Check — it restarts any tunnel regardless of protocol.
 
 **Q: Does it survive reboot?**
 Yes, via the cron-based health check.
