@@ -1,7 +1,7 @@
 # 🚀 A,S Tunnel
 
 **Multi-Protocol Tunnel Manager for IR ⇄ EU Servers**
-Named Tunnels • Multi-Protocol • AutoSync • Health Check • BBR Optimization
+Named Tunnels • Multi-Protocol • Master Web Panel • AutoSync • Health Check • BBR Optimization
 
 ---
 
@@ -10,8 +10,8 @@ Named Tunnels • Multi-Protocol • AutoSync • Health Check • BBR Optimizat
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-3.0.0-cyan">
-  <img src="https://img.shields.io/badge/protocols-6-brightgreen">
+  <img src="https://img.shields.io/badge/version-4.0.0-cyan">
+  <img src="https://img.shields.io/badge/protocols-7-brightgreen">
   <img src="https://img.shields.io/badge/tunnels-unlimited-blue">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
@@ -187,6 +187,62 @@ Binaries auto-downloaded from `fatedier/frp` releases.
 | Protocol | `tcp` / `udp` / `grpc` |
 
 One-sided per-port forwarder — no matching config needed on the other end. Binary auto-downloaded from `go-gost/gost` releases.
+
+---
+
+## 🌐 Master Panel & Nodes
+
+One web dashboard for **all** your servers. Put the **master panel on the abroad server**; every Iran or abroad server then joins it as a **node** and is managed from the same page.
+
+```
+ Iran node ──┐                       ┌── abroad node
+ Iran node ──┼──► (outbound only) ──►│ MASTER panel (abroad)  ◄── you, in the browser
+ Iran node ──┘                       └── …
+```
+
+Nodes only make **outbound** connections to the master (heartbeat + long-poll), so Iran servers behind filtering work fine, and nothing extra has to be opened on the nodes.
+
+### 1) Install the master (abroad server)
+
+`menu → 9) Master panel & nodes → 1) Install / reconfigure master panel`
+
+The installer asks **first** for your **username and password** (password hidden + confirmed, or press Enter to generate one), then the network name, which side this server is, panel IP, HTTPS (self-signed, recommended) and port (random by default). It prints the URL, the **join key** and the TLS fingerprint.
+
+### 2) Connect each node (Iran or abroad)
+
+On the node, either use the menu (`9 → 8) Connect to a master`) or run one command:
+
+```bash
+sudo A,S-tunnel --join 'https://MASTER_IP:PORT' 'JOIN_KEY' 'node-name' iran 'TLS_FINGERPRINT'
+```
+
+The fingerprint pins the master's certificate (leave it out to trust on first use). The node then appears in the panel within seconds.
+
+### 3) What the dashboard gives you
+
+| Tab | What it does |
+|-----|--------------|
+| **Node & Config** | Node identity, rename, start / restart / stop **all** tunnels, BBR optimization, health-check cron, update script |
+| **Nodes** | Every node: side, online/offline, IP, CPU, RAM, tunnels, latency, version · update one / all nodes · remove · join info |
+| **Speedtest (iperf3)** | Real throughput between any two nodes (upload + download), history |
+| **Live Ping & Latency** | Live node ⇄ master RTT with trends + live ping from any node to any target with a chart |
+| **Tunnels Manager** | Add / edit / start / stop / delete tunnels of the selected node, **live logs**, scheduled restart. New tunnels can be created **✋ Manually** on the selected node, or **🔗 From panel nodes**: pick a *Server (Abroad)* node and a *Client (Iran)* node (the master itself counts as a node) and the panel configures both ends at once — shared key/token, ports and IPs are filled in automatically, and the server side is rolled back if the client side fails |
+
+> **Fields follow the side.** A node is either *Server (Abroad)* or *Client (Iran)* (changeable in Node & Config). The tunnel form only shows the options that belong to that side — no mixed "client only / server only" fields.
+
+Also: stat cards (public IP, connected nodes, average latency, CPU / RAM / uptime / load of the selected node), **EN / فارسی** switch (RTL), **color palette**, refresh and sign-out. Everything updates live (every ~3 s).
+
+### Staying up to date
+
+- **Update nodes from the master:** the *Update* button (or *Update all nodes*) sends the master's script to the node, which verifies it (`bash -n` + checksum), installs it and restarts its agent. No GitHub access needed on the node.
+- The panel and agent files are embedded in the script and **re-deployed automatically** whenever the script version changes (menu start, *Update script*, or a fresh `bash <(curl …)`).
+
+### Security notes
+
+- Login uses signed, expiring session tokens; the password is stored **hashed**; 8 failed logins lock an IP for 5 minutes. Changing the password signs everybody out.
+- Nodes authenticate with their own token (issued once with the join key) and only execute a fixed **whitelist** of commands — never arbitrary shell.
+- Use HTTPS, open the panel port only to what you need, and treat the panel like root access.
+- Menu options in `9`: show info, change username/password, reset to random, new join key, disable, uninstall, agent status, disconnect.
 
 ---
 
