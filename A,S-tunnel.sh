@@ -2102,11 +2102,16 @@ def tunnel_counts(tunnels):
     return len(t), sum(1 for x in t if isinstance(x, dict) and x.get("running"))
 
 
+def local_role():
+    r = SETTINGS.get("local_role")
+    return r if r in ("eu", "iran") else MASTER_ROLE
+
+
 def local_view():
     tun = local_tunnels()
     total, running = tunnel_counts(tun)
     return {"id": "local", "is_local": True, "name": SETTINGS.get("local_name") or os.uname().nodename,
-            "role": MASTER_ROLE, "online": True, "last_seen": 0, "remote_ip": "",
+            "role": local_role(), "online": True, "last_seen": 0, "remote_ip": "",
             "public_ip": asnode.public_ip(), "hostname": os.uname().nodename,
             "version": asnode.script_version(), "metrics": asnode.metrics(),
             "tunnels": tun, "tunnels_total": total, "tunnels_running": running,
@@ -2128,7 +2133,7 @@ def node_view(n):
 
 def master_view():
     return {"network": SETTINGS.get("network_name") or ENV.get("NETWORK_NAME") or "as-net",
-            "version": asnode.script_version(), "url": panel_url(), "role": MASTER_ROLE,
+            "version": asnode.script_version(), "url": panel_url(), "role": local_role(),
             "https": HTTPS, "username": USERNAME}
 
 
@@ -2296,19 +2301,29 @@ def n_ping(nid):
 def n_rename(nid):
     b = request.get_json(force=True, silent=True) or {}
     name = clean_label(b.get("name"))
-    if not name:
+    role = b.get("role")
+    if role not in (None, "eu", "iran"):
+        return jsonify({"error": "bad_role"}), 400
+    if not name and role is None:
         return jsonify({"error": "bad_name"}), 400
     with LOCK:
         if nid == "local":
-            SETTINGS["local_name"] = unique_name(name, skip="local")
-            name = SETTINGS["local_name"]
+            if name:
+                SETTINGS["local_name"] = unique_name(name, skip="local")
+            if role:
+                SETTINGS["local_role"] = role
+            name = SETTINGS.get("local_name") or os.uname().nodename
+            role = local_role()
         elif nid in NODES:
-            NODES[nid]["name"] = unique_name(name, skip=nid)
-            name = NODES[nid]["name"]
+            if name:
+                NODES[nid]["name"] = unique_name(name, skip=nid)
+            if role:
+                NODES[nid]["role"] = role
+            name, role = NODES[nid]["name"], NODES[nid]["role"]
         else:
             return jsonify({"error": "node_not_found"}), 404
     save_registry()
-    return jsonify({"ok": True, "name": name})
+    return jsonify({"ok": True, "name": name, "role": role})
 
 
 @app.post("/api/update-all")
@@ -2326,6 +2341,150 @@ def update_all():
     for t in ts:
         t.join(280)
     return jsonify({"ok": True, "results": results})
+
+
+# ----------------------------------------------------- link two panel nodes
+LINK_METHODS = ("asnative", "backhaul", "rathole", "gre", "frp", "gost", "paqet")
+KCP_MODES = ("fast", "normal", "fast2", "fast3")
+KCP_BLOCKS = ("aes-128-gcm", "aes", "aes-128", "aes-192", "aes-256", "none")
+
+
+def _port(v, default=None, lo=1, hi=65535):
+    try:
+        p = int(str(v).strip())
+    except (TypeError, ValueError):
+        return default
+    return p if lo <= p <= hi else default
+
+
+def _ports_csv(v):
+    out = []
+    for x in str(v or "").split(","):
+        x = x.strip()
+        if not x:
+            continue
+        if not x.isdigit() or not 1 <= int(x) <= 65535:
+            raise ValueError("bad_ports")
+        if x not in out:
+            out.append(x)
+    return ",".join(out)
+
+
+def _rand_port(avoid):
+    while True:
+        p = 20000 + secrets.randbelow(40000)
+        if str(p) not in avoid:
+            return p
+
+
+def build_link(method, p, sip, cip):
+    """Fields for both ends. Server = abroad side ("eu"), client = Iran side.
+    The server value may be None when only one end needs configuring (gost)."""
+    key = secrets.token_hex(16)  # shared secret, never typed by hand
+    fwd = _ports_csv(p.get("forward_ports"))
+    fwd_list = fwd.split(",") if fwd else []
+    if method == "asnative":
+        bridge, sync = _port(p.get("bridge"), 7000), _port(p.get("sync"), 7001)
+        if bridge == sync:
+            raise ValueError("ports_conflict")
+        return ({"IRAN_IP": cip, "BRIDGE": bridge, "SYNC": sync},
+                {"BRIDGE": bridge, "SYNC": sync, "AUTO_SYNC": "true"})
+    if method == "gre":
+        return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
+    if method == "gost":
+        if not fwd:
+            raise ValueError("ports_required")
+        proto = p.get("proto") if p.get("proto") in ("tcp", "udp", "grpc") else "tcp"
+        return (None, {"DEST_IP": sip, "PORT_MODE": "manual", "PORTS": fwd, "PROTO": proto})
+    port = _port(p.get("port")) or _rand_port(fwd_list)
+    if str(port) in fwd_list:
+        raise ValueError("ports_conflict")
+    if method == "backhaul":
+        if not fwd:
+            raise ValueError("ports_required")
+        tr = p.get("transport") if p.get("transport") in ("tcp", "ws", "wss") else "tcp"
+        return ({"BH_ROLE": "server", "TOKEN": key, "TRANSPORT": tr, "BIND_PORT": port, "FORWARD_PORTS": fwd},
+                {"BH_ROLE": "client", "TOKEN": key, "TRANSPORT": tr, "SERVER_IP": sip, "BIND_PORT": port})
+    if method == "rathole":
+        if not fwd:
+            raise ValueError("ports_required")
+        return ({"RT_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd},
+                {"RT_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd})
+    if method == "frp":
+        if not fwd:
+            raise ValueError("ports_required")
+        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port},
+                {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd})
+    if method == "paqet":
+        udp = _ports_csv(p.get("forward_udp_ports"))
+        if not fwd and not udp:
+            raise ValueError("ports_required")
+        mode = p.get("kcp_mode") if p.get("kcp_mode") in KCP_MODES else "fast"
+        block = p.get("block") if p.get("block") in KCP_BLOCKS else "aes-128-gcm"
+        common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": mode, "BLOCK": block,
+                  "CONN": _port(p.get("conn"), 4, 1, 32), "MTU": _port(p.get("mtu"), 1150, 500, 9000)}
+        client = dict(common, PQ_ROLE="client", SERVER_IP=sip)
+        if fwd:
+            client["FORWARD_PORTS"] = fwd
+        if udp:
+            client["FORWARD_UDP_PORTS"] = udp
+        return (dict(common, PQ_ROLE="server"), client)
+    raise ValueError("bad_method")
+
+
+def node_label_ip(nid):
+    with LOCK:
+        if nid == "local":
+            return SETTINGS.get("local_name") or os.uname().nodename, asnode.public_ip()
+        n = NODES[nid]
+        return n["name"], (n.get("hello") or {}).get("public_ip") or n["remote_ip"]
+
+
+@app.post("/api/link")
+def api_link():
+    b = request.get_json(force=True, silent=True) or {}
+    name = str(b.get("name", "")).strip().lower()
+    method, server, client = str(b.get("method", "")), str(b.get("server", "")), str(b.get("client", ""))
+    if not asnode.NAME_RE.match(name):
+        return jsonify({"error": "bad_name"}), 400
+    if method not in LINK_METHODS:
+        return jsonify({"error": "bad_method"}), 400
+    if not (valid_nid(server) and valid_nid(client)):
+        return jsonify({"error": "node_not_found"}), 404
+    if server == client:
+        return jsonify({"error": "same_node"}), 400
+    sname, sdef = node_label_ip(server)
+    cname, cdef = node_label_ip(client)
+    sip = str(b.get("server_ip") or sdef or "").strip()
+    cip = str(b.get("client_ip") or cdef or "").strip()
+    if not asnode.HOST_RE.match(sip) or not asnode.HOST_RE.match(cip):
+        return jsonify({"error": "bad_address"}), 400
+    try:
+        sfields, cfields = build_link(method, b.get("params") or {}, sip, cip)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+
+    steps = []
+
+    def apply(side, nid, label, role, fields):
+        res = run_on_node(nid, "save", {"prof": name, "body": {"method": method, "role": role, "fields": fields}}, timeout=330)
+        res = res if isinstance(res, dict) else {"error": "bad_result"}
+        step = {"side": side, "node": label, "node_id": nid, "saved": bool(res.get("ok") or res.get("saved")),
+                "running": bool(res.get("ok") or res.get("running")),
+                "error": "" if res.get("ok") else str(res.get("log") or res.get("detail") or res.get("error") or "")[-600:]}
+        steps.append(step)
+        return step
+
+    rolled = False
+    if sfields is not None:
+        if not apply("server", server, sname, "eu", sfields)["saved"]:
+            return jsonify({"ok": False, "saved": False, "steps": steps, "error": "server_failed"})
+    if not apply("client", client, cname, "iran", cfields)["saved"] and sfields is not None:
+        run_on_node(server, "delete", {"prof": name}, timeout=120)  # never leave a half-configured pair
+        rolled = True
+    return jsonify({"ok": all(x["running"] for x in steps), "saved": all(x["saved"] for x in steps), "steps": steps,
+                    "rolled_back": rolled, "name": name, "server_ip": sip, "client_ip": cip})
+
 
 
 # ------------------------------------------------------------- speedtest
@@ -2965,6 +3124,7 @@ canvas{width:100%;height:230px;display:block;border-radius:16px;background:#0402
 .fgrid .full{grid-column:1/-1}
 pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px;
   font-family:var(--mono);font-size:12px;height:340px;overflow:auto;direction:ltr;text-align:left;margin:0}
+.sidebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;padding:11px 14px;border-radius:14px;border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
 .msg{font-size:13px;margin-top:12px;white-space:pre-wrap;color:var(--dim)}
 .msg.ok{color:var(--green)} .msg.err{color:var(--red)}
 .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(20px);z-index:100;padding:13px 22px;border-radius:14px;
@@ -3069,7 +3229,7 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <div class="card-h"><span class="ico">⚙</span><h2 data-i="cfgTitle">Node & Master Configuration</h2><span class="ok-badge" id="cfgStatus"></span></div>
       <p class="muted" data-i="cfgDesc">Manage this node's identity, tunnels, tuning and updates</p>
       <div class="btns">
-        <button class="btn o-acc" onclick="openNew()">✨ <span data-i="wizard">Launch Setup Wizard</span></button>
+        <button class="btn o-acc" onclick="openNew('link')">✨ <span data-i="wizard">Launch Setup Wizard</span></button>
         <button class="btn o-green" onclick="bulk('start')">▶ <span data-i="startAll">Start All</span></button>
         <button class="btn o-amber" onclick="bulk('restart')">⟳ <span data-i="restartAll">Restart All</span></button>
         <button class="btn o-red" onclick="bulk('stop')">■ <span data-i="stopAll">Stop All</span></button>
@@ -3083,7 +3243,7 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <div class="grid3">
         <div><label class="f"><span data-i="nodeName">Node Name</span> <span class="muted">*</span></label><input id="cfgName" class="mono" maxlength="40"></div>
         <div><label class="f" data-i="netName">Network Name</label><input id="cfgNet" class="mono" maxlength="40"></div>
-        <div><label class="f" data-i="side">Side</label><input id="cfgSide" readonly></div>
+        <div><label class="f" data-i="side">Side</label><select id="cfgSide"><option value="eu">🌍 Server (Abroad / Kharej)</option><option value="iran">🇮🇷 Client (Iran)</option></select></div>
         <div><label class="f" data-i="hostname">Hostname</label><input id="cfgHost" class="mono" readonly></div>
         <div><label class="f" data-i="publicIp">Public IP</label><div class="row"><input id="cfgIp" class="mono" readonly><span class="icobtn" onclick="copyText($('cfgIp').value)">⧉</span></div></div>
         <div><label class="f" data-i="nodeId">Node ID</label><input id="cfgId" class="mono" readonly></div>
@@ -3200,7 +3360,7 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
   <div class="pane hidden" id="pane-tunnels">
     <div class="card">
       <div class="card-h"><span class="ico">🔗</span><h2 data-i="tunTitle">Tunnels Manager</h2><span class="rb" id="tunNode"></span>
-        <button class="btn primary" style="margin-inline-start:auto" onclick="openNew()">➕ <span data-i="addTunnel">Add tunnel</span></button></div>
+        <span style="margin-inline-start:auto" class="btns"><button class="btn o-acc" onclick="openNew('link')">🔗 <span data-i="addLink">Link panel nodes</span></button><button class="btn primary" onclick="openNew('manual')">✋ <span data-i="addManual">Manual tunnel</span></button></span></div>
       <p class="muted" data-i="tunDesc">Tunnels running on the selected node. Click one to configure, view live logs or schedule restarts.</p>
       <div class="tgrid" id="tunGrid"></div>
     </div>
@@ -3224,27 +3384,46 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <button class="mtab" data-mt="log" onclick="mTab('log')">📜 <span data-i="mLog">Live log</span></button>
     </div>
     <div id="mConfig">
+      <div class="seg hidden" id="modeSeg" style="margin-bottom:16px">
+        <button id="mdManual" onclick="setMode('manual')">✋ <span data-i="modeManual">Manual</span></button>
+        <button id="mdLink" onclick="setMode('link')">🔗 <span data-i="modeLink">From panel nodes</span></button>
+      </div>
       <div class="fgrid">
-        <div class="full"><label class="f" data-i="tName">Tunnel name</label><input id="nameInput" class="mono" maxlength="32" placeholder="server1"></div>
-        <div><label class="f" data-i="side">Side</label><select id="roleSelect" onchange="renderFields()">
-          <option value="eu">🌍 Server (Abroad / Kharej)</option><option value="iran">🇮🇷 Client (Iran)</option></select></div>
-        <div><label class="f" data-i="protocol">Protocol</label><select id="methodSelect" onchange="renderFields()">
+        <div><label class="f" data-i="tName">Tunnel name</label><input id="nameInput" class="mono" maxlength="32" placeholder="server1"></div>
+        <div><label class="f" data-i="protocol">Protocol</label><select id="methodSelect" onchange="onMethodChange()">
           <option value="asnative">A,S Native</option><option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
           <option value="gre">GRE</option><option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option></select></div>
       </div>
-      <div id="fieldsBox" style="margin-top:14px"></div>
-      <div class="btns" style="margin-top:20px">
-        <button class="btn primary" id="saveBtn" onclick="saveSlot()">💾 <span data-i="saveStart">Save & Start</span></button>
-        <button class="btn o-green" id="startBtn" onclick="doAction('start')">▶ <span data-i="start">Start</span></button>
-        <button class="btn o-red" id="stopBtn" onclick="doAction('stop')">■ <span data-i="stop">Stop</span></button>
-        <button class="btn o-amber" id="restartBtn" onclick="doAction('restart')">⟳ <span data-i="restart">Restart</span></button>
-        <button class="btn o-red" onclick="deleteSlot()" style="margin-inline-start:auto">🗑 <span data-i="delete">Delete</span></button>
-      </div>
+
+      <div id="manualBox">
+        <div class="sidebar" id="sideBar"><span class="muted" data-i="side">Side</span><b id="sideTxt"></b><span class="muted" id="sideNode"></span></div>
+        <input type="hidden" id="roleSelect" value="eu">
+        <div id="fieldsBox" style="margin-top:14px"></div>
+        <div class="btns" style="margin-top:20px">
+          <button class="btn primary" id="saveBtn" onclick="saveSlot()">💾 <span data-i="saveStart">Save & Start</span></button>
+          <button class="btn o-green" id="startBtn" onclick="doAction('start')">▶ <span data-i="start">Start</span></button>
+          <button class="btn o-red" id="stopBtn" onclick="doAction('stop')">■ <span data-i="stop">Stop</span></button>
+          <button class="btn o-amber" id="restartBtn" onclick="doAction('restart')">⟳ <span data-i="restart">Restart</span></button>
+          <button class="btn o-red" onclick="deleteSlot()" style="margin-inline-start:auto">🗑 <span data-i="delete">Delete</span></button>
+        </div>
       <div style="margin-top:20px;padding-top:16px;border-top:1px solid rgba(255,255,255,.07)">
         <label class="f">⏱ <span data-i="sched">Scheduled restart</span> <small data-i="schedNote">(regardless of status)</small></label>
         <div class="row"><label class="switch"><input type="checkbox" id="rcToggle"><span class="slider"></span></label>
           <input id="rcHours" class="mono" style="max-width:120px" type="number" min="1" placeholder="6"><span class="muted" data-i="hours">hours</span>
           <button class="btn sm ghost" onclick="saveRestartCron()">💾 <span data-i="save2">Save</span></button></div>
+      </div>
+      </div>
+      <div id="linkBox" class="hidden">
+        <div class="fgrid" style="margin-top:14px">
+          <div><label class="f">🌍 <span data-i="lkServer">Server node (Abroad)</span></label><select id="lkServer" onchange="lkNodeChanged()"></select></div>
+          <div><label class="f">🇮🇷 <span data-i="lkClient">Client node (Iran)</span></label><select id="lkClient" onchange="lkNodeChanged()"></select></div>
+          <div><label class="f" data-i="lkSIp">Server address</label><input id="lkSIp" class="mono"></div>
+          <div><label class="f" data-i="lkCIp">Client address</label><input id="lkCIp" class="mono"></div>
+        </div>
+        <div id="lkParams" style="margin-top:14px"></div>
+        <div class="note-box" id="lkNote" data-i="lkNote" style="border-color:color-mix(in srgb,var(--accent) 45%,transparent);color:var(--accent2)">Keys and ports are generated and shared with both nodes automatically; addresses come from the nodes.</div>
+        <div class="btns" style="margin-top:18px"><button class="btn primary" id="lkBtn" onclick="createLink()">🔗 <span data-i="lkCreate">Create on both nodes</span></button></div>
+        <ul class="steps" id="lkSteps"></ul>
       </div>
       <div id="mMsg" class="msg"></div>
     </div>
@@ -3297,7 +3476,16 @@ en:{
  deleteConfirm:'Delete "{n}"? This stops it and removes its config, log and schedule.', bulkDone:'Done: {ok} ok, {bad} failed', optimizeDone:'Optimization applied ✔',
  updated:'Updated ✔', updateNoChange:'Already up to date', keyRegen:'New join key generated ✔', regenConfirm:'Generate a new join key? Existing nodes stay connected.',
  enterName:'Enter a tunnel name (letters, digits, - or _).', overwrite:'A tunnel named "{n}" already exists. Overwrite it?',
- savedRunning:'✔ Saved and running', savedNotRunning:'✔ Config saved, but the tunnel is not running:', saveFailed:'✖ Save failed', never:'never', ago:'{s}s ago', sideEu:'🌍 Server (Abroad)', sideIran:'🇮🇷 Client (Iran)'
+ savedRunning:'✔ Saved and running', savedNotRunning:'✔ Config saved, but the tunnel is not running:', saveFailed:'✖ Save failed', never:'never', ago:'{s}s ago', sideEu:'🌍 Server (Abroad)', sideIran:'🇮🇷 Client (Iran)',
+ modeManual:'Manual', modeLink:'From panel nodes', addLink:'Link panel nodes', addManual:'Manual tunnel',
+ lkServer:'Server node (Abroad)', lkClient:'Client node (Iran)', lkSIp:'Server address', lkCIp:'Client address',
+ lkNote:'Keys and ports are generated and shared with both nodes automatically; addresses come from the nodes.',
+ lkNoteGost:'Gost only configures the client node (Iran): it forwards the ports to the server address.',
+ lkCreate:'Create on both nodes', lkNeed:'You need at least two online nodes (this panel counts as one).',
+ lkOk:'✔ Tunnel created and running on both nodes', lkPartial:'⚠ Saved on both nodes, but at least one is not running yet:', lkRolled:'The server side was removed again so nothing is left half-configured.',
+ e_bad_name:'Use letters, digits, - or _ for the name.', e_bad_ports:'Ports must be numbers between 1 and 65535.', e_ports_required:'Enter at least one port to forward.',
+ e_ports_conflict:'The control port must differ from the forwarded ports (and bridge ≠ sync).', e_bad_address:'Check the server / client address.', e_same_node:'Pick two different nodes.',
+ e_server_failed:'Could not configure the server node.', e_node_not_found:'Node not found.', e_bad_method:'Unknown protocol.'
 },
 fa:{
  appTitle:'مستر تانل A,S', masterBadge:'مستر', network:'شبکه', masterActive:'مستر فعال', palette:'پالت رنگ', accent:'رنگ اصلی',
@@ -3332,7 +3520,16 @@ fa:{
  deleteConfirm:'«{n}» حذف شود؟ تانل متوقف و تنظیمات، لاگ و زمان‌بندی آن پاک می‌شود.', bulkDone:'انجام شد: {ok} موفق، {bad} ناموفق', optimizeDone:'بهینه‌سازی اعمال شد ✔',
  updated:'به‌روزرسانی شد ✔', updateNoChange:'از قبل به‌روز است', keyRegen:'کلید اتصال جدید ساخته شد ✔', regenConfirm:'کلید اتصال جدید ساخته شود؟ نودهای فعلی متصل می‌مانند.',
  enterName:'یک نام برای تانل وارد کنید (حروف، عدد، - یا _).', overwrite:'تانلی با نام «{n}» وجود دارد. بازنویسی شود؟',
- savedRunning:'✔ ذخیره شد و در حال اجراست', savedNotRunning:'✔ تنظیمات ذخیره شد، ولی تانل اجرا نشده:', saveFailed:'✖ ذخیره ناموفق بود', never:'هرگز', ago:'{s} ثانیه پیش', sideEu:'🌍 سرور (خارج)', sideIran:'🇮🇷 کلاینت (ایران)'
+ savedRunning:'✔ ذخیره شد و در حال اجراست', savedNotRunning:'✔ تنظیمات ذخیره شد، ولی تانل اجرا نشده:', saveFailed:'✖ ذخیره ناموفق بود', never:'هرگز', ago:'{s} ثانیه پیش', sideEu:'🌍 سرور (خارج)', sideIran:'🇮🇷 کلاینت (ایران)',
+ modeManual:'دستی', modeLink:'از روی نودهای پنل', addLink:'اتصال نودهای پنل', addManual:'تانل دستی',
+ lkServer:'نود سرور (خارج)', lkClient:'نود کلاینت (ایران)', lkSIp:'آدرس سرور', lkCIp:'آدرس کلاینت',
+ lkNote:'کلیدها و پورت‌ها خودکار ساخته و روی هر دو نود اعمال می‌شود؛ آدرس‌ها از خود نودها می‌آید.',
+ lkNoteGost:'Gost فقط نود کلاینت (ایران) را تنظیم می‌کند و پورت‌ها را به آدرس سرور فوروارد می‌کند.',
+ lkCreate:'ساخت روی هر دو نود', lkNeed:'حداقل دو نود آنلاین لازم است (خود پنل هم یک نود حساب می‌شود).',
+ lkOk:'✔ تانل روی هر دو نود ساخته شد و در حال اجراست', lkPartial:'⚠ روی هر دو نود ذخیره شد، ولی حداقل یکی هنوز اجرا نشده:', lkRolled:'سمت سرور دوباره حذف شد تا چیزی نیمه‌کاره نماند.',
+ e_bad_name:'برای نام از حروف، عدد، - یا _ استفاده کنید.', e_bad_ports:'پورت‌ها باید عددی بین ۱ تا ۶۵۵۳۵ باشند.', e_ports_required:'حداقل یک پورت برای فوروارد وارد کنید.',
+ e_ports_conflict:'پورت کنترل باید با پورت‌های فوروارد فرق داشته باشد (و bridge با sync).', e_bad_address:'آدرس سرور / کلاینت را بررسی کنید.', e_same_node:'دو نود متفاوت انتخاب کنید.',
+ e_server_failed:'نود سرور تنظیم نشد.', e_node_not_found:'نود پیدا نشد.', e_bad_method:'پروتکل ناشناخته.'
 }};
 
 let LANG = localStorage.getItem('as_lang') || 'en';
@@ -3386,6 +3583,7 @@ function errText(r) {
   if (!r) return t('failed');
   if (r.error === 'node_offline') return t('nodeOfflineErr');
   if (r.error === 'node_timeout') return t('timeoutErr');
+  if (r.error && I18N.en['e_' + r.error]) return t('e_' + r.error);
   return r.log || r.hint || r.detail || r.error || t('failed');
 }
 
@@ -3489,7 +3687,7 @@ function renderConfig(force) {
   const n = cur(); if (!n) return;
   const ok = $('cfgStatus'); ok.className = 'ok-badge' + (n.online ? '' : ' bad');
   ok.innerHTML = `<i class="dot ${n.online ? 'on' : 'off'}"></i>${t(n.online ? 'nodeOnline' : 'nodeOffline')}`;
-  $('cfgSide').value = sideLabel(n.role); $('cfgHost').value = n.hostname || ''; $('cfgIp').value = n.public_ip || ''; $('cfgId').value = n.id;
+  if (force || S.cfgFor !== S.sel) $('cfgSide').value = n.role; $('cfgHost').value = n.hostname || ''; $('cfgIp').value = n.public_ip || ''; $('cfgId').value = n.id;
   $('cfgVer').textContent = 'v' + (n.version || '?');
   const vb = $('cfgVerBadge'); const mv = S.master.version;
   if (n.is_local || !n.version || n.version === '?') vb.classList.add('hidden');
@@ -3509,7 +3707,8 @@ async function loadNodeInfo() {
 async function saveConfig() {
   const n = cur(); const name = $('cfgName').value.trim(), net = $('cfgNet').value.trim();
   try {
-    if (name && name !== n.name) { const r = await napi('/rename', {method: 'POST', body: {name}}); if (!r.ok) throw r; }
+    const side = $('cfgSide').value;
+    if ((name && name !== n.name) || side !== n.role) { const r = await napi('/rename', {method: 'POST', body: {name: name || n.name, role: side}}); if (!r.ok) throw r; }
     if (net && net !== S.master.network) { const r = await api('/api/master/settings', {method: 'POST', body: {network_name: net}}); if (!r.ok) throw r; }
     const enabled = $('hcToggle').checked, minutes = Math.max(1, parseInt($('hcMin').value, 10) || 1);
     const prev = S.hcLoaded;
@@ -3719,45 +3918,76 @@ async function reloadTunnels() {
 let CURRENT = null, LIVE_TIMER = null;
 const ROLE_KEYS = ['BH_ROLE', 'RT_ROLE', 'FRP_ROLE', 'PQ_ROLE'];
 const ROLE_KEY_OF = {backhaul: 'BH_ROLE', rathole: 'RT_ROLE', frp: 'FRP_ROLE', paqet: 'PQ_ROLE'};
-const FIELD_DEFS = {
-  asnative_eu: [{k:'IRAN_IP',l:'Iran IP',t:'text'},{k:'BRIDGE',l:'Bridge port',t:'text',ph:'7000'},{k:'SYNC',l:'Sync port',t:'text',ph:'7001'}],
-  asnative_iran: [{k:'BRIDGE',l:'Bridge port',t:'text',ph:'7000'},{k:'SYNC',l:'Sync port',t:'text',ph:'7001'},
-    {k:'AUTO_SYNC',l:'Auto-sync ports?',t:'select',opts:['true','false']},{k:'PORTS',l:'Manual ports (CSV, if auto-sync=false)',t:'text',full:true}],
-  backhaul: [{k:'TOKEN',l:'Shared token',t:'text',full:true},{k:'TRANSPORT',l:'Transport',t:'select',opts:['tcp','ws','wss']},{k:'BIND_PORT',l:'Control port',t:'text'},
-    {k:'SERVER_IP',l:'Server IP (client only)',t:'text'},{k:'FORWARD_PORTS',l:'Forward ports CSV (server only)',t:'text',full:true}],
-  rathole: [{k:'TOKEN',l:'Shared token',t:'text',full:true},{k:'BIND_PORT',l:'Control port',t:'text'},{k:'SERVER_IP',l:'Server IP (client only)',t:'text'},
-    {k:'FORWARD_PORTS',l:'Forward ports CSV',t:'text',full:true}],
-  gre: [{k:'LOCAL_IP',l:'This host public IP',t:'text',full:true},{k:'PEER_IP',l:'Peer public IP',t:'text',full:true}],
-  frp: [{k:'TOKEN',l:'Shared token',t:'text',full:true},{k:'BIND_PORT',l:'Control port',t:'text'},{k:'SERVER_IP',l:'Server IP (client only)',t:'text'},
-    {k:'FORWARD_PORTS',l:'Forward ports CSV (client only)',t:'text',full:true}],
-  paqet: [{k:'SERVER_PORT',l:'Tunnel port',t:'text',ph:'8888'},{k:'SECRET_KEY',l:'Secret key (same on both sides)',t:'text',full:true},
-    {k:'SERVER_IP',l:'Server IP (client only)',t:'text',full:true},{k:'KCP_MODE',l:'KCP mode',t:'select',opts:['fast','normal','fast2','fast3']},
-    {k:'BLOCK',l:'Encryption',t:'select',opts:['aes-128-gcm','aes','aes-128','aes-192','aes-256','none']},{k:'CONN',l:'Connections (1-32)',t:'text',ph:'4'},
-    {k:'MTU',l:'MTU',t:'text',ph:'1150'},{k:'FORWARD_PORTS',l:'TCP ports to forward (client)',t:'text',full:true},
-    {k:'FORWARD_UDP_PORTS',l:'UDP ports to forward (client)',t:'text',full:true},{k:'SOCKS5_PORT',l:'SOCKS5 port (client)',t:'text'},
-    {k:'SOCKS5_USER',l:'SOCKS5 user',t:'text'},{k:'SOCKS5_PASS',l:'SOCKS5 password',t:'text'},{k:'ROUTER_MAC',l:'Router MAC (blank = auto)',t:'text',full:true}],
-  gost: [{k:'DEST_IP',l:'Destination (Kharej) IP',t:'text',full:true},{k:'PORT_MODE',l:'Port mode',t:'select',opts:['manual','range']},
-    {k:'PORTS',l:'Ports CSV (if manual)',t:'text',full:true},{k:'RANGE_START',l:'Range start (if range)',t:'text'},{k:'RANGE_END',l:'Range end (if range)',t:'text'},
-    {k:'PROTO',l:'Forward protocol',t:'select',opts:['tcp','udp','grpc']}]
+const T = (k, l, o = {}) => Object.assign({k, l, t: 'text'}, o);
+const SEL = (k, l, opts, o = {}) => Object.assign({k, l, t: 'select', opts}, o);
+const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'aes-256', 'none'];
+/* Each side only gets the fields that side really uses: eu = Server (abroad), iran = Client (Iran). */
+const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP', {full: true}), T('PEER_IP', 'Other side public IP', {full: true})];
+const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']),
+  T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'grpc'])];
+const FIELDS = {
+  asnative: {
+    eu: [T('IRAN_IP', 'Iran server IP', {full: true}), T('BRIDGE', 'Bridge port', {ph: '7000'}), T('SYNC', 'Sync port', {ph: '7001'})],
+    iran: [T('BRIDGE', 'Bridge port', {ph: '7000'}), T('SYNC', 'Sync port', {ph: '7001'}),
+      SEL('AUTO_SYNC', 'Auto-sync ports from the abroad side', ['true', 'false']), T('PORTS', 'Manual ports CSV (when auto-sync is false)', {full: true})]},
+  backhaul: {
+    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('BIND_PORT', 'Control port (listens)'),
+      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', "Control port (of the server)")]},
+  rathole: {
+    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true})],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', 'Control port (of the server)'),
+      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true})]},
+  frp: {
+    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)')],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', 'Control port (of the server)'),
+      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
+  gre: {eu: GRE_FIELDS, iran: GRE_FIELDS},
+  gost: {eu: GOST_FIELDS, iran: GOST_FIELDS},
+  paqet: {
+    eu: [T('SERVER_PORT', 'Tunnel port (listens)', {ph: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}), SEL('KCP_MODE', 'KCP mode', KCP_MODES),
+      SEL('BLOCK', 'Encryption', KCP_BLOCKS), T('CONN', 'Connections (1-32)', {ph: '4'}), T('MTU', 'MTU', {ph: '1150'}), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})],
+    iran: [T('SERVER_IP', 'Abroad server IP'), T('SERVER_PORT', 'Tunnel port (of the server)', {ph: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
+      SEL('KCP_MODE', 'KCP mode', KCP_MODES), SEL('BLOCK', 'Encryption', KCP_BLOCKS), T('CONN', 'Connections (1-32)', {ph: '4'}), T('MTU', 'MTU', {ph: '1150'}),
+      T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
+      T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]}
+};
+/* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
+const LINK_PARAMS = {
+  asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'})],
+  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws', 'wss']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
+  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'})],
+  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
+  gre: [],
+  gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'grpc'])],
+  paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
+    T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true})]
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
+const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
+const randPort = () => 20000 + Math.floor(Math.random() * 40000);
+function genInto(id) { $(id).value = randHex(16); }
 
-function openNew() { openSlot(null); }
+function openNew(mode) { openSlot(null, mode || 'manual'); }
 function openSlotByName(prof) { openSlot((cur().tunnels || []).find(x => x.prof === prof) || null); }
-function openSlot(existing) {
-  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing};
-  $('mTitle').textContent = existing ? existing.prof : t('newTunnel') + ' — ' + cur().name;
+function setRole(role) { $('roleSelect').value = role === 'iran' ? 'iran' : 'eu'; paintSide(); }
+function paintSide() { $('sideTxt').textContent = sideLabel($('roleSelect').value); $('sideNode').textContent = '· ' + (cur() ? cur().name : ''); }
+function openSlot(existing, mode) {
+  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual')};
+  $('mTitle').textContent = existing ? existing.prof : t('newTunnel');
+  $('modeSeg').classList.toggle('hidden', !!existing);
   paintStatus(existing ? !!existing.running : false, !!existing);
-  setMsg('', ''); mTab('config');
+  setMsg('', ''); $('lkSteps').innerHTML = ''; mTab('config');
   const nm = $('nameInput'); nm.value = existing ? existing.prof : ''; nm.disabled = !!existing;
-  $('roleSelect').value = existing ? existing.role : (cur().role || 'eu');
   $('methodSelect').value = existing ? existing.method : 'asnative';
-  renderFields(); $('rcToggle').checked = false; $('rcHours').value = '';
+  setRole(existing ? existing.role : (cur().role || 'eu'));
+  $('rcToggle').checked = false; $('rcHours').value = '';
+  setMode(CURRENT.mode);
   const target = S.sel;
   if (existing) {
     napi('/slots/' + encodeURIComponent(existing.prof)).then(d => {
       if (target !== S.sel || !CURRENT || CURRENT.prof !== existing.prof) return;
-      if (d.role) { $('roleSelect').value = d.role; renderFields(); }
+      if (d.role) { setRole(d.role); renderFields(); }
       if (d.fields) fillFields(d.fields);
       if (d.restart_hours) { $('rcToggle').checked = true; $('rcHours').value = d.restart_hours; }
     }).catch(() => {});
@@ -3765,19 +3995,72 @@ function openSlot(existing) {
   $('slotModal').classList.remove('hidden');
 }
 function closeModal() { stopLive(); $('slotModal').classList.add('hidden'); CURRENT = null; }
-function fieldDefsFor() {
-  const m = $('methodSelect').value, role = $('roleSelect').value;
-  return ((m === 'asnative') ? FIELD_DEFS['asnative_' + role] : FIELD_DEFS[m]).filter(f => !ROLE_KEYS.includes(f.k));
+function setMode(mode) {
+  if (!CURRENT) return; CURRENT.mode = mode;
+  $('mdManual').classList.toggle('on', mode === 'manual'); $('mdLink').classList.toggle('on', mode === 'link');
+  $('manualBox').classList.toggle('hidden', mode !== 'manual'); $('linkBox').classList.toggle('hidden', mode !== 'link');
+  setMsg('', '');
+  if (mode === 'manual') renderFields(); else initLink();
+}
+function onMethodChange() { if (!CURRENT) return; if (CURRENT.mode === 'link') renderLinkParams(); else renderFields(); }
+function fieldDefsFor() { const m = $('methodSelect').value, role = $('roleSelect').value; return (FIELDS[m] || {})[role] || []; }
+function inputHtml(f, prefix) {
+  const id = prefix + f.k;
+  if (f.t === 'select') return '<select class="mono" id="' + id + '">' + f.opts.map(o => '<option value="' + o + '">' + o + '</option>').join('') + '</select>';
+  const inp = '<input class="mono" id="' + id + '" type="text" placeholder="' + esc(f.ph || '') + '">';
+  return f.gen ? '<div class="row">' + inp + '<span class="icobtn" title="generate" onclick="genInto(\'' + id + '\')">↻</span></div>' : inp;
 }
 function renderFields() {
   const box = $('fieldsBox'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
   fieldDefsFor().forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
-    w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + (f.t === 'select'
-      ? '<select class="mono" id="f_' + f.k + '">' + f.opts.map(o => '<option value="' + o + '">' + o + '</option>').join('') + '</select>'
-      : '<input class="mono" id="f_' + f.k + '" type="text" placeholder="' + esc(f.ph || '') + '">');
-    grid.appendChild(w);
+    w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'f_'); grid.appendChild(w);
   });
+}
+/* ---- link two nodes from the panel ---- */
+function onlineNodes() { return S.nodes.filter(n => n.online); }
+function initLink() {
+  const nodes = onlineNodes(), opts = n => '<option value="' + esc(n.id) + '">' + esc(n.name) + ' — ' + esc(n.public_ip || '?') + '</option>';
+  const sv = nodes.find(n => n.role === 'eu') || nodes[0], cl = nodes.find(n => n.role === 'iran' && (!sv || n.id !== sv.id)) || nodes.find(n => !sv || n.id !== sv.id);
+  $('lkServer').innerHTML = nodes.map(opts).join(''); $('lkClient').innerHTML = nodes.map(opts).join('');
+  if (sv) $('lkServer').value = sv.id; if (cl) $('lkClient').value = cl.id;
+  lkNodeChanged(); renderLinkParams();
+  $('lkBtn').disabled = nodes.length < 2; if (nodes.length < 2) setMsg(t('lkNeed'), 'err');
+}
+function lkNodeChanged() {
+  const sv = S.nodes.find(n => n.id === $('lkServer').value), cl = S.nodes.find(n => n.id === $('lkClient').value);
+  $('lkSIp').value = sv ? (sv.public_ip || '') : ''; $('lkCIp').value = cl ? (cl.public_ip || '') : '';
+}
+function renderLinkParams() {
+  const m = $('methodSelect').value, box = $('lkParams'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
+  (LINK_PARAMS[m] || []).forEach(f => {
+    const w = document.createElement('div'); if (f.full) w.className = 'full';
+    w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'lk_'); grid.appendChild(w);
+    const el = $('lk_' + f.k); if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
+  });
+  $('lkNote').textContent = t(m === 'gost' ? 'lkNoteGost' : 'lkNote');
+}
+function linkParams() {
+  const out = {}; (LINK_PARAMS[$('methodSelect').value] || []).forEach(f => { const el = $('lk_' + f.k); if (el && el.value.trim() !== '') out[f.k] = el.value.trim(); });
+  return out;
+}
+async function createLink() {
+  const name = cleanName($('nameInput').value), server = $('lkServer').value, client = $('lkClient').value, method = $('methodSelect').value;
+  if (!name) { setMsg(t('enterName'), 'err'); return; }
+  if (!server || !client || server === client) { setMsg(t('pickDiff'), 'err'); return; }
+  const has = id => ((S.nodes.find(n => n.id === id) || {}).tunnels || []).some(x => x.prof === name);
+  if ((has(server) || has(client)) && !confirm(t('overwrite', {n: name}))) return;
+  const btn = $('lkBtn'); btn.disabled = true; setMsg('⏳ …', ''); $('lkSteps').innerHTML = '';
+  try {
+    const r = await api('/api/link', {method: 'POST', body: {name, method, server, client, server_ip: $('lkSIp').value.trim(), client_ip: $('lkCIp').value.trim(), params: linkParams()}});
+    $('lkSteps').innerHTML = (r.steps || []).map(s => '<li>' + (s.running ? '✅' : (s.saved ? '⚠️' : '❌')) + ' ' + (s.side === 'server' ? t('sideEu') : t('sideIran')) + ' — <b>' + esc(s.node) + '</b>'
+      + (s.error ? '<br><span class="muted mono" style="font-size:12px">' + esc(s.error) + '</span>' : '') + '</li>').join('');
+    if (r.ok) { setMsg(t('lkOk'), 'ok'); toast(t('lkOk'), 'ok'); }
+    else if (r.saved) { setMsg(t('lkPartial'), 'err'); toast(t('lkPartial'), 'err'); }
+    else { setMsg((r.rolled_back ? t('lkRolled') + '\n' : '') + errText(r), 'err'); toast(t('failed'), 'err'); }
+    await refreshNodes(); reloadTunnels();
+  } catch (e) { if (e.message !== 'unauthorized') setMsg('✖ ' + e.message, 'err'); }
+  finally { btn.disabled = false; }
 }
 function fillFields(fields) { Object.keys(fields).forEach(k => { const el = $('f_' + k); if (el) el.value = fields[k]; }); }
 function collectFields() {
