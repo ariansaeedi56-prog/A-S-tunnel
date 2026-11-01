@@ -10,7 +10,7 @@ Named Tunnels • Multi-Protocol • Master Web Panel • AutoSync • Health Ch
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.3-cyan">
+  <img src="https://img.shields.io/badge/version-4.0.4-cyan">
   <img src="https://img.shields.io/badge/protocols-7-brightgreen">
   <img src="https://img.shields.io/badge/tunnels-unlimited-blue">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey">
@@ -243,7 +243,7 @@ Also: stat cards (public IP, connected nodes, average latency, CPU / RAM / uptim
 
 ### Security notes
 
-- Login uses a signed, HttpOnly browser cookie that lasts up to 30 days; signing out clears it, and changing the password invalidates it. The password is stored **hashed**; 8 failed logins lock an IP for 5 minutes.
+- Login uses a signed, HttpOnly browser cookie that lasts up to 30 days; it is bound to the browser / app / OS user-agent, signing out clears it, and changing the password invalidates it. The saved-session check avoids showing the login form during a normal page refresh. The password is stored **hashed**; 8 failed logins lock an IP for 5 minutes.
 - Nodes authenticate with their own token (issued once with the join key) and only execute a fixed **whitelist** of commands — never arbitrary shell.
 - Use HTTPS, open the panel port only to what you need, and treat the panel like root access.
 - Menu options in `9`: show info, change username/password, reset to random, new join key, disable, uninstall, agent status, disconnect.
