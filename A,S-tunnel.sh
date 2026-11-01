@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.0.9"
+VERSION="4.1.0"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -123,31 +123,53 @@ install_backhaul(){
 }
 
 install_rathole(){
-  [[ -x "$BIN_DIR/rathole" ]] && return 0
-  echo "[*] Installing Rathole..." > "$TTY_OUT"
-  local arch; arch="$(detect_arch)"
-  local archname="x86_64"; [[ "$arch" == "arm64" ]] && archname="aarch64"
-  local url="" suf ext
+  local arch archname url="" suf ext tmp bin
+  arch="$(detect_arch)"; archname="x86_64"; [[ "$arch" == "arm64" ]] && archname="aarch64"
+  if [[ -x "$BIN_DIR/rathole" ]] && "$BIN_DIR/rathole" --version >/dev/null 2>&1; then return 0; fi
+  [[ -e "$BIN_DIR/rathole" ]] && rm -f "$BIN_DIR/rathole"
+  echo "[*] Installing / repairing Rathole..." > "$TTY_OUT"
   for suf in "unknown-linux-musl" "unknown-linux-gnu"; do
     for ext in "zip" "tar\\.gz"; do
-      url="$(gh_latest_asset_url "rapiz1/rathole" "${archname}-${suf}\\.${ext}$")"
+      url="$(gh_latest_asset_url "rathole-org/rathole" "${archname}-${suf}\\.${ext}$")"
       [[ -n "$url" ]] && break 2
     done
   done
-  [[ -n "$url" ]] || { echo "[-] Could not find a rathole release asset for ${archname}." > "$TTY_OUT"; return 1; }
-  local tmp; tmp="$(mktemp -d)"
-  fetch_url_to "$url" "$tmp/rt.pkg" || { rm -rf "$tmp"; return 1; }
+  [[ -n "$url" ]] || { echo "[-] Could not find a Rathole release asset for ${archname}." > "$TTY_OUT"; return 1; }
+  tmp="$(mktemp -d)"
+  if ! fetch_url_to "$url" "$tmp/rt.pkg"; then rm -rf "$tmp"; echo "[-] Could not download Rathole." > "$TTY_OUT"; return 1; fi
   if [[ "$url" == *.zip ]]; then
     have unzip || apt_try_install unzip
     unzip -o "$tmp/rt.pkg" -d "$tmp" >/dev/null 2>&1 || true
   else
     tar -xzf "$tmp/rt.pkg" -C "$tmp" 2>/dev/null || true
   fi
-  find "$tmp" -maxdepth 2 -type f -iname "rathole" -exec cp {} "$BIN_DIR/rathole" \; 2>/dev/null || true
-  chmod +x "$BIN_DIR/rathole" 2>/dev/null || true
+  bin="$(find "$tmp" -maxdepth 2 -type f -iname "rathole" -print -quit 2>/dev/null || true)"
+  if [[ -n "$bin" ]]; then install -m 0755 "$bin" "$BIN_DIR/rathole"; fi
   rm -rf "$tmp"
-  [[ -x "$BIN_DIR/rathole" ]] || { echo "[-] Rathole install failed." > "$TTY_OUT"; return 1; }
-  echo "[+] Rathole installed at $BIN_DIR/rathole" > "$TTY_OUT"
+  if [[ -x "$BIN_DIR/rathole" ]] && "$BIN_DIR/rathole" --version >/dev/null 2>&1; then
+    echo "[+] Rathole ready: $($BIN_DIR/rathole --version 2>&1 | head -n1)" > "$TTY_OUT"
+    return 0
+  fi
+  rm -f "$BIN_DIR/rathole"
+  if [[ "$archname" == "x86_64" ]]; then
+    echo "[!] Current Rathole binary is incompatible with this system; trying the official x86_64 musl build..." > "$TTY_OUT"
+    tmp="$(mktemp -d)"
+    url="https://github.com/rathole-org/rathole/releases/download/v0.4.8/rathole-x86_64-unknown-linux-musl.zip"
+    if fetch_url_to "$url" "$tmp/rt-musl.zip"; then
+      have unzip || apt_try_install unzip
+      unzip -o "$tmp/rt-musl.zip" -d "$tmp" >/dev/null 2>&1 || true
+      bin="$(find "$tmp" -maxdepth 2 -type f -iname "rathole" -print -quit 2>/dev/null || true)"
+      if [[ -n "$bin" ]]; then install -m 0755 "$bin" "$BIN_DIR/rathole"; fi
+    fi
+    rm -rf "$tmp"
+  fi
+  if [[ -x "$BIN_DIR/rathole" ]] && "$BIN_DIR/rathole" --version >/dev/null 2>&1; then
+    echo "[+] Rathole compatibility build ready: $($BIN_DIR/rathole --version 2>&1 | head -n1)" > "$TTY_OUT"
+    return 0
+  fi
+  rm -f "$BIN_DIR/rathole"
+  echo "[-] Rathole binary cannot run on this system. Check the OS architecture and libc version." > "$TTY_OUT"
+  return 1
 }
 
 install_frp(){
@@ -587,36 +609,19 @@ EOF
 }
 
 edit_profile_rathole(){
-  local prof f role
-  prof="$1"
-  f="$2"
-  role="$3"
+  local prof f role rtr
+  prof="$1"; f="$2"; role="$3"
   rtr="2"; [[ "$role" == "iran" ]] && rtr="1"
   echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$rtr")"
   read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
   if [[ "$rtr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 2333): " BIND_PORT < /dev/tty
-    cat >"$f" <<EOF
-METHOD=rathole
-ROLE=$role
-RT_ROLE=server
-TOKEN=$TOKEN
-BIND_PORT=$BIND_PORT
-FORWARD_PORTS=$FORWARD_PORTS
-EOF
+    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=server" "TOKEN=$TOKEN" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   else
-    read -r -p "Server IP: " SERVER_IP < /dev/tty
+    read -r -p "Server IP / hostname: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 2333): " BIND_PORT < /dev/tty
-    cat >"$f" <<EOF
-METHOD=rathole
-ROLE=$role
-RT_ROLE=client
-TOKEN=$TOKEN
-SERVER_IP=$SERVER_IP
-BIND_PORT=$BIND_PORT
-FORWARD_PORTS=$FORWARD_PORTS
-EOF
+    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=client" "TOKEN=$TOKEN" "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
 }
@@ -825,28 +830,54 @@ EOF
   fi
 }
 
+rathole_valid_port(){ [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
+rathole_validate_profile(){
+  local prof p host port_count=0
+  prof="$1"; load_profile "$prof"
+  [[ "$RT_ROLE" == "server" || "$RT_ROLE" == "client" ]] || { echo "[-] Rathole: choose server on Iran or client abroad." > "$TTY_OUT"; return 1; }
+  [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo "[-] Rathole: shared token must be 8-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
+  rathole_valid_port "$BIND_PORT" || { echo "[-] Rathole: control port must be between 1 and 65535." > "$TTY_OUT"; return 1; }
+  if [[ "$RT_ROLE" == "client" ]]; then
+    host="${SERVER_IP:-}"
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$ ]] || { echo "[-] Rathole: enter a valid Iran server IP or hostname." > "$TTY_OUT"; return 1; }
+  fi
+  [[ -n "$FORWARD_PORTS" ]] || { echo "[-] Rathole: add at least one TCP port to forward." > "$TTY_OUT"; return 1; }
+  local IFS=','
+  read -ra _rathole_ports <<< "$FORWARD_PORTS"
+  for p in "${_rathole_ports[@]}"; do
+    p="$(echo "$p" | xargs)"
+    rathole_valid_port "$p" || { echo "[-] Rathole: invalid forwarded port '$p'." > "$TTY_OUT"; return 1; }
+    [[ "$p" != "$BIND_PORT" ]] || { echo "[-] Rathole: forwarded port must differ from the control port." > "$TTY_OUT"; return 1; }
+    port_count=$((port_count + 1))
+  done
+  (( port_count > 0 )) || { echo "[-] Rathole: enter at least one forwarded port." > "$TTY_OUT"; return 1; }
+}
+
 write_rathole_config(){
-  local prof f cfg
-  prof="$1"
-  f="$CONF/${prof}.env"
-  cfg="$CONF/${prof}.toml"
-  # shellcheck disable=SC1090
+  local prof cfg p
+  prof="$1"; cfg="$CONF/${prof}.toml"
+  rathole_validate_profile "$prof" || return 1
   load_profile "$prof"
   if [[ "$RT_ROLE" == "server" ]]; then
     { echo "[server]"; echo "bind_addr = \"0.0.0.0:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""; } > "$cfg"
-    local p
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
-      { echo ""; echo "[server.services.svc${p}]"; echo "bind_addr = \"0.0.0.0:${p}\""; } >> "$cfg"
+      {
+        echo ""; echo "[server.services.svc${p}]"; echo 'type = "tcp"'
+        printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
+      } >> "$cfg"
     done < <(csv_ports_to_array "$FORWARD_PORTS")
   else
     { echo "[client]"; echo "remote_addr = \"${SERVER_IP}:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""; } > "$cfg"
-    local p
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
-      { echo ""; echo "[client.services.svc${p}]"; echo "local_addr = \"127.0.0.1:${p}\""; } >> "$cfg"
+      {
+        echo ""; echo "[client.services.svc${p}]"; echo 'type = "tcp"'
+        printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "127.0.0.1:%s"\n' "$p"
+      } >> "$cfg"
     done < <(csv_ports_to_array "$FORWARD_PORTS")
   fi
+  chmod 600 "$cfg"
 }
 
 write_frp_config(){
@@ -1310,9 +1341,10 @@ run_backhaul_slot(){
 run_rathole_slot(){
   local prof flag
   prof="$1"
-  load_profile "$prof"
+  rathole_validate_profile "$prof" || return 1
   install_rathole || return 1
-  write_rathole_config "$prof"
+  write_rathole_config "$prof" || return 1
+  load_profile "$prof"
   [[ "$RT_ROLE" == "server" ]] && flag="--server" || flag="--client"
   launch_in_screen "$prof" "'$BIN_DIR/rathole' $flag '$CONF/${prof}.toml'" || return 1
   echo "[+] Started: $(session_name "$prof") (rathole)" > "$TTY_OUT"
