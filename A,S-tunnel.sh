@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.0.1"
+VERSION="4.0.2"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
