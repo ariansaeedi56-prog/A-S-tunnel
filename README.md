@@ -10,7 +10,7 @@ Named Tunnels • Multi-Protocol • Master Web Panel • AutoSync • Health Ch
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.0-cyan">
+  <img src="https://img.shields.io/badge/version-4.0.2-cyan">
   <img src="https://img.shields.io/badge/protocols-7-brightgreen">
   <img src="https://img.shields.io/badge/tunnels-unlimited-blue">
   <img src="https://img.shields.io/badge/license-MIT-lightgrey">
@@ -103,7 +103,7 @@ From the main menu:
 ```
 
 1. Type a **name** for the tunnel (e.g. `server1`) — letters, digits, `-` and `_`
-2. Choose the side: **Server (Abroad / Kharej)** or **Client (Iran)**
+2. Choose this host's location: **Abroad (Kharej)** or **Iran**
 3. Choose a protocol (**1–7**, see table above)
 4. Answer the protocol's short wizard
 5. ✅ Done — the tunnel **starts automatically** and its status is shown right away
@@ -122,11 +122,13 @@ Repeat on the **other server** with the matching side and values (same token / p
 | AutoSync | — | `y`/`n` |
 | Manual ports | — | only if AutoSync = `n` |
 
-No external binary — runs on the bundled `A,S.py` core.
+The Iran host listens for connections; the abroad host initiates the connection. No external binary — runs on the bundled `A,S.py` core.
 
 ---
 
 ### 2️⃣ Backhaul
+
+In this setup, the protocol **server runs on the Iran host** and the **client runs abroad**.
 
 | Field | Server role | Client role |
 |---|---|---|
@@ -141,6 +143,8 @@ Binary is auto-downloaded from `Musixal/Backhaul` releases.
 ---
 
 ### 3️⃣ Rathole
+
+In this setup, the protocol **server runs on the Iran host** and the **client runs abroad**.
 
 | Field | Server role | Client role |
 |---|---|---|
@@ -226,9 +230,9 @@ The fingerprint pins the master's certificate (leave it out to trust on first us
 | **Nodes** | Every node: side, online/offline, IP, CPU, RAM, tunnels, latency, version · update one / all nodes · remove · join info |
 | **Speedtest (iperf3)** | Real throughput between any two nodes (upload + download), history |
 | **Live Ping & Latency** | Live node ⇄ master RTT with trends + live ping from any node to any target with a chart |
-| **Tunnels Manager** | Add / edit / start / stop / delete tunnels of the selected node, **live logs**, scheduled restart. New tunnels can be created **✋ Manually** on the selected node, or **🔗 From panel nodes**: pick a *Server (Abroad)* node and a *Client (Iran)* node (the master itself counts as a node) and the panel configures both ends at once — shared key/token, ports and IPs are filled in automatically, and the server side is rolled back if the client side fails |
+| **Tunnels Manager** | Add / edit / start / stop / delete tunnels of the selected node, **live logs**, scheduled restart. New tunnels can be created **✋ Manually** on the selected node, or **🔗 From panel nodes**. Endpoint locations depend on the protocol: A,S Native, Backhaul and Rathole use an Iran server with an abroad client; other paired methods use the abroad server and Iran client where applicable. The panel fills shared keys, ports and addresses automatically, and rolls back the server profile if the client setup fails |
 
-> **Fields follow the side.** A node is either *Server (Abroad)* or *Client (Iran)* (changeable in Node & Config). The tunnel form only shows the options that belong to that side — no mixed "client only / server only" fields.
+> **Fields follow the host location.** Set each node as *Abroad* or *Iran* in Node & Config. The tunnel form shows the fields for that location and protocol; the protocol server/client role is handled separately.
 
 Also: stat cards (public IP, connected nodes, average latency, CPU / RAM / uptime / load of the selected node), **EN / فارسی** switch (RTL), **color palette**, refresh and sign-out. Everything updates live (every ~3 s).
 
