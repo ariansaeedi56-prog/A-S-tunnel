@@ -442,10 +442,10 @@ pick_side(){
   while true; do
     echo "" > "$TTY_OUT"
     echo -e "${CLR_DIM}┌─────────────────────────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}Server or Client?${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_BOLD}Which side is this host on?${CLR_RESET}" > "$TTY_OUT"
     echo -e "${CLR_DIM}├─────────────────────────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) 🌍 Server  ${CLR_DIM}(Abroad / Kharej)${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) 🇮🇷 Client  ${CLR_DIM}(Iran)${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) 🌍 Abroad side  ${CLR_DIM}(Abroad / Kharej)${CLR_RESET}" > "$TTY_OUT"
+    echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) 🇮🇷 Iran side" > "$TTY_OUT"
     echo -e "${CLR_DIM}└─────────────────────────────────────────────┘${CLR_RESET}" > "$TTY_OUT"
     read -r -p "Select: " x < /dev/tty
     if [[ "$x" == "1" ]]; then echo "eu"; return 0; fi
@@ -455,7 +455,7 @@ pick_side(){
 }
 
 role_badge(){
-  if [[ "$1" == "eu" ]]; then echo "🌍 Server (Abroad)"; else echo "🇮🇷 Client (Iran)"; fi
+  if [[ "$1" == "eu" ]]; then echo "🌍 Abroad side"; else echo "🇮🇷 Iran side"; fi
 }
 
 prompt_tunnel_name(){
@@ -556,16 +556,14 @@ EOF
   echo "[+] Saved $f" > "$TTY_OUT"
 }
 
-# Backhaul docs: the box you want to run in listening ("server") mode opens
-# the control port + forwarded ports; the other box ("client") dials out to
-# it. Ask explicitly rather than guessing from eu/iran, since either box can
-# play either role depending on your firewall situation.
+# Backhaul mapping for this setup: Iran listens as the protocol server;
+# the abroad side runs the client and connects to the Iran server.
 edit_profile_backhaul(){
   local prof f role
   prof="$1"
   f="$2"
   role="$3"
-  bhr="1"; [[ "$role" == "iran" ]] && bhr="2"
+  bhr="2"; [[ "$role" == "iran" ]] && bhr="1"
   echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$bhr")"
   read -r -p "Transport [tcp/ws/wss] (default tcp): " TRANSPORT < /dev/tty
@@ -603,7 +601,7 @@ edit_profile_rathole(){
   prof="$1"
   f="$2"
   role="$3"
-  rtr="1"; [[ "$role" == "iran" ]] && rtr="2"
+  rtr="2"; [[ "$role" == "iran" ]] && rtr="1"
   echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$rtr")"
   read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
@@ -2378,7 +2376,7 @@ def _rand_port(avoid):
 
 
 def build_link(method, p, sip, cip):
-    """Fields for both ends. Server = abroad side ("eu"), client = Iran side.
+    """Fields for the selected protocol server and client; geography is method-dependent.
     The server value may be None when only one end needs configuring (gost)."""
     key = secrets.token_hex(16)  # shared secret, never typed by hand
     fwd = _ports_csv(p.get("forward_ports"))
@@ -2387,8 +2385,8 @@ def build_link(method, p, sip, cip):
         bridge, sync = _port(p.get("bridge"), 7000), _port(p.get("sync"), 7001)
         if bridge == sync:
             raise ValueError("ports_conflict")
-        return ({"IRAN_IP": cip, "BRIDGE": bridge, "SYNC": sync},
-                {"BRIDGE": bridge, "SYNC": sync, "AUTO_SYNC": "true"})
+        return ({"BRIDGE": bridge, "SYNC": sync},
+                {"IRAN_IP": sip, "BRIDGE": bridge, "SYNC": sync})
     if method == "gre":
         return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
     if method == "gost":
@@ -2464,12 +2462,14 @@ def api_link():
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
+    server_role, client_role = (("iran", "eu") if method in ("asnative", "backhaul", "rathole") else ("eu", "iran"))
+
     steps = []
 
     def apply(side, nid, label, role, fields):
         res = run_on_node(nid, "save", {"prof": name, "body": {"method": method, "role": role, "fields": fields}}, timeout=330)
         res = res if isinstance(res, dict) else {"error": "bad_result"}
-        step = {"side": side, "node": label, "node_id": nid, "saved": bool(res.get("ok") or res.get("saved")),
+        step = {"side": side, "role": role, "node": label, "node_id": nid, "saved": bool(res.get("ok") or res.get("saved")),
                 "running": bool(res.get("ok") or res.get("running")),
                 "error": "" if res.get("ok") else str(res.get("log") or res.get("detail") or res.get("error") or "")[-600:]}
         steps.append(step)
@@ -2477,9 +2477,9 @@ def api_link():
 
     rolled = False
     if sfields is not None:
-        if not apply("server", server, sname, "eu", sfields)["saved"]:
+        if not apply("server", server, sname, server_role, sfields)["saved"]:
             return jsonify({"ok": False, "saved": False, "steps": steps, "error": "server_failed"})
-    if not apply("client", client, cname, "iran", cfields)["saved"] and sfields is not None:
+    if not apply("client", client, cname, client_role, cfields)["saved"] and sfields is not None:
         run_on_node(server, "delete", {"prof": name}, timeout=120)  # never leave a half-configured pair
         rolled = True
     return jsonify({"ok": all(x["running"] for x in steps), "saved": all(x["saved"] for x in steps), "steps": steps,
@@ -3263,7 +3263,7 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <div class="grid3">
         <div><label class="f"><span data-i="nodeName">Node Name</span> <span class="muted">*</span></label><input id="cfgName" class="mono" maxlength="40"></div>
         <div><label class="f" data-i="netName">Network Name</label><input id="cfgNet" class="mono" maxlength="40"></div>
-        <div><label class="f" data-i="side">Side</label><select id="cfgSide"><option value="eu">🌍 Server (Abroad / Kharej)</option><option value="iran">🇮🇷 Client (Iran)</option></select></div>
+        <div><label class="f" data-i="side">Side</label><select id="cfgSide"><option value="eu">🌍 Abroad side (Kharej)</option><option value="iran">🇮🇷 Iran side</option></select></div>
         <div><label class="f" data-i="hostname">Hostname</label><input id="cfgHost" class="mono" readonly></div>
         <div><label class="f" data-i="publicIp">Public IP</label><div class="row"><input id="cfgIp" class="mono" readonly><span class="icobtn" onclick="copyText($('cfgIp').value)">⧉</span></div></div>
         <div><label class="f" data-i="nodeId">Node ID</label><input id="cfgId" class="mono" readonly></div>
@@ -3435,8 +3435,8 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       </div>
       <div id="linkBox" class="hidden">
         <div class="fgrid" style="margin-top:14px">
-          <div><label class="f">🌍 <span data-i="lkServer">Server node (Abroad)</span></label><select id="lkServer" onchange="lkNodeChanged()"></select></div>
-          <div><label class="f">🇮🇷 <span data-i="lkClient">Client node (Iran)</span></label><select id="lkClient" onchange="lkNodeChanged()"></select></div>
+          <div><label class="f"><span id="lkServerFlag">🌍</span> <span id="lkServerText" data-i="lkServerAbroad">Server node (Abroad)</span></label><select id="lkServer" onchange="lkNodeChanged()"></select></div>
+          <div><label class="f"><span id="lkClientFlag">🇮🇷</span> <span id="lkClientText" data-i="lkClientIran">Client node (Iran)</span></label><select id="lkClient" onchange="lkNodeChanged()"></select></div>
           <div><label class="f" data-i="lkSIp">Server address</label><input id="lkSIp" class="mono"></div>
           <div><label class="f" data-i="lkCIp">Client address</label><input id="lkCIp" class="mono"></div>
         </div>
@@ -3496,12 +3496,12 @@ en:{
  deleteConfirm:'Delete "{n}"? This stops it and removes its config, log and schedule.', bulkDone:'Done: {ok} ok, {bad} failed', optimizeDone:'Optimization applied ✔',
  updated:'Updated ✔', updateNoChange:'Already up to date', keyRegen:'New join key generated ✔', regenConfirm:'Generate a new join key? Existing nodes stay connected.',
  enterName:'Enter a tunnel name (letters, digits, - or _).', overwrite:'A tunnel named "{n}" already exists. Overwrite it?',
- savedRunning:'✔ Saved and running', savedNotRunning:'✔ Config saved, but the tunnel is not running:', saveFailed:'✖ Save failed', never:'never', ago:'{s}s ago', sideEu:'🌍 Server (Abroad)', sideIran:'🇮🇷 Client (Iran)',
+ savedRunning:'✔ Saved and running', savedNotRunning:'✔ Config saved, but the tunnel is not running:', saveFailed:'✖ Save failed', never:'never', ago:'{s}s ago', sideEu:'🌍 Abroad side', sideIran:'🇮🇷 Iran side',
  modeManual:'Manual', modeLink:'From panel nodes', addLink:'Link panel nodes', addManual:'Manual tunnel',
- lkServer:'Server node (Abroad)', lkClient:'Client node (Iran)', lkSIp:'Server address', lkCIp:'Client address',
+ lkServerAbroad:'Server node (Abroad)', lkClientIran:'Client node (Iran)', lkServerIran:'Server node (Iran)', lkClientAbroad:'Client node (Abroad)', lkNoteReverse:'For this method, the protocol server runs in Iran and the client connects from abroad.', lkSIp:'Server address', lkCIp:'Client address',
  lkNote:'Keys and ports are generated and shared with both nodes automatically; addresses come from the nodes.',
  lkNoteGost:'Gost only configures the client node (Iran): it forwards the ports to the server address.',
- lkCreate:'Create on both nodes', lkNeed:'You need at least two online nodes (this panel counts as one).',
+ lkCreate:'Create on both nodes', lkNeed:'You need one online Iran node and one online abroad node.',
  lkOk:'✔ Tunnel created and running on both nodes', lkPartial:'⚠ Saved on both nodes, but at least one is not running yet:', lkRolled:'The server side was removed again so nothing is left half-configured.',
  e_bad_name:'Use letters, digits, - or _ for the name.', e_bad_ports:'Ports must be numbers between 1 and 65535.', e_ports_required:'Enter at least one port to forward.',
  e_ports_conflict:'The control port must differ from the forwarded ports (and bridge ≠ sync).', e_bad_address:'Check the server / client address.', e_same_node:'Pick two different nodes.',
@@ -3540,12 +3540,12 @@ fa:{
  deleteConfirm:'«{n}» حذف شود؟ تانل متوقف و تنظیمات، لاگ و زمان‌بندی آن پاک می‌شود.', bulkDone:'انجام شد: {ok} موفق، {bad} ناموفق', optimizeDone:'بهینه‌سازی اعمال شد ✔',
  updated:'به‌روزرسانی شد ✔', updateNoChange:'از قبل به‌روز است', keyRegen:'کلید اتصال جدید ساخته شد ✔', regenConfirm:'کلید اتصال جدید ساخته شود؟ نودهای فعلی متصل می‌مانند.',
  enterName:'یک نام برای تانل وارد کنید (حروف، عدد، - یا _).', overwrite:'تانلی با نام «{n}» وجود دارد. بازنویسی شود؟',
- savedRunning:'✔ ذخیره شد و در حال اجراست', savedNotRunning:'✔ تنظیمات ذخیره شد، ولی تانل اجرا نشده:', saveFailed:'✖ ذخیره ناموفق بود', never:'هرگز', ago:'{s} ثانیه پیش', sideEu:'🌍 سرور (خارج)', sideIran:'🇮🇷 کلاینت (ایران)',
+ savedRunning:'✔ ذخیره شد و در حال اجراست', savedNotRunning:'✔ تنظیمات ذخیره شد، ولی تانل اجرا نشده:', saveFailed:'✖ ذخیره ناموفق بود', never:'هرگز', ago:'{s} ثانیه پیش', sideEu:'🌍 سمت خارج', sideIran:'🇮🇷 سمت ایران',
  modeManual:'دستی', modeLink:'از روی نودهای پنل', addLink:'اتصال نودهای پنل', addManual:'تانل دستی',
- lkServer:'نود سرور (خارج)', lkClient:'نود کلاینت (ایران)', lkSIp:'آدرس سرور', lkCIp:'آدرس کلاینت',
+ lkServerAbroad:'نود سرور (خارج)', lkClientIran:'نود کلاینت (ایران)', lkServerIran:'نود سرور (ایران)', lkClientAbroad:'نود کلاینت (خارج)', lkNoteReverse:'در این روش سرور پروتکل روی نود ایران است و کلاینت از خارج به آن وصل می‌شود.', lkSIp:'آدرس سرور', lkCIp:'آدرس کلاینت',
  lkNote:'کلیدها و پورت‌ها خودکار ساخته و روی هر دو نود اعمال می‌شود؛ آدرس‌ها از خود نودها می‌آید.',
  lkNoteGost:'Gost فقط نود کلاینت (ایران) را تنظیم می‌کند و پورت‌ها را به آدرس سرور فوروارد می‌کند.',
- lkCreate:'ساخت روی هر دو نود', lkNeed:'حداقل دو نود آنلاین لازم است (خود پنل هم یک نود حساب می‌شود).',
+ lkCreate:'ساخت روی هر دو نود', lkNeed:'یک نود آنلاین در ایران و یک نود آنلاین در خارج لازم است.',
  lkOk:'✔ تانل روی هر دو نود ساخته شد و در حال اجراست', lkPartial:'⚠ روی هر دو نود ذخیره شد، ولی حداقل یکی هنوز اجرا نشده:', lkRolled:'سمت سرور دوباره حذف شد تا چیزی نیمه‌کاره نماند.',
  e_bad_name:'برای نام از حروف، عدد، - یا _ استفاده کنید.', e_bad_ports:'پورت‌ها باید عددی بین ۱ تا ۶۵۵۳۵ باشند.', e_ports_required:'حداقل یک پورت برای فوروارد وارد کنید.',
  e_ports_conflict:'پورت کنترل باید با پورت‌های فوروارد فرق داشته باشد (و bridge با sync).', e_bad_address:'آدرس سرور / کلاینت را بررسی کنید.', e_same_node:'دو نود متفاوت انتخاب کنید.',
@@ -3941,7 +3941,7 @@ const ROLE_KEY_OF = {backhaul: 'BH_ROLE', rathole: 'RT_ROLE', frp: 'FRP_ROLE', p
 const T = (k, l, o = {}) => Object.assign({k, l, t: 'text'}, o);
 const SEL = (k, l, opts, o = {}) => Object.assign({k, l, t: 'select', opts}, o);
 const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'aes-256', 'none'];
-/* Each side only gets the fields that side really uses: eu = Server (abroad), iran = Client (Iran). */
+/* Location keys: eu = abroad and iran = Iran; protocol roles are method-specific. */
 const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP', {full: true}), T('PEER_IP', 'Other side public IP', {full: true})];
 const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']),
   T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'grpc'])];
@@ -3951,13 +3951,12 @@ const FIELDS = {
     iran: [T('BRIDGE', 'Bridge port', {ph: '7000'}), T('SYNC', 'Sync port', {ph: '7001'}),
       SEL('AUTO_SYNC', 'Auto-sync ports from the abroad side', ['true', 'false']), T('PORTS', 'Manual ports CSV (when auto-sync is false)', {full: true})]},
   backhaul: {
-    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('BIND_PORT', 'Control port (listens)'),
-      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', "Control port (of the server)")]},
+    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port')],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
   rathole: {
-    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true})],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', 'Control port (of the server)'),
-      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true})]},
+    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
+      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true})],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true})]},
   frp: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)')],
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', 'Control port (of the server)'),
@@ -4022,7 +4021,7 @@ function setMode(mode) {
   setMsg('', '');
   if (mode === 'manual') renderFields(); else initLink();
 }
-function onMethodChange() { if (!CURRENT) return; if (CURRENT.mode === 'link') renderLinkParams(); else renderFields(); }
+function onMethodChange() { if (!CURRENT) return; if (CURRENT.mode === 'link') initLink(); else renderFields(); }
 function fieldDefsFor() { const m = $('methodSelect').value, role = $('roleSelect').value; return (FIELDS[m] || {})[role] || []; }
 function inputHtml(f, prefix) {
   const id = prefix + f.k;
@@ -4040,12 +4039,26 @@ function renderFields() {
 /* ---- link two nodes from the panel ---- */
 function onlineNodes() { return S.nodes.filter(n => n.online); }
 function initLink() {
-  const nodes = onlineNodes(), opts = n => '<option value="' + esc(n.id) + '">' + esc(n.name) + ' — ' + esc(n.public_ip || '?') + '</option>';
-  const sv = nodes.find(n => n.role === 'eu') || nodes[0], cl = nodes.find(n => n.role === 'iran' && (!sv || n.id !== sv.id)) || nodes.find(n => !sv || n.id !== sv.id);
-  $('lkServer').innerHTML = nodes.map(opts).join(''); $('lkClient').innerHTML = nodes.map(opts).join('');
-  if (sv) $('lkServer').value = sv.id; if (cl) $('lkClient').value = cl.id;
+  const nodes = onlineNodes(), method = $('methodSelect').value;
+  const reverse = ['asnative', 'backhaul', 'rathole'].includes(method);
+  const serverRole = reverse ? 'iran' : 'eu', clientRole = reverse ? 'eu' : 'iran';
+  const serverNodes = nodes.filter(n => n.role === serverRole), clientNodes = nodes.filter(n => n.role === clientRole);
+  const opts = n => '<option value="' + esc(n.id) + '">' + esc(n.name) + ' — ' + esc(n.public_ip || '?') + '</option>';
+  const sv = serverNodes[0], cl = clientNodes.find(n => !sv || n.id !== sv.id);
+  $('lkServer').innerHTML = serverNodes.map(opts).join('');
+  $('lkClient').innerHTML = clientNodes.map(opts).join('');
+  if (sv) $('lkServer').value = sv.id;
+  if (cl) $('lkClient').value = cl.id;
+  $('lkServerFlag').textContent = reverse ? '🇮🇷' : '🌍';
+  $('lkClientFlag').textContent = reverse ? '🌍' : '🇮🇷';
+  const serverKey = reverse ? 'lkServerIran' : 'lkServerAbroad';
+  const clientKey = reverse ? 'lkClientAbroad' : 'lkClientIran';
+  $('lkServerText').dataset.i = serverKey; $('lkServerText').textContent = t(serverKey);
+  $('lkClientText').dataset.i = clientKey; $('lkClientText').textContent = t(clientKey);
   lkNodeChanged(); renderLinkParams();
-  $('lkBtn').disabled = nodes.length < 2; if (nodes.length < 2) setMsg(t('lkNeed'), 'err');
+  const ready = !!sv && !!cl;
+  $('lkBtn').disabled = !ready;
+  if (!ready) setMsg(t('lkNeed'), 'err');
 }
 function lkNodeChanged() {
   const sv = S.nodes.find(n => n.id === $('lkServer').value), cl = S.nodes.find(n => n.id === $('lkClient').value);
@@ -4058,7 +4071,9 @@ function renderLinkParams() {
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'lk_'); grid.appendChild(w);
     const el = $('lk_' + f.k); if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
   });
-  $('lkNote').textContent = t(m === 'gost' ? 'lkNoteGost' : 'lkNote');
+  const reverse = ['asnative', 'backhaul', 'rathole'].includes(m);
+  const noteKey = m === 'gost' ? 'lkNoteGost' : (reverse ? 'lkNoteReverse' : 'lkNote');
+  $('lkNote').dataset.i = noteKey; $('lkNote').textContent = t(noteKey);
 }
 function linkParams() {
   const out = {}; (LINK_PARAMS[$('methodSelect').value] || []).forEach(f => { const el = $('lk_' + f.k); if (el && el.value.trim() !== '') out[f.k] = el.value.trim(); });
@@ -4073,7 +4088,7 @@ async function createLink() {
   const btn = $('lkBtn'); btn.disabled = true; setMsg('⏳ …', ''); $('lkSteps').innerHTML = '';
   try {
     const r = await api('/api/link', {method: 'POST', body: {name, method, server, client, server_ip: $('lkSIp').value.trim(), client_ip: $('lkCIp').value.trim(), params: linkParams()}});
-    $('lkSteps').innerHTML = (r.steps || []).map(s => '<li>' + (s.running ? '✅' : (s.saved ? '⚠️' : '❌')) + ' ' + (s.side === 'server' ? t('sideEu') : t('sideIran')) + ' — <b>' + esc(s.node) + '</b>'
+    $('lkSteps').innerHTML = (r.steps || []).map(s => '<li>' + (s.running ? '✅' : (s.saved ? '⚠️' : '❌')) + ' ' + (s.role === 'eu' ? t('sideEu') : t('sideIran')) + ' — <b>' + esc(s.node) + '</b>'
       + (s.error ? '<br><span class="muted mono" style="font-size:12px">' + esc(s.error) + '</span>' : '') + '</li>').join('');
     if (r.ok) { setMsg(t('lkOk'), 'ok'); toast(t('lkOk'), 'ok'); }
     else if (r.saved) { setMsg(t('lkPartial'), 'err'); toast(t('lkPartial'), 'err'); }
@@ -4085,7 +4100,12 @@ async function createLink() {
 function fillFields(fields) { Object.keys(fields).forEach(k => { const el = $('f_' + k); if (el) el.value = fields[k]; }); }
 function collectFields() {
   const out = {}; fieldDefsFor().forEach(f => { const el = $('f_' + f.k); if (el && el.value !== '') out[f.k] = el.value; });
-  const rk = ROLE_KEY_OF[$('methodSelect').value]; if (rk) out[rk] = $('roleSelect').value === 'eu' ? 'server' : 'client';
+  const method = $('methodSelect').value, rk = ROLE_KEY_OF[method];
+  if (rk) {
+    const side = $('roleSelect').value;
+    const serverHere = ['backhaul', 'rathole'].includes(method) ? side === 'iran' : side === 'eu';
+    out[rk] = serverHere ? 'server' : 'client';
+  }
   return out;
 }
 function setMsg(text, kind) { const el = $('mMsg'); el.textContent = text || ''; el.className = 'msg ' + (kind || ''); }
