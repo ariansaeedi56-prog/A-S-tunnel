@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.0.8"
+VERSION="4.0.9"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -2521,7 +2521,15 @@ def build_link(method, p, sip, cip):
         bridge, sync = _port(p.get("bridge"), 7000), _port(p.get("sync"), 7001)
         if bridge == sync:
             raise ValueError("ports_conflict")
-        return ({"BRIDGE": bridge, "SYNC": sync},
+        port_mode = p.get("port_mode") if p.get("port_mode") in ("auto", "manual") else "auto"
+        if port_mode == "manual" and not fwd:
+            raise ValueError("ports_required")
+        if any(int(port) in (bridge, sync) for port in fwd_list):
+            raise ValueError("ports_conflict")
+        iran_fields = {"BRIDGE": bridge, "SYNC": sync, "AUTO_SYNC": "true" if port_mode == "auto" else "false"}
+        if port_mode == "manual":
+            iran_fields["PORTS"] = fwd
+        return (iran_fields,
                 {"IRAN_IP": sip, "BRIDGE": bridge, "SYNC": sync})
     if method == "gre":
         return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
@@ -4140,7 +4148,7 @@ const FIELDS = {
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
-  asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'})],
+  asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'})],
   backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws', 'wss']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
   rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'})],
   frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
