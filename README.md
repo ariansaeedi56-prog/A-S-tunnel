@@ -14,8 +14,8 @@ Named Tunnels • Multi-Protocol • Master Web Panel • AutoSync • Health Ch
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.5-cyan">
-  <img src="https://img.shields.io/badge/protocols-7-brightgreen">
+  <img src="https://img.shields.io/badge/version-4.0.8-cyan">
+  <img src="https://img.shields.io/badge/protocols-8-brightgreen">
   <img src="https://img.shields.io/badge/tunnels-unlimited-blue">
   <img src="https://img.shields.io/badge/license-Proprietary-red">
 </p>
@@ -49,14 +49,18 @@ Instead of locking you into one tunneling technology, A,S Tunnel lets you pick �
 
 | # | Protocol | Type | Best for |
 |---|----------|------|----------|
-| 1 | **A,S Native** | Reverse TCP (built-in, pooled connections) | Zero external dependency, dynamic auto-synced ports |
+| 1 | **Reverse** | Reverse TCP (built-in, pooled connections) | Zero external dependency, dynamic auto-synced ports |
 | 2 | **Backhaul** | TCP / WS / WSS multiplexed tunnel | High throughput, transport flexibility |
 | 3 | **Rathole** | Lightweight NAT-traversal tunnel | Low overhead, many small services |
 | 4 | **GRE** | Kernel-level IP tunnel | Raw IP-level connectivity, no userspace daemon |
 | 5 | **FRP** | Fast reverse proxy | Battle-tested, widely used, rich proxy types |
 | 6 | **Gost** | Per-port IPv4/IPv6 forwarder (tcp/udp/grpc) | Simple 1:1 port forwarding, huge port ranges |
+| 7 | **A,S Secure** | FRP-based reverse TCP/UDP forwarding over QUIC, WSS or TCP | TLS with pinned server certificate, token authentication and a server-side port allowlist |
+| 8 | **Paqet** | Packet-based tunnel | Specialized network path; requires compatible network support |
 
-Each tunnel remembers its own protocol, so you can run **A,S Native as `office`**, **Backhaul as `bh-main`**, **Gost as `fwd1`**, etc. — all at once, all managed from the same menu.
+A,S Secure is the project’s managed profile for the established FRP engine; it is not a new cryptographic protocol. The panel creates a per-link token and certificate, requires TLS verification, and limits remote ports to the selected list. QUIC is the default transport; WSS and TCP are alternatives. DPI resistance and fixed latency or throughput cannot be guaranteed.
+
+Each tunnel remembers its own protocol, so you can run **Reverse as `office`**, **Backhaul as `bh-main`**, **Gost as `fwd1`**, etc. — all at once, all managed from the same menu.
 
 ---
 
@@ -66,7 +70,7 @@ Each tunnel remembers its own protocol, so you can run **A,S Native as `office`*
 Client → IR Server ⇄ EU Server
              │
      Protocol of your choice
-   (A,S Native / Backhaul / Rathole
+   (Reverse / Backhaul / Rathole
         / GRE / FRP / Gost)
 ```
 
@@ -78,10 +82,10 @@ Every tunnel is independent: pick a protocol, answer a short wizard, and the tun
 
 | Feature | Description |
 |---------|--------------|
-| 🔀 Multi-Protocol | Choose A,S Native / Backhaul / Rathole / GRE / FRP / Gost / Paqet per tunnel |
+| 🔀 Multi-Protocol | Choose Reverse / Backhaul / Rathole / GRE / FRP / Gost / A,S Secure / Paqet per tunnel |
 | 🏷 Named tunnels | Create as many tunnels as you like, each with its own name |
 | ⚡ Auto-Start | Tunnel starts immediately after you save its config |
-| 🔄 AutoSync | Automatic port creation & synchronization (A,S Native) |
+| 🔄 AutoSync | Automatic port creation & synchronization (Reverse) |
 | 🕒 Cron Health Check | Auto-restarts any stopped tunnel, any protocol |
 | 🚀 BBR Optimization | Congestion control + sysctl network tuning |
 | 📦 Auto-Install | Official binaries for Backhaul / Rathole / FRP / Gost fetched straight from GitHub Releases |
@@ -128,7 +132,7 @@ Repeat on the **other server** with the matching side and values (same token / p
 
 ---
 
-### 1️⃣ A,S Native
+### 1️⃣ Reverse
 
 | Field | EU side | IRAN side |
 |---|---|---|
@@ -138,7 +142,7 @@ Repeat on the **other server** with the matching side and values (same token / p
 | AutoSync | — | `y`/`n` |
 | Manual ports | — | only if AutoSync = `n` |
 
-The Iran host listens for connections; the abroad host initiates the connection. No external binary — runs on the bundled `A,S.py` core.
+The Iran host listens for connections; the abroad host initiates the connection. No external binary — runs on the bundled `A,S.py` core. Existing `METHOD=asnative` profiles continue to work. Bridge and sync ports must match on both ends, be different from each other, and stay within 1–65535.
 
 ---
 
@@ -246,7 +250,7 @@ The fingerprint pins the master's certificate (leave it out to trust on first us
 | **Nodes** | Every node: side, online/offline, IP, CPU, RAM, tunnels, latency, version · update one / all nodes · remove · join info |
 | **Speedtest (iperf3)** | Real throughput between any two nodes (upload + download), history |
 | **Live Ping & Latency** | Live node ⇄ master RTT with trends + live ping from any node to any target with a chart |
-| **Tunnels Manager** | Add / edit / start / stop / delete tunnels of the selected node, **live logs**, scheduled restart. New tunnels can be created **✋ Manually** on the selected node, or **🔗 From panel nodes**. Endpoint locations depend on the protocol: A,S Native, Backhaul and Rathole use an Iran server with an abroad client; other paired methods use the abroad server and Iran client where applicable. The panel fills shared keys, ports and addresses automatically, and rolls back the server profile if the client setup fails |
+| **Tunnels Manager** | Add / edit / start / stop / delete tunnels of the selected node, **live logs**, scheduled restart. New tunnels can be created **✋ Manually** on the selected node, or **🔗 From panel nodes**. Endpoint locations depend on the protocol: Reverse, Backhaul and Rathole use an Iran server with an abroad client; other paired methods use the abroad server and Iran client where applicable. The panel fills shared keys, ports and addresses automatically, and rolls back the server profile if the client setup fails |
 
 > **Fields follow the host location.** Set each node as *Abroad* or *Iran* in Node & Config. The tunnel form shows the fields for that location and protocol; the protocol server/client role is handled separately.
 
@@ -360,7 +364,7 @@ ip -s link show gre<tunnel_name>
 
 - Enable BBR optimization
 - Enable Cron Health Check
-- Pick the protocol that matches your traffic pattern (Gost for simple 1:1 forwarding, Backhaul/Rathole/FRP for multiplexed tunneling, A,S Native when you want zero external dependencies)
+- Pick the protocol that matches your traffic pattern (Gost for simple 1:1 forwarding, Backhaul/Rathole/FRP for multiplexed tunneling, Reverse when you want zero external dependencies)
 - Keep tokens/ports identical on both sides
 - Monitor tunnel status regularly from the main menu
 
@@ -432,14 +436,18 @@ USDT · BNB
 
 | شماره | پروتکل | نوع | کاربرد |
 |---|---|---|---|
-| 1 | **A,S Native** | TCP معکوس با اتصال‌های تجمیع‌شده | بدون وابستگی خارجی و همگام‌سازی خودکار پورت‌ها |
+| 1 | **Reverse** | TCP معکوس با اتصال‌های تجمیع‌شده | بدون وابستگی خارجی و همگام‌سازی خودکار پورت‌ها |
 | 2 | **Backhaul** | تانل چندگانهٔ TCP / WS / WSS | سرعت بالا و انتخاب نوع انتقال |
 | 3 | **Rathole** | تانل سبک برای عبور از NAT | سربار کم و مناسب سرویس‌های متعدد |
 | 4 | **GRE** | تانل IP در سطح کرنل | ارتباط مستقیم IP بدون برنامهٔ کاربری |
 | 5 | **FRP** | پراکسی معکوس | ابزار پرکاربرد با انواع پراکسی |
 | 6 | **Gost** | فوروارد پورت IPv4/IPv6 با TCP/UDP/GRPC | فوروارد سادهٔ یک‌به‌یک و بازه‌های بزرگ پورت |
+| 7 | **A,S Secure** | فوروارد معکوس TCP/UDP بر پایهٔ FRP با QUIC، WSS یا TCP | TLS با گواهی سرور pin شده، توکن و فهرست مجاز پورت‌ها |
+| 8 | **Paqet** | تانل بسته‌محور | مسیر شبکهٔ ویژه با نیاز به پشتیبانی سازگار شبکه |
 
-هر تانل تنظیمات و پروتکل خودش را دارد؛ مثلاً A,S Native با نام office و Backhaul با نام bh-main می‌توانند هم‌زمان اجرا شوند.
+A,S Secure یک پروفایل مدیریتی اختصاصی برای هستهٔ شناخته‌شدهٔ FRP است و پروتکل رمزنگاری تازه‌ای نیست. پنل برای هر اتصال توکن و گواهی جدا می‌سازد، اعتبارسنجی TLS را اجباری می‌کند و فهرست پورت‌های مجاز را محدود می‌کند. QUIC پیش‌فرض است و WSS و TCP هم قابل انتخاب‌اند. تضمینی برای شناسایی‌نشدن توسط DPI یا سرعت و پینگ ثابت وجود ندارد.
+
+هر تانل تنظیمات و پروتکل خودش را دارد؛ مثلاً Reverse با نام office و Backhaul با نام bh-main می‌توانند هم‌زمان اجرا شوند.
 
 ---
 
@@ -449,7 +457,7 @@ USDT · BNB
 کاربر → سرور ایران ⇄ سرور خارج
                  │
            پروتکل انتخابی
- (A,S Native / Backhaul / Rathole / GRE / FRP / Gost)
+ (Reverse / Backhaul / Rathole / GRE / FRP / Gost)
 ~~~
 
 هر تانل مستقل است. پروتکل را انتخاب کن و به پرسش‌های راه‌انداز پاسخ بده؛ تانل پس از ذخیرهٔ تنظیمات خودکار اجرا می‌شود.
@@ -460,10 +468,10 @@ USDT · BNB
 
 | ویژگی | توضیح |
 |---|---|
-| 🔀 چندپروتکلی | انتخاب A,S Native، Backhaul، Rathole، GRE، FRP، Gost یا Paqet برای هر تانل |
+| 🔀 چندپروتکلی | انتخاب Reverse، Backhaul، Rathole، GRE، FRP، Gost، A,S Secure یا Paqet برای هر تانل |
 | 🏷 نام‌گذاری تانل | ساخت هر تعداد تانل با نام جداگانه |
 | ⚡ اجرای خودکار | تانل بلافاصله پس از ذخیرهٔ تنظیمات اجرا می‌شود |
-| 🔄 همگام‌سازی خودکار | ساخت و همگام‌سازی خودکار پورت‌ها در A,S Native |
+| 🔄 همگام‌سازی خودکار | ساخت و همگام‌سازی خودکار پورت‌ها در Reverse |
 | 🕒 بررسی سلامت | راه‌اندازی دوبارهٔ خودکار تانل متوقف‌شده |
 | 🚀 بهینه‌سازی BBR | کنترل ازدحام و تنظیمات شبکهٔ sysctl |
 | 📦 نصب خودکار | دریافت باینری رسمی Backhaul، Rathole، FRP و Gost از GitHub Releases |
@@ -512,7 +520,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 
 این مراحل را روی سرور مقابل هم با نقش و مقادیر هماهنگ انجام بده؛ هر جا لازم است توکن، پورت و کلید باید یکسان باشند.
 
-### 1️⃣ A,S Native
+### 1️⃣ Reverse
 
 | فیلد | سرور خارج | سرور ایران |
 |---|---|---|
@@ -522,7 +530,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 | همگام‌سازی خودکار | — | y یا n |
 | پورت‌های دستی | — | فقط اگر همگام‌سازی خاموش باشد |
 
-سرور ایران به اتصال‌ها گوش می‌دهد و سرور خارج اتصال را آغاز می‌کند. باینری خارجی لازم نیست؛ این پروتکل از هستهٔ همراه A,S.py استفاده می‌کند.
+سرور ایران به اتصال‌ها گوش می‌دهد و سرور خارج اتصال را آغاز می‌کند. باینری خارجی لازم نیست؛ این روش از هستهٔ همراه A,S.py استفاده می‌کند. تنظیمات قدیمی `METHOD=asnative` همچنان کار می‌کنند. پورت‌های Bridge و Sync باید در دو سمت یکسان، با هم متفاوت و بین ۱ تا ۶۵۵۳۵ باشند.
 
 ### 2️⃣ Backhaul
 
@@ -626,7 +634,7 @@ sudo A,S-tunnel --join 'https://MASTER_IP:PORT' 'JOIN_KEY' 'node-name' iran 'TLS
 | **پینگ و تأخیر زنده** | RTT نود تا مستر و پینگ از نود به مقصد دلخواه |
 | **مدیریت تانل‌ها** | ساخت، ویرایش، اجرا، توقف، حذف، مشاهدهٔ لاگ زنده و زمان‌بندی راه‌اندازی مجدد |
 
-برای ساخت تانل از پنل می‌توانی آن را دستی روی نود انتخاب‌شده بسازی یا دو نود پنل را به هم وصل کنی. سمت سرور پروتکل به روش وابسته است: در A,S Native، Backhaul و Rathole سرور ایران و کلاینت خارج است؛ در روش‌های جفت‌شدهٔ دیگر، هرجا کاربرد داشته باشد سرور خارج و کلاینت ایران است. پنل کلیدها، پورت‌ها و IPها را بین دو نود اعمال می‌کند و اگر تنظیم کلاینت شکست بخورد، پروفایل سرور را برمی‌گرداند.
+برای ساخت تانل از پنل می‌توانی آن را دستی روی نود انتخاب‌شده بسازی یا دو نود پنل را به هم وصل کنی. سمت سرور پروتکل به روش وابسته است: در Reverse، Backhaul و Rathole سرور ایران و کلاینت خارج است؛ در روش‌های جفت‌شدهٔ دیگر، هرجا کاربرد داشته باشد سرور خارج و کلاینت ایران است. پنل کلیدها، پورت‌ها و IPها را بین دو نود اعمال می‌کند و اگر تنظیم کلاینت شکست بخورد، پروفایل سرور را برمی‌گرداند.
 
 محل نود را در بخش نود و تنظیمات مشخص کن. فرم هر پروتکل فیلدهای متناسب با محل نود را نشان می‌دهد و نقش سرور/کلاینت را جداگانه مدیریت می‌کند.
 
@@ -775,14 +783,18 @@ USDT · BNB
 
 | № | Протокол | Тип | Назначение |
 |---|---|---|---|
-| 1 | **A,S Native** | Обратный TCP с пулом соединений | Без внешних зависимостей, автоматическая синхронизация портов |
+| 1 | **Reverse** | Обратный TCP с пулом соединений | Без внешних зависимостей, автоматическая синхронизация портов |
 | 2 | **Backhaul** | Мультиплексированный TCP / WS / WSS | Высокая пропускная способность и выбор транспорта |
 | 3 | **Rathole** | Лёгкий туннель для обхода NAT | Низкая нагрузка, несколько сервисов |
 | 4 | **GRE** | IP-туннель на уровне ядра | Прямая IP-связь без пользовательского демона |
 | 5 | **FRP** | Обратный прокси | Проверенное решение с разными типами прокси |
 | 6 | **Gost** | Пересылка IPv4/IPv6-портов через TCP/UDP/GRPC | Простая пересылка портов один к одному и большие диапазоны |
+| 7 | **A,S Secure** | Пересылка TCP/UDP на базе FRP через QUIC, WSS или TCP | TLS с закреплённым сертификатом, токен и список разрешённых портов |
+| 8 | **Paqet** | Пакетный туннель | Специализированный сетевой режим с требованиями к совместимости |
 
-Каждому туннелю назначаются собственные имя и протокол. Например, A,S Native office, Backhaul bh-main и Gost fwd1 могут работать одновременно.
+A,S Secure — это профиль управления для существующего движка FRP, а не новый криптографический протокол. Панель создаёт отдельные токен и сертификат, требует проверки TLS и ограничивает разрешённые порты. QUIC выбран по умолчанию; доступны WSS и TCP. Обнаружение DPI и постоянные скорость или задержка не гарантируются.
+
+Каждому туннелю назначаются собственные имя и протокол. Например, Reverse office, Backhaul bh-main и Gost fwd1 могут работать одновременно.
 
 ---
 
@@ -802,10 +814,10 @@ USDT · BNB
 
 | Функция | Описание |
 |---|---|
-| 🔀 Несколько протоколов | A,S Native, Backhaul, Rathole, GRE, FRP, Gost или Paqet для каждого туннеля |
+| 🔀 Несколько протоколов | Reverse, Backhaul, Rathole, GRE, FRP, Gost, A,S Secure или Paqet для каждого туннеля |
 | 🏷 Именованные туннели | Создание любого количества туннелей с отдельными именами |
 | ⚡ Автозапуск | Запуск сразу после сохранения конфигурации |
-| 🔄 AutoSync | Автоматическое создание и синхронизация портов A,S Native |
+| 🔄 AutoSync | Автоматическое создание и синхронизация портов Reverse |
 | 🕒 Проверка состояния | Автоматический перезапуск остановленных туннелей |
 | 🚀 Оптимизация BBR | Контроль перегрузки и сетевые настройки sysctl |
 | 📦 Автоустановка | Официальные бинарные файлы Backhaul, Rathole, FRP и Gost из GitHub Releases |
@@ -842,7 +854,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 
 В главном меню выберите Add new tunnel. Введите имя, укажите расположение сервера (за рубежом или Иран), выберите протокол и ответьте на вопросы мастера. Затем повторите настройку на втором сервере с соответствующими параметрами. Там, где требуется, токен, порты и ключи должны совпадать.
 
-### 1️⃣ A,S Native
+### 1️⃣ Reverse
 
 | Параметр | Зарубежный сервер | Сервер в Иране |
 |---|---|---|
@@ -910,7 +922,7 @@ Fingerprint закрепляет сертификат мастера. После
 - Сведения об узлах: онлайн-статус, IP, CPU, RAM, туннели, задержка и версия; обновление одного или всех узлов.
 - Тест скорости iperf3 между узлами и график пинга.
 - Создание, изменение, запуск, остановка и удаление туннелей; живые журналы и плановый перезапуск.
-- Для A,S Native, Backhaul и Rathole серверная роль находится в Иране, клиентская — за рубежом. Для других парных методов направление зависит от протокола.
+- Для Reverse, Backhaul и Rathole серверная роль находится в Иране, клиентская — за рубежом. Для других парных методов направление зависит от протокола.
 - Панель автоматически передаёт ключи, порты и адреса. При ошибке настройки клиента профиль сервера откатывается.
 
 Интерфейс показывает публичный IP, число подключённых узлов, задержку, CPU, RAM, время работы и нагрузку. Доступны английский и персидский языки, цветовая палитра, обновление и выход; данные обновляются каждые несколько секунд.
@@ -1032,14 +1044,18 @@ USDT · BNB
 
 | 编号 | 协议 | 类型 | 适用场景 |
 |---|---|---|---|
-| 1 | **A,S Native** | 内置连接池的反向 TCP | 无外部依赖，端口自动同步 |
+| 1 | **Reverse** | 内置连接池的反向 TCP | 无外部依赖，端口自动同步 |
 | 2 | **Backhaul** | TCP / WS / WSS 多路复用隧道 | 高吞吐量和灵活传输方式 |
 | 3 | **Rathole** | 轻量 NAT 穿透隧道 | 低开销，适合多个小型服务 |
 | 4 | **GRE** | 内核级 IP 隧道 | 原生 IP 连接，无用户态守护进程 |
 | 5 | **FRP** | 快速反向代理 | 成熟方案，支持多种代理类型 |
 | 6 | **Gost** | IPv4/IPv6 TCP、UDP、GRPC 端口转发 | 简单的一对一转发和大范围端口 |
+| 7 | **A,S Secure** | 基于 FRP 的 TCP/UDP 转发，支持 QUIC、WSS 或 TCP | TLS 证书固定、令牌认证和服务端端口白名单 |
+| 8 | **Paqet** | 基于数据包的隧道 | 专用网络路径，需要网络环境兼容 |
 
-每条隧道都有独立的名称和协议。例如，A,S Native office、Backhaul bh-main 和 Gost fwd1 可以同时运行。
+A,S Secure 是对成熟 FRP 引擎的专用管理配置，并非自创加密协议。面板为每条连接生成独立令牌和证书，强制验证 TLS，并限制服务端允许开放的端口。默认使用 QUIC，也可选择 WSS 或 TCP。无法保证规避 DPI，也无法保证固定速度或延迟。
+
+每条隧道都有独立的名称和协议。例如，Reverse office、Backhaul bh-main 和 Gost fwd1 可以同时运行。
 
 ---
 
@@ -1059,10 +1075,10 @@ USDT · BNB
 
 | 功能 | 说明 |
 |---|---|
-| 🔀 多协议 | 每条隧道可选 A,S Native、Backhaul、Rathole、GRE、FRP、Gost 或 Paqet |
+| 🔀 多协议 | 每条隧道可选 Reverse、Backhaul、Rathole、GRE、FRP、Gost、A,S Secure 或 Paqet |
 | 🏷 命名隧道 | 创建任意数量的独立命名隧道 |
 | ⚡ 自动启动 | 保存配置后立即启动 |
-| 🔄 AutoSync | A,S Native 自动创建并同步端口 |
+| 🔄 AutoSync | Reverse 自动创建并同步端口 |
 | 🕒 Cron 健康检查 | 自动重启已停止的隧道 |
 | 🚀 BBR 优化 | 拥塞控制和 sysctl 网络调优 |
 | 📦 自动安装 | 从 GitHub Releases 获取 Backhaul、Rathole、FRP 和 Gost 官方二进制文件 |
@@ -1099,7 +1115,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 
 在主菜单选择 Add new tunnel，输入隧道名称，选择服务器位置（境外或伊朗）和协议，然后完成向导。在另一台服务器上设置相匹配的参数。需要共享的令牌、端口和密钥必须保持一致。
 
-### 1️⃣ A,S Native
+### 1️⃣ Reverse
 
 | 参数 | 境外服务器 | 伊朗服务器 |
 |---|---|---|
@@ -1159,7 +1175,7 @@ TLS 指纹用于固定主控证书。节点通常会在几秒内显示在面板�
 - 查看节点在线状态、IP、CPU、RAM、隧道、延迟和版本；更新单个或全部节点。
 - 使用 iperf3 测试节点间速度，并查看实时 Ping 图表。
 - 创建、编辑、启动、停止和删除隧道；查看实时日志并安排重启。
-- A,S Native、Backhaul 和 Rathole 的协议服务器位于伊朗，客户端位于境外；其他配对方式的方向依协议而定。
+- Reverse、Backhaul 和 Rathole 的协议服务器位于伊朗，客户端位于境外；其他配对方式的方向依协议而定。
 - 面板自动同步密钥、端口和地址；客户端配置失败时会回滚服务器配置。
 
 仪表板还显示公网 IP、节点数量、平均延迟、CPU、RAM、运行时间和负载。支持英语和波斯语、颜色面板、刷新和退出，数据每隔几秒更新。
