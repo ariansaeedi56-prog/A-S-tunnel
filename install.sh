@@ -57,6 +57,12 @@ install -m 0755 "$tmp_dir/A,S-tunnel" "$BIN"
 mkdir -p "$(dirname "$PY_DST")"
 install -m 0755 "$tmp_dir/A,S.py" "$PY_DST"
 
+# Refresh generated panel/agent files when updating an existing installation.
+if [[ -f /etc/systemd/system/AS-webpanel.service || -f /etc/systemd/system/AS-agent.service ]]; then
+  info "Refreshing installed web panel and agent..."
+  "$BIN" --refresh-services || err "Manager was updated, but panel refresh failed"
+fi
+
 echo ""
 ok "Installation completed!"
 echo ""
