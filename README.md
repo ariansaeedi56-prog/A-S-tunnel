@@ -13,7 +13,7 @@ Named Tunnels • Multi-Protocol • Master Web Panel • AutoSync • Health Ch
   <img src="https://img.shields.io/badge/version-4.0.4-cyan">
   <img src="https://img.shields.io/badge/protocols-7-brightgreen">
   <img src="https://img.shields.io/badge/tunnels-unlimited-blue">
-  <img src="https://img.shields.io/badge/license-MIT-lightgrey">
+  <img src="https://img.shields.io/badge/license-Proprietary-red">
 </p>
 
 ---
@@ -375,6 +375,12 @@ Any configuration change must be applied identically on both servers (matching t
 Restart the tunnel after changes — or just re-save the profile, since saving auto-starts it.
 
 ---
+
+## © Copyright & License
+
+**A,S Tunnel is maintained by A,S (@Asnejad; GitHub: [ariansaeedi56-prog](https://github.com/ariansaeedi56-prog)). All rights reserved.**
+
+You may run an unmodified official release on servers you own or are authorized to administer. Copying, modifying for redistribution, removing attribution, rebranding, sublicensing, selling, or redistributing this project requires prior written permission. See [LICENSE](LICENSE). Third-party components remain subject to their own licenses.
 
 ## ❤️ Maintained by A,S
 
