@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 A,S Tunnel (@Asnejad; GitHub: ariansaeedi56-prog). All rights reserved.
+# See LICENSE for permitted use and restrictions.
 set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.0.4"
+VERSION="4.0.5"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -1463,6 +1465,8 @@ install_healthcheck_script(){
   # tunnel method is auto-restarted the same way, without duplicating logic.
   cat >"$HC_SCRIPT" <<EOF
 #!/usr/bin/env bash
+# Copyright (c) 2026 A,S Tunnel (@Asnejad; GitHub: ariansaeedi56-prog). All rights reserved.
+# See LICENSE for permitted use and restrictions.
 exec "${INSTALL_PATH}" --healthcheck
 EOF
   chmod +x "$HC_SCRIPT"
@@ -3600,7 +3604,7 @@ function applyPalette(i) {
 }
 function buildSwatches() {
   $('swatches').innerHTML = PALETTES.map((p, i) => `<div class="sw" style="background:linear-gradient(135deg,${p[0]},${p[1]})" onclick="applyPalette(${i})"></div>`).join('');
-  applyPalette(localStorage.getItem('as_pal') || 0);
+  applyPalette(localStorage.getItem('as_pal') || 3);
 }
 function togglePal(e) { e.stopPropagation(); $('palPop').classList.toggle('hidden'); }
 document.addEventListener('click', e => { if (!e.target.closest('#palPop')) $('palPop').classList.add('hidden'); });
