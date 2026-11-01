@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.1.0"
+VERSION="4.1.1"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -455,7 +455,7 @@ clean_profile_name(){
 list_profiles(){
   local f
   shopt -s nullglob
-  for f in "$CONF"/*.env; do basename "$f" .env; done | sort
+  for f in "$CONF"/*.env; do f="${f##*/}"; printf '%s\n' "${f%.env}"; done | sort
   shopt -u nullglob
 }
 
@@ -2225,7 +2225,10 @@ _local_lock = threading.Lock()
 
 def local_tunnels(force=False):
     with _local_lock:
-        if not force and time.time() - _local_cache["t"] < 3:
+        # The browser polls /api/nodes every 3 seconds. Keep a longer cache so
+        # each poll does not spawn another shell process just to enumerate
+        # tunnel sessions; explicit tunnel actions still force a refresh.
+        if not force and time.time() - _local_cache["t"] < 6:
             return _local_cache["v"]
     res = asnode.run_api(["list"], timeout=30)
     v = res if isinstance(res, list) else []
@@ -2521,10 +2524,21 @@ def _make_assecure_cert(server_name):
         san = f"IP:{server_name}" if _is_ip_address(server_name) else f"DNS:{server_name}"
         with tempfile.TemporaryDirectory(prefix="as-secure-") as td:
             crt, key = os.path.join(td, "server.crt"), os.path.join(td, "server.key")
+            # Do not inherit the machine's openssl.cnf extensions. Some distro
+            # configs already add basicConstraints to `req -x509`; combining
+            # that default with `-addext` creates duplicate OID 2.5.29.19, which
+            # Go (and therefore frps) rejects. An isolated config makes the
+            # certificate's extensions explicit and unique on every host.
+            openssl_conf = os.path.join(td, "openssl.cnf")
+            with open(openssl_conf, "w", encoding="ascii") as f:
+                f.write("[ req ]\nprompt = no\ndistinguished_name = dn\nx509_extensions = server_ext\n"
+                        "[ dn ]\n"
+                        f"CN = {server_name}\n"
+                        "[ server_ext ]\nbasicConstraints = critical,CA:TRUE\n"
+                        "keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign\n"
+                        f"subjectAltName = {san}\n")
             subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes",
-                            "-days", "825", "-keyout", key, "-out", crt,
-                            "-subj", f"/CN={server_name}", "-addext", f"subjectAltName={san}",
-                            "-addext", "basicConstraints=critical,CA:TRUE"],
+                            "-days", "825", "-keyout", key, "-out", crt, "-config", openssl_conf],
                            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
             with open(crt, "rb") as f:
                 cert_b64 = base64.b64encode(f.read()).decode("ascii")
@@ -3901,6 +3915,9 @@ function setTab(name) {
   if (name === 'ping') { S.pgKey = ''; setTimeout(drawChart, 30); }
   if (name === 'config') { S.cfgFor = null; loadNodeInfo(); }
   renderAll(true);
+  // Paint the cached tunnel list immediately, then update running states in
+  // the background. This keeps a slow remote node from delaying the tab UI.
+  if (name === 'tunnels') reloadTunnels();
 }
 
 /* ---- config tab ---- */
@@ -5077,11 +5094,26 @@ valid_prof(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; }
 
 api_list(){
   echo "["
-  local first=1 prof m running role
+  local first=1 prof m running role sessions s f k v
+  # Calling screen -ls once per profile made the panel list crawl as tunnels
+  # accumulated. Take one snapshot and use it for every screen-managed tunnel.
+  sessions="$(screen -ls 2>/dev/null || true)"
   while IFS= read -r prof; do
     [[ -n "$prof" ]] || continue
-    m="$(get_method "$prof")"; role="$(get_role "$prof")"
-    running=false; if is_running "$prof" 2>/dev/null; then running=true; fi
+    m="asnative"; role="iran"; f="$CONF/${prof}.env"
+    [[ -f "$f" ]] || continue
+    # Read the two display fields with Bash builtins instead of spawning grep
+    # and cut twice for every tunnel in the panel's list refresh.
+    while IFS='=' read -r k v; do
+      case "$k" in METHOD) m="${v:-asnative}" ;; ROLE) role="${v:-iran}" ;; esac
+    done < "$f"
+    running=false
+    if [[ "$m" == "gre" ]]; then
+      ip link show "gre${prof}" >/dev/null 2>&1 && running=true
+    else
+      s="$(session_name "$prof")"
+      grep -Eq "\\.${s}[[:space:]]" <<<"$sessions" && running=true
+    fi
     [[ $first -eq 1 ]] || echo ","
     first=0
     printf '{%s,%s,%s,"running":%s}' "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
