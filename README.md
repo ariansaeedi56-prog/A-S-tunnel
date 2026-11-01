@@ -24,6 +24,16 @@ Named Tunnels • Multi-Protocol • Master Web Panel • AutoSync • Health Ch
 
 ## English
 
+### 🖥 Web Panel Screenshots
+
+<p align="center"><img src="images/panel-overview.png" alt="A,S Tunnel web panel overview" width="100%"></p>
+
+<p align="center"><img src="images/tunnels-manager.png" alt="Tunnel manager panel" width="68%">&nbsp;&nbsp;<img src="images/color-palette.png" alt="Panel accent color palette" width="28%"></p>
+
+Screenshots show sample panel data; the public IP and hostname are hidden.
+
+---
+
 ## 📌 Overview
 
 **A,S Tunnel** is a unified tunnel manager that connects two servers:
