@@ -2940,8 +2940,8 @@ write_webpanel_html(){
 <title>A,S Tunnel Master</title>
 <style>
 :root{
-  --accent:#08b9cf; --accent2:#58e0e8;
-  --bg:#05080d; --txt:#f2f6fa; --dim:#a1adba; --faint:#65717e;
+  --accent:#06b6d4; --accent2:#67e8f9;
+  --bg:#061018; --txt:#f2f8fb; --dim:#a6bac4; --faint:#627985;
   --green:#34d399; --red:#fb7185; --amber:#fbbf24; --blue:#38bdf8;
   --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
 }
@@ -2954,10 +2954,10 @@ body{
   font-size:14px;
   line-height:1.45;
   background-image:
-    radial-gradient(ellipse at 12% 0%, rgba(8,185,207,.17), transparent 38%),
+    radial-gradient(ellipse at 12% 0%, rgba(6,182,212,.23), transparent 38%),
     radial-gradient(ellipse at 94% 12%, rgba(201,151,67,.13), transparent 32%),
-    radial-gradient(ellipse at 55% 100%, rgba(8,185,207,.08), transparent 42%),
-    linear-gradient(180deg,#07111a 0%,#05070c 55%,#080a10 100%);
+    radial-gradient(ellipse at 55% 100%, rgba(6,182,212,.12), transparent 42%),
+    linear-gradient(180deg,#071925 0%,#061018 55%,#07111a 100%);
   background-attachment:fixed;
   padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0);
 }
@@ -2990,7 +2990,7 @@ body{
   border:1px solid rgba(215,174,96,.72);
   border-radius:17px;
   background:linear-gradient(145deg,#10202a,#111018);
-  box-shadow:0 0 22px rgba(8,185,207,.16),0 0 18px rgba(201,151,67,.12)
+  box-shadow:0 0 22px rgba(6,182,212,.22),0 0 18px rgba(201,151,67,.12)
 }
 .logo img{
   display:block;
