@@ -3,7 +3,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.0.2"
+VERSION="4.0.3"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -1901,7 +1901,7 @@ NODES_FILE = os.path.join(STATE_DIR, "nodes.json")
 JOIN_FILE = os.path.join(STATE_DIR, "join.key")
 ONLINE_SECS = 15
 POLL_HOLD = 20
-TOKEN_MAX_AGE = 12 * 3600
+TOKEN_MAX_AGE = 30 * 24 * 3600
 
 app = Flask(__name__, static_folder=None)
 logging.getLogger("werkzeug").setLevel(logging.WARNING)
@@ -2007,15 +2007,23 @@ def pw_stamp():
     return hashlib.sha256((USERNAME + PASSWORD_HASH).encode()).hexdigest()[:16]
 
 
+def client_fingerprint():
+    # Bind persistent login cookies to this browser / app / OS user-agent.
+    ua = request.headers.get("User-Agent", "")
+    return hashlib.sha256(ua.encode("utf-8", "replace")).hexdigest()
+
+
 def check_token():
     h = request.headers.get("Authorization", "")
-    if not h.startswith("Bearer "):
+    tok = h[7:] if h.startswith("Bearer ") else request.cookies.get("as_auth", "")
+    if not tok:
         return False
     try:
-        data = signer.loads(h[7:], max_age=TOKEN_MAX_AGE)
+        data = signer.loads(tok, max_age=TOKEN_MAX_AGE)
     except (BadSignature, SignatureExpired):
         return False
-    return data.get("u") == USERNAME and data.get("s") == pw_stamp()
+    return (data.get("u") == USERNAME and data.get("s") == pw_stamp()
+                and secrets.compare_digest(str(data.get("d", "")), client_fingerprint()))
 
 
 def agent_node():
@@ -2031,7 +2039,7 @@ def agent_node():
 @app.before_request
 def guard():
     p = request.path
-    if not p.startswith("/api/") or p == "/api/login" or p.startswith("/api/agent/"):
+    if not p.startswith("/api/") or p in ("/api/login", "/api/logout") or p.startswith("/api/agent/"):
         return None
     if not USERNAME or not PASSWORD_HASH or not check_token():
         return jsonify({"error": "unauthorized"}), 401
@@ -2071,7 +2079,18 @@ def login():
         return jsonify({"error": "bad_login"}), 401
     with _fails_lock:
         _fails.pop(ip, None)
-    return jsonify({"token": signer.dumps({"u": USERNAME, "s": pw_stamp()}), "username": USERNAME})
+    token = signer.dumps({"u": USERNAME, "s": pw_stamp(), "d": client_fingerprint()})
+    resp = jsonify({"ok": True, "username": USERNAME})
+    resp.set_cookie("as_auth", token, max_age=TOKEN_MAX_AGE, httponly=True,
+                    secure=HTTPS, samesite="Strict", path="/")
+    return resp
+
+
+@app.post("/api/logout")
+def logout():
+    resp = jsonify({"ok": True})
+    resp.delete_cookie("as_auth", path="/", secure=HTTPS, httponly=True, samesite="Strict")
+    return resp
 
 
 @app.get("/api/me")
@@ -3177,7 +3196,7 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
     <input id="uIn" type="text" autocomplete="username" autocapitalize="off" spellcheck="false">
     <label class="f" style="margin-top:14px" data-i="password">Password</label>
     <input id="pIn" type="password" autocomplete="current-password">
-    <div class="btns" style="margin-top:20px"><button class="btn primary" style="width:100%;justify-content:center" onclick="doLogin()"><span data-i="signIn">Sign in</span></button></div>
+    <div class="btns" style="margin-top:20px"><button id="loginBtn" class="btn primary" style="width:100%;justify-content:center" onclick="doLogin()"><span data-i="signIn">Sign in</span></button></div>
     <div id="gErr" class="msg err" style="text-align:center"></div>
     <div class="foot"><a href="https://t.me/Asnejad" target="_blank" rel="noopener">✈ A,S · @Asnejad</a></div>
   </div>
@@ -3558,7 +3577,7 @@ const $ = id => document.getElementById(id);
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 
 /* ============================ state ============================ */
-let TOKEN = localStorage.getItem('as_tok') || '';
+let TOKEN = ''; localStorage.removeItem('as_tok');
 const S = {nodes: [], master: null, sel: 'local', tab: 'config', cfgFor: null, hcLoaded: null, joinLoaded: false, timer: null, spKey: '', pgKey: ''};
 const sideLabel = r => r === 'eu' ? t('sideEu') : t('sideIran');
 const cur = () => S.nodes.find(n => n.id === S.sel) || S.nodes[0];
@@ -3609,7 +3628,7 @@ function errText(r) {
 
 async function api(path, opts = {}) {
   const o = Object.assign({method: 'GET'}, opts);
-  o.headers = Object.assign({'Content-Type': 'application/json'}, TOKEN ? {Authorization: 'Bearer ' + TOKEN} : {}, o.headers || {});
+  o.headers = Object.assign({'Content-Type': 'application/json'}, o.headers || {}); o.credentials = 'same-origin';
   if (o.body && typeof o.body !== 'string') o.body = JSON.stringify(o.body);
   const r = await fetch(path, o);
   let data; try { data = await r.json(); } catch (e) { data = {error: 'bad_json'}; }
@@ -3626,18 +3645,21 @@ function showGate(msg) {
 }
 async function doLogin() {
   const username = $('uIn').value.trim(), password = $('pIn').value;
+  const btn = $('loginBtn');
   $('gErr').textContent = '';
+  btn.disabled = true; btn.textContent = LANG === 'fa' ? 'در حال ورود…' : 'Signing in…';
   try {
     const r = await api('/api/login', {method: 'POST', body: {username, password}});
-    if (r.token) { TOKEN = r.token; localStorage.setItem('as_tok', TOKEN); $('pIn').value = ''; boot(); }
+    if (r.ok) { TOKEN = ''; localStorage.removeItem('as_tok'); $('pIn').value = ''; boot(true); }
     else $('gErr').textContent = r._status === 429 ? t('tooMany') : t('badLogin');
   } catch (e) { $('gErr').textContent = String(e.message || e); }
+  finally { btn.disabled = false; btn.innerHTML = '<span data-i="signIn">' + esc(t('signIn')) + '</span>'; }
 }
-function logout() { localStorage.removeItem('as_tok'); TOKEN = ''; showGate(''); }
+function logout() { fetch('/api/logout', {method: 'POST', credentials: 'same-origin'}).finally(() => { localStorage.removeItem('as_tok'); TOKEN = ''; showGate(''); }); }
 
 /* ============================ boot / polling ============================ */
-async function boot() {
-  if (!TOKEN) { showGate(''); return; }
+async function boot(fast = false) {
+  if (fast) { $('gate').classList.add('hidden'); $('app').classList.remove('hidden'); }
   try {
     await refreshNodes();
   } catch (e) { return; }
