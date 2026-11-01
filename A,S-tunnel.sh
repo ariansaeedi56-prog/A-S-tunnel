@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.1.1"
+VERSION="4.1.5"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -220,6 +220,9 @@ ensure(){
   mkdir -p "$BIN_DIR"
   mkdir -p "$LOG_DIR"
   mkdir -p "$(dirname "$PY")"
+  chmod 700 "$BASE" "$CONF" 2>/dev/null || true
+  # Upgrade old profile permissions: these files may contain tunnel secrets.
+  chmod 600 "$CONF"/*.env 2>/dev/null || true
   have screen  || apt_try_install screen
   have python3 || apt_try_install python3
   have curl    || apt_try_install curl
@@ -319,7 +322,7 @@ get_slot_restart_hours(){
 
 optimize_server(){
   echo "" > "$TTY_OUT"
-  echo "[*] Optimizing network settings and hardening the kernel (applies to every tunnel protocol)..." > "$TTY_OUT"
+  echo "[*] Applying network performance settings (system-wide)..." > "$TTY_OUT"
 
   # Ensure tools that are commonly missing on minimal images
   have sysctl  || apt_try_install procps
@@ -333,8 +336,8 @@ optimize_server(){
   modprobe tcp_bbr >/dev/null 2>&1 || true
 
   local cc qdisc
-  cc="cubic"
-  qdisc="pfifo_fast"
+  cc=""
+  qdisc=""
   if sysctl net.ipv4.tcp_available_congestion_control 2>/dev/null | grep -q bbr; then
     cc="bbr"; qdisc="fq"
     sysctl -w net.core.default_qdisc=fq >/dev/null 2>&1 || true
@@ -344,15 +347,14 @@ optimize_server(){
     echo "[!] BBR is NOT available on this kernel — keeping the default congestion control." > "$TTY_OUT"
   fi
 
-  # Persist settings (idempotent, separate file). This always applies — not just
-  # when BBR is available — since every protocol (Backhaul/Rathole/FRP/Gost/GRE/
-  # A,S native) benefits from the same backlog, keepalive and anti-spoofing tuning.
+  # Persist only performance settings owned by this script. Keep the host's
+  # routing/ICMP policy and its existing congestion control if BBR is absent.
   local conf="/etc/sysctl.d/99-A,S-tunnel.conf"
-  cat > "$conf" <<EOF
-# A,S Tunnel — network performance + security tuning (shared by every protocol)
-net.core.default_qdisc=$qdisc
-net.ipv4.tcp_congestion_control=$cc
-
+  {
+    echo "# A,S Tunnel — network performance tuning"
+    if [[ -n "$qdisc" ]]; then echo "net.core.default_qdisc=$qdisc"; fi
+    if [[ -n "$cc" ]]; then echo "net.ipv4.tcp_congestion_control=$cc"; fi
+    cat <<'EOF'
 # Socket buffer ceilings
 net.core.rmem_max=16777216
 net.core.wmem_max=16777216
@@ -369,21 +371,12 @@ net.ipv4.tcp_keepalive_intvl=30
 net.ipv4.tcp_keepalive_probes=5
 net.ipv4.ip_local_port_range=1024 65535
 fs.file-max=1000000
-
-# Security hardening: SYN-flood protection, anti-spoofing, no source routing/redirects.
-# rp_filter uses loose mode (2), not strict (1) — reverse tunnels legitimately see
-# asymmetric routing, and strict mode can silently drop their own traffic.
 net.ipv4.tcp_syncookies=1
-net.ipv4.conf.all.rp_filter=2
-net.ipv4.conf.default.rp_filter=2
-net.ipv4.conf.all.accept_redirects=0
-net.ipv4.conf.default.accept_redirects=0
-net.ipv4.conf.all.send_redirects=0
-net.ipv4.conf.all.accept_source_route=0
-net.ipv4.icmp_echo_ignore_broadcasts=1
 EOF
+  } > "$conf"
 
-  sysctl --system >/dev/null 2>&1 || sysctl -p "$conf" >/dev/null 2>&1 || true
+  # Do not reload unrelated sysctl files or overwrite settings owned by other apps.
+  sysctl -p "$conf" >/dev/null 2>&1 || true
 
   # Raise the system-wide open-file ceiling too, backing up the per-session
   # ulimit bump every protocol's screen session already applies at start.
@@ -395,7 +388,7 @@ root soft nofile 1048576
 root hard nofile 1048576
 EOF
 
-  echo "[+] Applied sysctl + file-descriptor hardening (performance and security)." > "$TTY_OUT"
+  echo "[+] Applied network performance tuning and file-descriptor limits." > "$TTY_OUT"
   echo "[i] tcp_congestion_control: $(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)" > "$TTY_OUT"
   echo "[i] default_qdisc:         $(sysctl -n net.core.default_qdisc 2>/dev/null)" > "$TTY_OUT"
   echo "[i] tcp_syncookies:        $(sysctl -n net.ipv4.tcp_syncookies 2>/dev/null)" > "$TTY_OUT"
@@ -516,7 +509,7 @@ edit_profile(){
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_YELLOW}${CLR_BOLD}⚙  Configuring: ${prof}${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}├───────────────────────────────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) Reverse      ${CLR_DIM}Iran listens; abroad connects (built-in)${CLR_RESET}" > "$TTY_OUT"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) Backhaul     ${CLR_DIM}TCP/WS/WSS multiplexed tunnel${CLR_RESET}" > "$TTY_OUT"
+  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) Backhaul     ${CLR_DIM}TCP/WS multiplexed tunnel${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Rathole      ${CLR_DIM}lightweight NAT-traversal tunnel${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}4${CLR_RESET}) GRE          ${CLR_DIM}kernel-level IP tunnel${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}5${CLR_RESET}) FRP          ${CLR_DIM}fast reverse proxy${CLR_RESET}" > "$TTY_OUT"
@@ -571,39 +564,25 @@ edit_profile_asnative(){
 # Backhaul mapping for this setup: Iran listens as the protocol server;
 # the abroad side runs the client and connects to the Iran server.
 edit_profile_backhaul(){
-  local prof f role
+  local prof f role bhr
   prof="$1"
   f="$2"
   role="$3"
   bhr="2"; [[ "$role" == "iran" ]] && bhr="1"
   echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$bhr")"
-  read -r -p "Transport [tcp/ws/wss] (default tcp): " TRANSPORT < /dev/tty
+  read -r -p "Transport [tcp/ws] (default tcp): " TRANSPORT < /dev/tty
   TRANSPORT="${TRANSPORT:-tcp}"
   if [[ "$bhr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 3080): " BIND_PORT < /dev/tty
     read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
-    cat >"$f" <<EOF
-METHOD=backhaul
-ROLE=$role
-BH_ROLE=server
-TOKEN=$TOKEN
-TRANSPORT=$TRANSPORT
-BIND_PORT=$BIND_PORT
-FORWARD_PORTS=$FORWARD_PORTS
-EOF
+    write_env_file "$f" "METHOD=backhaul" "ROLE=$role" "BH_ROLE=server" "TOKEN=$TOKEN" \
+      "TRANSPORT=$TRANSPORT" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   else
     read -r -p "Server IP: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 3080): " BIND_PORT < /dev/tty
-    cat >"$f" <<EOF
-METHOD=backhaul
-ROLE=$role
-BH_ROLE=client
-TOKEN=$TOKEN
-TRANSPORT=$TRANSPORT
-SERVER_IP=$SERVER_IP
-BIND_PORT=$BIND_PORT
-EOF
+    write_env_file "$f" "METHOD=backhaul" "ROLE=$role" "BH_ROLE=client" "TOKEN=$TOKEN" \
+      "TRANSPORT=$TRANSPORT" "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT"
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
 }
@@ -627,7 +606,7 @@ edit_profile_rathole(){
 }
 
 edit_profile_frp(){
-  local prof f role
+  local prof f role fr
   prof="$1"
   f="$2"
   role="$3"
@@ -636,26 +615,15 @@ edit_profile_frp(){
   TOKEN="$(prompt_token "$fr")"
   if [[ "$fr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 7000): " BIND_PORT < /dev/tty
-    cat >"$f" <<EOF
-METHOD=frp
-ROLE=$role
-FRP_ROLE=server
-TOKEN=$TOKEN
-BIND_PORT=$BIND_PORT
-EOF
+    read -r -p "Allowed forwarded ports, CSV (blank = unrestricted): " FORWARD_PORTS < /dev/tty
+    write_env_file "$f" "METHOD=frp" "ROLE=$role" "FRP_ROLE=server" "TOKEN=$TOKEN" \
+      "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   else
     read -r -p "Server IP: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 7000): " BIND_PORT < /dev/tty
     read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
-    cat >"$f" <<EOF
-METHOD=frp
-ROLE=$role
-FRP_ROLE=client
-TOKEN=$TOKEN
-SERVER_IP=$SERVER_IP
-BIND_PORT=$BIND_PORT
-FORWARD_PORTS=$FORWARD_PORTS
-EOF
+    write_env_file "$f" "METHOD=frp" "ROLE=$role" "FRP_ROLE=client" "TOKEN=$TOKEN" \
+      "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
 }
@@ -670,6 +638,7 @@ write_env_file(){
     [[ -n "$v" ]] || continue
     printf '%s=%q\n' "$k" "$v" >> "$f"
   done
+  chmod 600 "$f"
 }
 
 edit_profile_paqet(){
@@ -685,9 +654,9 @@ edit_profile_paqet(){
   read -r -p "Customize KCP mode / connections / MTU / encryption? (y/N): " custom < /dev/tty
   if [[ "${custom,,}" == "y" ]]; then
     read -r -p "KCP mode [normal/fast/fast2/fast3] (default fast): " mode < /dev/tty
-    read -r -p "Connections 1-32 (default 4): " conn < /dev/tty
-    read -r -p "MTU 100-9000 (default 1150): " mtu < /dev/tty
-    read -r -p "Encryption [aes-128-gcm/aes/aes-128/aes-192/aes-256/none] (default aes-128-gcm): " block < /dev/tty
+    read -r -p "Connections 1-256 (default 4): " conn < /dev/tty
+    read -r -p "MTU 50-1500 (default 1150): " mtu < /dev/tty
+    read -r -p "Encryption [aes-128-gcm/aes/aes-128/aes-192/salsa20/blowfish/twofish/cast5/3des/tea/xtea/xor/sm4/none/null] (default aes-128-gcm): " block < /dev/tty
     mode="${mode:-fast}"; conn="${conn:-4}"; mtu="${mtu:-1150}"; block="${block:-aes-128-gcm}"
   fi
   read -r -p "Router MAC (Enter = auto-detect): " mac < /dev/tty
@@ -738,27 +707,15 @@ edit_profile_gost(){
     read -r -p "Ports CSV (e.g. 443,8080,2083): " PORTS < /dev/tty
     PORT_MODE="manual"; RANGE_START=""; RANGE_END=""
   fi
-  echo "1) tcp   2) udp   3) grpc" > "$TTY_OUT"
+  echo "1) tcp   2) udp" > "$TTY_OUT"
   read -r -p "Protocol: " po < /dev/tty
   local PROTO="tcp"
   [[ "$po" == "2" ]] && PROTO="udp"
-  [[ "$po" == "3" ]] && PROTO="grpc"
-  cat >"$f" <<EOF
-METHOD=gost
-ROLE=$role
-DEST_IP=$DEST_IP
-PORT_MODE=$PORT_MODE
-PORTS=$PORTS
-RANGE_START=$RANGE_START
-RANGE_END=$RANGE_END
-PROTO=$PROTO
-EOF
+  write_env_file "$f" "METHOD=gost" "ROLE=$role" "DEST_IP=$DEST_IP" "PORT_MODE=$PORT_MODE" \
+    "PORTS=$PORTS" "RANGE_START=$RANGE_START" "RANGE_END=$RANGE_END" "PROTO=$PROTO"
   echo "[+] Saved $f" > "$TTY_OUT"
-  if [[ "$PROTO" == "tcp" || "$PROTO" == "udp" ]]; then
-    echo -e "${CLR_DIM}[i] Plain ${PROTO} forwarding isn't encrypted between the two ends.${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}    Use protocol 3 (grpc) instead if the traffic itself needs TLS, or make sure${CLR_RESET}" > "$TTY_OUT"
-    echo -e "${CLR_DIM}    whatever you're forwarding (HTTPS, SSH, etc.) is already encrypted end-to-end.${CLR_RESET}" > "$TTY_OUT"
-  fi
+  echo -e "${CLR_YELLOW}[!] GOST forwards raw ${PROTO} traffic without encrypting it between the servers.${CLR_RESET}" > "$TTY_OUT"
+  echo -e "${CLR_DIM}    Use an already encrypted service (such as HTTPS/SSH) or select an encrypted paired tunnel.${CLR_RESET}" > "$TTY_OUT"
 }
 edit_profile_gre(){
   local prof f role
@@ -773,14 +730,8 @@ edit_profile_gre(){
   else
     SELF_TUN_IP="10.10.10.2"; PEER_TUN_IP="10.10.10.1"
   fi
-  cat >"$f" <<EOF
-METHOD=gre
-ROLE=$role
-LOCAL_IP=$LOCAL_IP
-PEER_IP=$PEER_IP
-SELF_TUN_IP=$SELF_TUN_IP
-PEER_TUN_IP=$PEER_TUN_IP
-EOF
+  write_env_file "$f" "METHOD=gre" "ROLE=$role" "LOCAL_IP=$LOCAL_IP" "PEER_IP=$PEER_IP" \
+    "SELF_TUN_IP=$SELF_TUN_IP" "PEER_TUN_IP=$PEER_TUN_IP"
   echo "[+] Saved $f (GRE tunnel IP: $SELF_TUN_IP <-> $PEER_TUN_IP)" > "$TTY_OUT"
   echo -e "${CLR_YELLOW}[!] GRE carries traffic in plaintext — anyone on the path can read it.${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}    Restrict the interface to this one peer with iptables, e.g.:${CLR_RESET}" > "$TTY_OUT"
@@ -799,13 +750,115 @@ csv_ports_to_array(){
   done
 }
 
+tunnel_valid_port(){
+  [[ ${#1} -le 5 && "$1" =~ ^[0-9]+$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
+}
+tunnel_normalize_port(){
+  tunnel_valid_port "$1" || return 1
+  printf '%s' "$((10#$1))"
+}
+tunnel_normalize_ports(){
+  local csv="$1" p n out="" seen=","; local -a ports=()
+  [[ -n "$csv" ]] || return 0
+  local IFS=','; read -ra ports <<< "$csv"
+  for p in "${ports[@]}"; do
+    p="${p#"${p%%[![:space:]]*}"}"; p="${p%"${p##*[![:space:]]}"}"
+    tunnel_valid_port "$p" || return 1
+    n=$((10#$p)); p="$n"
+    [[ "$seen" != *",$p,"* ]] || return 1
+    seen+="$p,"; out+="${out:+,}$p"
+  done
+  printf '%s' "$out"
+}
+tunnel_valid_host(){
+  local host="$1"
+  (( ${#host} <= 253 )) || return 1
+  [[ "$host" =~ ^([A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.)*[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.?$ ]] && return 0
+  python3 -c 'import ipaddress,sys; ipaddress.ip_address(sys.argv[1])' "$host" >/dev/null 2>&1
+}
+tunnel_host_port(){
+  local host="$1" port="$2"
+  [[ "$host" == *:* && "$host" != \[*\] ]] && host="[$host]"
+  printf '%s:%s' "$host" "$port"
+}
+tunnel_valid_ipv4(){
+  local ip="$1" octet; local -a octets=()
+  [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
+  IFS='.' read -ra octets <<< "$ip"
+  for octet in "${octets[@]}"; do (( 10#$octet <= 255 )) || return 1; done
+}
+gre_ifname(){
+  local prof="$1" sum hex
+  if (( ${#prof} <= 12 )); then printf 'gre%s' "$prof"; return 0; fi
+  sum="$(printf '%s' "$prof" | cksum | awk '{print $1}')"
+  printf -v hex '%06x' "$((sum % 16777216))"
+  printf 'asgre%.4s%s' "$prof" "$hex"
+}
+gre_ipv4_int(){
+  local a b c d
+  IFS='.' read -r a b c d <<< "$1"
+  printf '%s' "$(( (10#$a << 24) + (10#$b << 16) + (10#$c << 8) + 10#$d ))"
+}
+gre_validate_profile(){
+  local prof self peer
+  prof="$1"; load_profile "$prof"
+  [[ "$ROLE" == eu || "$ROLE" == iran ]] || { echo "[-] GRE: node side must be Iran or abroad." > "$TTY_OUT"; return 1; }
+  tunnel_valid_ipv4 "${LOCAL_IP:-}" && tunnel_valid_ipv4 "${PEER_IP:-}" || { echo "[-] GRE: local and peer endpoints must be IPv4 addresses." > "$TTY_OUT"; return 1; }
+  [[ "$LOCAL_IP" != "$PEER_IP" ]] || { echo "[-] GRE: local and peer endpoints cannot be the same." > "$TTY_OUT"; return 1; }
+  if [[ -z "$SELF_TUN_IP" || -z "$PEER_TUN_IP" ]]; then
+    if [[ "$ROLE" == eu ]]; then SELF_TUN_IP="10.10.10.1"; PEER_TUN_IP="10.10.10.2"
+    else SELF_TUN_IP="10.10.10.2"; PEER_TUN_IP="10.10.10.1"; fi
+  fi
+  tunnel_valid_ipv4 "$SELF_TUN_IP" && tunnel_valid_ipv4 "$PEER_TUN_IP" || { echo "[-] GRE: tunnel interface addresses must be IPv4." > "$TTY_OUT"; return 1; }
+  [[ "$SELF_TUN_IP" != "$PEER_TUN_IP" ]] || { echo "[-] GRE: local and peer tunnel addresses must differ." > "$TTY_OUT"; return 1; }
+  self="$(gre_ipv4_int "$SELF_TUN_IP")"; peer="$(gre_ipv4_int "$PEER_TUN_IP")"
+  (( (self & 0xFFFFFFFC) == (peer & 0xFFFFFFFC) && (self & 3) != 0 && (self & 3) != 3 && (peer & 3) != 0 && (peer & 3) != 3 )) || {
+    echo "[-] GRE: tunnel addresses must be usable host addresses in the same /30 subnet." > "$TTY_OUT"; return 1;
+  }
+}
+
+backhaul_validate_profile(){
+  local prof
+  prof="$1"; load_profile "$prof"
+  [[ "$BH_ROLE" == server || "$BH_ROLE" == client ]] || { echo "[-] Backhaul: role must be server or client." > "$TTY_OUT"; return 1; }
+  [[ ( "$ROLE" == iran && "$BH_ROLE" == server ) || ( "$ROLE" == eu && "$BH_ROLE" == client ) ]] || { echo "[-] Backhaul: Iran must be server and abroad must be client." > "$TTY_OUT"; return 1; }
+  [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo "[-] Backhaul: token must be 8-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
+  tunnel_valid_port "$BIND_PORT" || { echo "[-] Backhaul: control port must be 1-65535." > "$TTY_OUT"; return 1; }
+  BIND_PORT="$(tunnel_normalize_port "$BIND_PORT")"
+  [[ "$TRANSPORT" == tcp || "$TRANSPORT" == ws ]] || { echo "[-] Backhaul: transport must be tcp or ws. WSS requires TLS certificate/key configuration, which this profile does not provide." > "$TTY_OUT"; return 1; }
+  if [[ "$BH_ROLE" == server ]]; then
+    FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] Backhaul: forwarded ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+    [[ -n "$FORWARD_PORTS" ]] || { echo "[-] Backhaul: at least one forwarded port is required on the server." > "$TTY_OUT"; return 1; }
+    [[ ",$FORWARD_PORTS," != *",$BIND_PORT,"* ]] || { echo "[-] Backhaul: control port cannot also be forwarded." > "$TTY_OUT"; return 1; }
+  else
+    tunnel_valid_host "${SERVER_IP:-}" || { echo "[-] Backhaul: enter a valid server IP or hostname." > "$TTY_OUT"; return 1; }
+  fi
+}
+
+frp_validate_profile(){
+  local prof
+  prof="$1"; load_profile "$prof"
+  [[ "$FRP_ROLE" == server || "$FRP_ROLE" == client ]] || { echo "[-] FRP: role must be server or client." > "$TTY_OUT"; return 1; }
+  [[ ( "$ROLE" == eu && "$FRP_ROLE" == server ) || ( "$ROLE" == iran && "$FRP_ROLE" == client ) ]] || { echo "[-] FRP: abroad must be server and Iran must be client." > "$TTY_OUT"; return 1; }
+  [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo "[-] FRP: token must be 8-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
+  tunnel_valid_port "$BIND_PORT" || { echo "[-] FRP: control port must be 1-65535." > "$TTY_OUT"; return 1; }
+  BIND_PORT="$(tunnel_normalize_port "$BIND_PORT")"
+  FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] FRP: forwarded ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+  if [[ "$FRP_ROLE" == client ]]; then
+    tunnel_valid_host "${SERVER_IP:-}" || { echo "[-] FRP: enter a valid server IP or hostname." > "$TTY_OUT"; return 1; }
+    [[ -n "$FORWARD_PORTS" ]] || { echo "[-] FRP: at least one forwarded port is required on the client." > "$TTY_OUT"; return 1; }
+  fi
+  [[ -z "$FORWARD_PORTS" || ",$FORWARD_PORTS," != *",$BIND_PORT,"* ]] || { echo "[-] FRP: control port cannot also be forwarded." > "$TTY_OUT"; return 1; }
+}
+
 write_backhaul_config(){
-  local prof f cfg
+  local prof f cfg remote
   prof="$1"
   f="$CONF/${prof}.env"
   cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
   load_profile "$prof"
+  backhaul_validate_profile "$prof" || return 1
   if [[ "$BH_ROLE" == "server" ]]; then
     local lines="" p
     while IFS= read -r p; do
@@ -821,13 +874,15 @@ $(printf "%b" "$lines")
 ]
 EOF
   else
+    remote="$(tunnel_host_port "$SERVER_IP" "$BIND_PORT")"
     cat > "$cfg" <<EOF
 [client]
-remote_addr = "${SERVER_IP}:${BIND_PORT}"
+remote_addr = "${remote}"
 transport = "${TRANSPORT:-tcp}"
 token = "${TOKEN}"
 EOF
   fi
+  chmod 600 "$cfg"
 }
 
 rathole_valid_port(){ [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 )); }
@@ -835,29 +890,28 @@ rathole_validate_profile(){
   local prof p host port_count=0
   prof="$1"; load_profile "$prof"
   [[ "$RT_ROLE" == "server" || "$RT_ROLE" == "client" ]] || { echo "[-] Rathole: choose server on Iran or client abroad." > "$TTY_OUT"; return 1; }
+  [[ ( "$ROLE" == iran && "$RT_ROLE" == server ) || ( "$ROLE" == eu && "$RT_ROLE" == client ) ]] || { echo "[-] Rathole: Iran must be server and abroad must be client." > "$TTY_OUT"; return 1; }
   [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo "[-] Rathole: shared token must be 8-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
   rathole_valid_port "$BIND_PORT" || { echo "[-] Rathole: control port must be between 1 and 65535." > "$TTY_OUT"; return 1; }
+  BIND_PORT="$(tunnel_normalize_port "$BIND_PORT")"
   if [[ "$RT_ROLE" == "client" ]]; then
     host="${SERVER_IP:-}"
-    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$ ]] || { echo "[-] Rathole: enter a valid Iran server IP or hostname." > "$TTY_OUT"; return 1; }
+    tunnel_valid_host "$host" || { echo "[-] Rathole: enter a valid Iran server IP or hostname." > "$TTY_OUT"; return 1; }
   fi
+  FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] Rathole: forwarded ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
   [[ -n "$FORWARD_PORTS" ]] || { echo "[-] Rathole: add at least one TCP port to forward." > "$TTY_OUT"; return 1; }
-  local IFS=','
-  read -ra _rathole_ports <<< "$FORWARD_PORTS"
-  for p in "${_rathole_ports[@]}"; do
-    p="$(echo "$p" | xargs)"
-    rathole_valid_port "$p" || { echo "[-] Rathole: invalid forwarded port '$p'." > "$TTY_OUT"; return 1; }
+  while IFS= read -r p; do
+    [[ -n "$p" ]] || continue
     [[ "$p" != "$BIND_PORT" ]] || { echo "[-] Rathole: forwarded port must differ from the control port." > "$TTY_OUT"; return 1; }
     port_count=$((port_count + 1))
-  done
+  done < <(csv_ports_to_array "$FORWARD_PORTS")
   (( port_count > 0 )) || { echo "[-] Rathole: enter at least one forwarded port." > "$TTY_OUT"; return 1; }
 }
 
 write_rathole_config(){
-  local prof cfg p
+  local prof cfg p remote
   prof="$1"; cfg="$CONF/${prof}.toml"
   rathole_validate_profile "$prof" || return 1
-  load_profile "$prof"
   if [[ "$RT_ROLE" == "server" ]]; then
     { echo "[server]"; echo "bind_addr = \"0.0.0.0:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""; } > "$cfg"
     while IFS= read -r p; do
@@ -868,7 +922,8 @@ write_rathole_config(){
       } >> "$cfg"
     done < <(csv_ports_to_array "$FORWARD_PORTS")
   else
-    { echo "[client]"; echo "remote_addr = \"${SERVER_IP}:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""; } > "$cfg"
+    remote="$(tunnel_host_port "$SERVER_IP" "$BIND_PORT")"
+    { echo "[client]"; echo "remote_addr = \"${remote}\""; echo "default_token = \"${TOKEN}\""; } > "$cfg"
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
       {
@@ -881,18 +936,24 @@ write_rathole_config(){
 }
 
 write_frp_config(){
-  local prof f cfg
+  local prof cfg p
   prof="$1"
-  f="$CONF/${prof}.env"
   cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
-  load_profile "$prof"
+  frp_validate_profile "$prof" || return 1
   if [[ "$FRP_ROLE" == "server" ]]; then
     cat > "$cfg" <<EOF
 bindPort = ${BIND_PORT}
 auth.method = "token"
 auth.token = "${TOKEN}"
 EOF
+    if [[ -n "$FORWARD_PORTS" ]]; then
+      {
+        echo 'allowPorts = ['
+        while IFS= read -r p; do [[ -n "$p" ]] && printf '  { single = %s },\n' "$p"; done < <(csv_ports_to_array "$FORWARD_PORTS")
+        echo ']'
+      } >> "$cfg"
+    fi
   else
     cat > "$cfg" <<EOF
 serverAddr = "${SERVER_IP}"
@@ -914,24 +975,30 @@ remotePort = ${p}
 EOF
     done < <(csv_ports_to_array "$FORWARD_PORTS")
   fi
+  chmod 600 "$cfg"
 }
 
 write_assecure_config(){
-  local prof cfg cert key ca p
+  local prof cfg cert key ca p seen_ports
   prof="$1"; cfg="$CONF/${prof}.toml"
   load_profile "$prof"
+  if [[ -z "${AS_ROLE:-}" ]]; then [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
+  [[ ( "$ROLE" == "eu" && "$AS_ROLE" == "server" ) || ( "$ROLE" == "iran" && "$AS_ROLE" == "client" ) ]] || { echo "[-] A,S Secure: abroad must be server and Iran must be client." > "$TTY_OUT"; return 1; }
   [[ "$AS_TRANSPORT" == "quic" || "$AS_TRANSPORT" == "wss" || "$AS_TRANSPORT" == "tcp" ]] || { echo "[-] A,S Secure: invalid transport." > "$TTY_OUT"; return 1; }
   [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{32,128}$ ]] || { echo "[-] A,S Secure: token must be 32-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
-  [[ "${AS_SERVER_NAME:-}" =~ ^[A-Za-z0-9.:-]{1,253}$ ]] || [[ "$AS_ROLE" == "server" ]] || { echo "[-] A,S Secure: invalid TLS server name." > "$TTY_OUT"; return 1; }
-  for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}") $(csv_ports_to_array "${AS_UDP_PORTS:-}"); do
-    [[ "$p" =~ ^[0-9]{1,5}$ ]] && ((10#$p >= 1 && 10#$p <= 65535)) || { echo "[-] A,S Secure: invalid forwarded port '$p'." > "$TTY_OUT"; return 1; }
-  done
-  [[ "$BIND_PORT" =~ ^[0-9]{1,5}$ ]] && ((10#$BIND_PORT >= 1 && 10#$BIND_PORT <= 65535)) || { echo "[-] A,S Secure: invalid control port." > "$TTY_OUT"; return 1; }
+  AS_TCP_PORTS="$(tunnel_normalize_ports "${AS_TCP_PORTS:-}")" || { echo "[-] A,S Secure: TCP ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+  AS_UDP_PORTS="$(tunnel_normalize_ports "${AS_UDP_PORTS:-}")" || { echo "[-] A,S Secure: UDP ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+  [[ -n "$AS_TCP_PORTS$AS_UDP_PORTS" ]] || { echo "[-] A,S Secure: add at least one TCP or UDP forward port." > "$TTY_OUT"; return 1; }
+  tunnel_valid_port "$BIND_PORT" || { echo "[-] A,S Secure: control port must be 1-65535." > "$TTY_OUT"; return 1; }
+  BIND_PORT="$(tunnel_normalize_port "$BIND_PORT")"
+  [[ ",${AS_TCP_PORTS}," != *",$BIND_PORT,"* && ",${AS_UDP_PORTS}," != *",$BIND_PORT,"* ]] || { echo "[-] A,S Secure: control port cannot also be forwarded." > "$TTY_OUT"; return 1; }
   cert="$CONF/${prof}.server.crt"; key="$CONF/${prof}.server.key"; ca="$CONF/${prof}.ca.crt"
   if [[ "$AS_ROLE" == "server" ]]; then
     [[ -n "$TOKEN" && -n "$AS_CERT_B64" && -n "$AS_KEY_B64" ]] || { echo "[-] A,S Secure server requires a token and certificate/key." > "$TTY_OUT"; return 1; }
     printf '%s' "$AS_CERT_B64" | base64 -d > "$cert" || return 1
     printf '%s' "$AS_KEY_B64" | base64 -d > "$key" || return 1
+    openssl x509 -in "$cert" -noout >/dev/null 2>&1 && openssl pkey -in "$key" -noout >/dev/null 2>&1 || { echo "[-] A,S Secure: certificate or private key is invalid." > "$TTY_OUT"; return 1; }
+    cmp -s <(openssl x509 -in "$cert" -pubkey -noout 2>/dev/null | openssl pkey -pubin -outform DER 2>/dev/null) <(openssl pkey -in "$key" -pubout -outform DER 2>/dev/null) || { echo "[-] A,S Secure: certificate and private key do not match." > "$TTY_OUT"; return 1; }
     chmod 600 "$cert" "$key"
     {
       echo 'bindAddr = "0.0.0.0"'; echo "bindPort = ${BIND_PORT}"
@@ -939,14 +1006,18 @@ write_assecure_config(){
       echo 'auth.method = "token"'; printf 'auth.token = "%s"\n' "$TOKEN"
       echo 'transport.tls.force = true'; printf 'transport.tls.certFile = "%s"\n' "$cert"; printf 'transport.tls.keyFile = "%s"\n' "$key"
       echo 'allowPorts = ['
-      for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}"); do printf '  { single = %s },\n' "$p"; done
-      for p in $(csv_ports_to_array "${AS_UDP_PORTS:-}"); do printf '  { single = %s },\n' "$p"; done
+      seen_ports=,
+      for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}"; csv_ports_to_array "${AS_UDP_PORTS:-}"); do
+        [[ "$seen_ports" == *",$p,"* ]] && continue
+        printf '  { single = %s },\n' "$p"; seen_ports+="$p,"
+      done
       echo ']'
     } > "$cfg"
   else
     [[ -n "$TOKEN" && -n "$SERVER_IP" && -n "$AS_CA_B64" && -n "$AS_SERVER_NAME" ]] || { echo "[-] A,S Secure client requires server address, token, and pinned CA." > "$TTY_OUT"; return 1; }
-    [[ "$SERVER_IP" =~ ^[A-Za-z0-9.:-]+$ ]] || { echo "[-] A,S Secure: invalid server address." > "$TTY_OUT"; return 1; }
+    tunnel_valid_host "$SERVER_IP" && tunnel_valid_host "$AS_SERVER_NAME" || { echo "[-] A,S Secure: invalid server address or TLS server name." > "$TTY_OUT"; return 1; }
     printf '%s' "$AS_CA_B64" | base64 -d > "$ca" || return 1
+    openssl x509 -in "$ca" -noout >/dev/null 2>&1 || { echo "[-] A,S Secure: pinned CA certificate is invalid." > "$TTY_OUT"; return 1; }
     chmod 600 "$ca"
     {
       printf 'serverAddr = "%s"\nserverPort = %s\n' "$SERVER_IP" "$BIND_PORT"
@@ -965,8 +1036,10 @@ run_assecure_slot(){
   local prof bin
   prof="$1"; load_profile "$prof"
   if [[ -z "$AS_ROLE" ]]; then [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
-  install_frp || return 1
   write_assecure_config "$prof" || return 1
+  load_profile "$prof"
+  [[ -z "$AS_ROLE" ]] && { [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; }
+  install_frp || return 1
   [[ "$AS_ROLE" == "server" ]] && bin="frps" || bin="frpc"
   launch_in_screen "$prof" "'$BIN_DIR/$bin' -c '$CONF/${prof}.toml'" || return 1
   echo "[+] Started: $(session_name "$prof") (A,S Secure / $AS_TRANSPORT)" > "$TTY_OUT"
@@ -986,30 +1059,32 @@ paqet_safe_text(){ [[ "$1" =~ ^[A-Za-z0-9._@:+=-]+$ ]]; }
 
 # Validates the currently loaded profile (call load_profile first).
 paqet_validate(){
-  local p mode conn mtu
+  local p mode conn mtu tcp_seen udp_seen
   if [[ "$PQ_ROLE" != "server" && "$PQ_ROLE" != "client" ]]; then
     echo "[-] Paqet: role must be server or client." > "$TTY_OUT"; return 1
   fi
+  [[ ( "$ROLE" == "eu" && "$PQ_ROLE" == "server" ) || ( "$ROLE" == "iran" && "$PQ_ROLE" == "client" ) ]] || { echo "[-] Paqet: abroad must be server and Iran must be client." > "$TTY_OUT"; return 1; }
   if ! paqet_valid_port "$SERVER_PORT"; then
     echo "[-] Paqet: invalid tunnel port '${SERVER_PORT}'." > "$TTY_OUT"; return 1
   fi
+  SERVER_PORT=$((10#$SERVER_PORT))
   if [[ ${#SECRET_KEY} -lt 8 ]] || ! paqet_safe_text "$SECRET_KEY"; then
     echo "[-] Paqet: secret key needs 8+ characters (letters, digits and . _ @ : + = - only)." > "$TTY_OUT"; return 1
   fi
   mode="${KCP_MODE:-fast}"
   case "$mode" in normal|fast|fast2|fast3) ;; *) echo "[-] Paqet: KCP mode must be normal, fast, fast2 or fast3." > "$TTY_OUT"; return 1 ;; esac
-  case "${BLOCK:-aes-128-gcm}" in aes-128-gcm|aes|aes-128|aes-192|aes-256|none|null) ;; *) echo "[-] Paqet: unknown encryption '${BLOCK}'." > "$TTY_OUT"; return 1 ;; esac
+  case "${BLOCK:-aes-128-gcm}" in aes-128-gcm|aes|aes-128|aes-192|salsa20|blowfish|twofish|cast5|3des|tea|xtea|xor|sm4|none|null) ;; *) echo "[-] Paqet: unknown encryption '${BLOCK}'." > "$TTY_OUT"; return 1 ;; esac
   conn="${CONN:-4}"; mtu="${MTU:-1150}"
-  if ! [[ "$conn" =~ ^[0-9]+$ ]] || (( 10#$conn < 1 || 10#$conn > 32 )); then
-    echo "[-] Paqet: connections must be 1-32." > "$TTY_OUT"; return 1
+  if ! [[ "$conn" =~ ^[0-9]{1,3}$ ]] || (( 10#$conn < 1 || 10#$conn > 256 )); then
+    echo "[-] Paqet: connections must be 1-256." > "$TTY_OUT"; return 1
   fi
-  if ! [[ "$mtu" =~ ^[0-9]+$ ]] || (( 10#$mtu < 100 || 10#$mtu > 9000 )); then
-    echo "[-] Paqet: MTU must be 100-9000." > "$TTY_OUT"; return 1
+  if ! [[ "$mtu" =~ ^[0-9]{1,4}$ ]] || (( 10#$mtu < 50 || 10#$mtu > 1500 )); then
+    echo "[-] Paqet: MTU must be 50-1500." > "$TTY_OUT"; return 1
   fi
   if [[ -n "$ROUTER_MAC" ]] && ! [[ "$ROUTER_MAC" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
     echo "[-] Paqet: router MAC must look like aa:bb:cc:dd:ee:ff." > "$TTY_OUT"; return 1
   fi
-  [[ "$PQ_ROLE" == "server" ]] && return 0
+  if [[ "$PQ_ROLE" == "server" ]]; then return 0; fi
 
   if ! paqet_valid_ip "$SERVER_IP"; then
     echo "[-] Paqet: server IP '${SERVER_IP}' is not a valid IPv4 address." > "$TTY_OUT"; return 1
@@ -1017,14 +1092,20 @@ paqet_validate(){
   if [[ -z "$FORWARD_PORTS" && -z "$FORWARD_UDP_PORTS" && -z "$SOCKS5_PORT" ]]; then
     echo "[-] Paqet client: give forward ports or a SOCKS5 port." > "$TTY_OUT"; return 1
   fi
+  FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] Paqet: TCP forwarding ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+  FORWARD_UDP_PORTS="$(tunnel_normalize_ports "${FORWARD_UDP_PORTS:-}")" || { echo "[-] Paqet: UDP forwarding ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
   for p in $(csv_ports_to_array "$FORWARD_PORTS") $(csv_ports_to_array "$FORWARD_UDP_PORTS"); do
     if ! paqet_valid_port "$p"; then echo "[-] Paqet: invalid forward port '$p'." > "$TTY_OUT"; return 1; fi
-    if [[ "$p" == "$SERVER_PORT" ]]; then
+    if (( 10#$p == SERVER_PORT )); then
       echo "[-] Paqet: forward port $p equals the tunnel port — that would create an endless traffic loop." > "$TTY_OUT"; return 1
     fi
   done
-  if [[ -n "$SOCKS5_PORT" ]] && ! paqet_valid_port "$SOCKS5_PORT"; then
-    echo "[-] Paqet: invalid SOCKS5 port." > "$TTY_OUT"; return 1
+  if [[ -n "$SOCKS5_PORT" ]]; then
+    if ! paqet_valid_port "$SOCKS5_PORT"; then echo "[-] Paqet: invalid SOCKS5 port." > "$TTY_OUT"; return 1; fi
+    SOCKS5_PORT=$((10#$SOCKS5_PORT))
+    if (( SOCKS5_PORT == SERVER_PORT )) || [[ ",${FORWARD_PORTS}," == *",$SOCKS5_PORT,"* ]]; then
+      echo "[-] Paqet: SOCKS5 port conflicts with the tunnel port or a TCP forwarded port." > "$TTY_OUT"; return 1
+    fi
   fi
   if [[ -n "$SOCKS5_USER$SOCKS5_PASS" ]]; then
     if [[ -z "$SOCKS5_USER" || -z "$SOCKS5_PASS" ]] || ! paqet_safe_text "$SOCKS5_USER" || ! paqet_safe_text "$SOCKS5_PASS"; then
@@ -1055,10 +1136,10 @@ install_paqet(){
   local arch archname url tmp bin
   arch="$(detect_arch)"
   archname="amd64"; [[ "$arch" == "arm64" ]] && archname="arm64"
-  # raw-packet transport needs libpcap + iptables (and persistence for the rules)
+  # Raw-packet transport needs libpcap + iptables. Rules are runtime-only and
+  # isolated in per-profile chains; do not install or rewrite global firewall persistence.
   have iptables || apt_try_install iptables
   if ! ldconfig -p 2>/dev/null | grep -q 'libpcap'; then apt_try_install libpcap-dev; fi
-  have netfilter-persistent || apt_try_install iptables-persistent
   url="$(gh_latest_asset_url "hanselime/paqet" "paqet-linux-${archname}-.*\\.tar\\.gz$")"
   [[ -n "$url" ]] || { echo "[-] Could not find a Paqet release asset for linux-${archname}." > "$TTY_OUT"; return 1; }
   tmp="$(mktemp -d)"
@@ -1154,61 +1235,285 @@ write_paqet_config(){
 
 # Prints "port proto" for every port this Paqet profile needs raw-socket iptables rules for.
 paqet_rule_ports(){
-  local p
+  local p tcp_ports udp_ports
   load_profile "$1"
   if [[ "$PQ_ROLE" == "server" ]]; then
-    echo "${SERVER_PORT} tcp"
+    paqet_valid_port "$SERVER_PORT" && echo "$((10#$SERVER_PORT)) tcp"
   else
-    for p in $(csv_ports_to_array "$FORWARD_PORTS"); do echo "$p tcp"; done
-    for p in $(csv_ports_to_array "$FORWARD_UDP_PORTS"); do echo "$p udp"; done
-    if [[ -n "$SOCKS5_PORT" ]]; then echo "${SOCKS5_PORT} tcp"; fi
+    tcp_ports="$(tunnel_normalize_ports "${FORWARD_PORTS:-}" 2>/dev/null || true)"
+    udp_ports="$(tunnel_normalize_ports "${FORWARD_UDP_PORTS:-}" 2>/dev/null || true)"
+    for p in $(csv_ports_to_array "$tcp_ports"); do echo "$p tcp"; done
+    for p in $(csv_ports_to_array "$udp_ports"); do echo "$p udp"; done
+    if paqet_valid_port "${SOCKS5_PORT:-}"; then echo "$((10#$SOCKS5_PORT)) tcp"; fi
   fi
 }
 
 paqet_iptables_rule(){
-  local action port proto
-  action="$1"; port="$2"; proto="$3"
-  have iptables || return 0
-  # always delete first so "add" stays idempotent across restarts
-  iptables -t raw -D PREROUTING -p "$proto" --dport "$port" -j NOTRACK 2>/dev/null || true
-  iptables -t raw -D OUTPUT -p "$proto" --sport "$port" -j NOTRACK 2>/dev/null || true
-  if [[ "$proto" == "tcp" ]]; then
-    iptables -t mangle -D OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || true
+  local action prof port proto pre out rst
+  action="$1"; prof="$2"; port="$3"; proto="$4"
+  have iptables || return 1
+  pre="$(paqet_chain_name RP "$prof")"
+  out="$(paqet_chain_name RO "$prof")"
+  rst="$(paqet_chain_name MO "$prof")"
+  if [[ "$action" == "add" ]]; then
+    paqet_iptables_ensure_chain raw PREROUTING "$pre" || return 1
+    paqet_iptables_ensure_chain raw OUTPUT "$out" || { paqet_iptables_prune_chain raw PREROUTING "$pre"; return 1; }
+    if [[ "$proto" == "tcp" ]]; then
+      paqet_iptables_ensure_chain mangle OUTPUT "$rst" || {
+        paqet_iptables_prune_chain raw PREROUTING "$pre"
+        paqet_iptables_prune_chain raw OUTPUT "$out"
+        return 1
+      }
+    fi
+    if ! iptables -t raw -C "$pre" -p "$proto" --dport "$port" -j NOTRACK 2>/dev/null; then
+      iptables -t raw -A "$pre" -p "$proto" --dport "$port" -j NOTRACK || {
+        paqet_iptables_rule del "$prof" "$port" "$proto"; return 1;
+      }
+    fi
+    if ! iptables -t raw -C "$out" -p "$proto" --sport "$port" -j NOTRACK 2>/dev/null; then
+      iptables -t raw -A "$out" -p "$proto" --sport "$port" -j NOTRACK || {
+        paqet_iptables_rule del "$prof" "$port" "$proto"; return 1;
+      }
+    fi
+    if [[ "$proto" == "tcp" ]] && ! iptables -t mangle -C "$rst" -p tcp --sport "$port" --tcp-flags RST RST -j DROP 2>/dev/null; then
+      iptables -t mangle -A "$rst" -p tcp --sport "$port" --tcp-flags RST RST -j DROP || {
+        paqet_iptables_rule del "$prof" "$port" "$proto"; return 1;
+      }
+    fi
+    return 0
   fi
-  [[ "$action" == "add" ]] || return 0
-  iptables -t raw -A PREROUTING -p "$proto" --dport "$port" -j NOTRACK
-  iptables -t raw -A OUTPUT -p "$proto" --sport "$port" -j NOTRACK
+  iptables -t raw -D "$pre" -p "$proto" --dport "$port" -j NOTRACK 2>/dev/null || true
+  iptables -t raw -D "$out" -p "$proto" --sport "$port" -j NOTRACK 2>/dev/null || true
   if [[ "$proto" == "tcp" ]]; then
-    iptables -t mangle -A OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP
+    iptables -t mangle -D "$rst" -p tcp --sport "$port" --tcp-flags RST RST -j DROP 2>/dev/null || true
+  fi
+  paqet_iptables_prune_chain raw PREROUTING "$pre"
+  paqet_iptables_prune_chain raw OUTPUT "$out"
+  [[ "$proto" != "tcp" ]] || paqet_iptables_prune_chain mangle OUTPUT "$rst"
+}
+
+paqet_chain_name(){
+  local kind prof sum
+  kind="$1"; prof="$2"
+  sum="$(printf '%s' "$prof" | sha256sum | cut -c1-16)"
+  printf 'ASQ%s%s' "$kind" "$sum"
+}
+
+paqet_iptables_ensure_chain(){
+  local table hook chain
+  table="$1"; hook="$2"; chain="$3"
+  have iptables || return 1
+  if ! iptables -t "$table" -S "$chain" >/dev/null 2>&1; then
+    iptables -t "$table" -N "$chain" || return 1
+  fi
+  if ! iptables -t "$table" -C "$hook" -j "$chain" >/dev/null 2>&1; then
+    iptables -t "$table" -I "$hook" 1 -j "$chain" || return 1
   fi
 }
 
-save_iptables(){
-  if have netfilter-persistent; then
-    netfilter-persistent save >/dev/null 2>&1 || true
-  elif [[ -f /etc/init.d/iptables || -f /usr/lib/systemd/system/iptables.service ]]; then
-    service iptables save >/dev/null 2>&1 || true
-  elif have iptables-save && [[ -d /etc/iptables ]]; then
-    iptables-save > /etc/iptables/rules.v4 2>/dev/null || true
+paqet_iptables_prune_chain(){
+  local table hook chain
+  table="$1"; hook="$2"; chain="$3"
+  iptables -t "$table" -S "$chain" 2>/dev/null | grep -q -- "^-A ${chain} " && return 0
+  while iptables -t "$table" -D "$hook" -j "$chain" 2>/dev/null; do :; done
+  iptables -t "$table" -F "$chain" >/dev/null 2>&1 || true
+  iptables -t "$table" -X "$chain" >/dev/null 2>&1 || true
+  return 0
+}
+
+paqet_iptables_delete_chain(){
+  local table hook chain
+  table="$1"; hook="$2"; chain="$3"
+  while iptables -t "$table" -D "$hook" -j "$chain" 2>/dev/null; do :; done
+  iptables -t "$table" -F "$chain" >/dev/null 2>&1 || true
+  iptables -t "$table" -X "$chain" >/dev/null 2>&1 || true
+}
+
+paqet_iptables_clear_profile(){
+  local prof
+  prof="$1"
+  paqet_iptables_delete_chain raw PREROUTING "$(paqet_chain_name RP "$prof")"
+  paqet_iptables_delete_chain raw OUTPUT "$(paqet_chain_name RO "$prof")"
+  paqet_iptables_delete_chain mangle OUTPUT "$(paqet_chain_name MO "$prof")"
+}
+
+paqet_iptables_remove_legacy_rule(){
+  local port proto
+  port="$1"; proto="$2"
+  # Older releases inserted one untagged rule for each tracked profile. Remove
+  # only that one occurrence; all new rules live in A,S-owned per-profile chains.
+  iptables -t raw -D PREROUTING -p "$proto" --dport "$port" -j NOTRACK >/dev/null 2>&1 || true
+  iptables -t raw -D OUTPUT -p "$proto" --sport "$port" -j NOTRACK >/dev/null 2>&1 || true
+  if [[ "$proto" == "tcp" ]]; then
+    iptables -t mangle -D OUTPUT -p tcp --sport "$port" --tcp-flags RST RST -j DROP >/dev/null 2>&1 || true
   fi
+}
+
+paqet_iptables_remove_legacy_persistent(){
+  local state="$1"
+  [[ -f "$state" && -f /etc/iptables/rules.v4 ]] || return 0
+  have python3 || return 0
+  python3 - "$state" /etc/iptables/rules.v4 <<'PY' >/dev/null 2>&1 || true
+import os, shlex, shutil, stat, sys, tempfile
+
+state_path, rules_path = sys.argv[1:3]
+ports = set()
+try:
+    with open(state_path, encoding="utf-8") as f:
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) == 2 and parts[0].isdigit() and parts[1] in ("tcp", "udp"):
+                ports.add((int(parts[0]), parts[1]))
+    with open(rules_path, encoding="utf-8", errors="replace", newline="") as f:
+        original = f.readlines()
+except OSError:
+    raise SystemExit(0)
+
+def signature(table, tokens):
+    if len(tokens) < 4 or tokens[0] != "-A":
+        return None
+    chain = tokens[1]
+    def value(flag):
+        try:
+            return tokens[tokens.index(flag) + 1]
+        except (ValueError, IndexError):
+            return None
+    proto, target = value("-p"), value("-j")
+    if table == "raw" and chain == "PREROUTING" and target == "NOTRACK":
+        port = value("--dport")
+        return (table, chain, proto, "--dport", port) if port else None
+    if table == "raw" and chain == "OUTPUT" and target == "NOTRACK":
+        port = value("--sport")
+        return (table, chain, proto, "--sport", port) if port else None
+    if table == "mangle" and chain == "OUTPUT" and proto == "tcp" and target == "DROP":
+        port = value("--sport")
+        try:
+            i = tokens.index("--tcp-flags")
+            flags = tuple(tokens[i + 1:i + 3])
+        except (ValueError, IndexError):
+            flags = ()
+        return (table, chain, proto, "--sport", port, flags) if port and flags == ("RST", "RST") else None
+    return None
+
+remaining = set()
+for port, proto in ports:
+    remaining.add(("raw", "PREROUTING", proto, "--dport", str(port)))
+    remaining.add(("raw", "OUTPUT", proto, "--sport", str(port)))
+    if proto == "tcp":
+        remaining.add(("mangle", "OUTPUT", "tcp", "--sport", str(port), ("RST", "RST")))
+
+table, output, changed = "", [], False
+for line in original:
+    stripped = line.strip()
+    if stripped.startswith("*"):
+        table = stripped[1:]
+    elif stripped == "COMMIT":
+        table = ""
+    if table and stripped.startswith("-A "):
+        try:
+            sig = signature(table, shlex.split(stripped))
+        except ValueError:
+            sig = None
+        if sig in remaining:
+            remaining.remove(sig)
+            changed = True
+            continue
+    output.append(line)
+
+if changed:
+    backup = rules_path + ".as-paqet.bak"
+    if not os.path.exists(backup):
+        shutil.copy2(rules_path, backup)
+    mode = stat.S_IMODE(os.stat(rules_path).st_mode)
+    fd, temp = tempfile.mkstemp(prefix=".rules.v4.as-paqet.", dir=os.path.dirname(rules_path) or ".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
+            f.writelines(output)
+        os.chmod(temp, mode)
+        os.replace(temp, rules_path)
+    finally:
+        if os.path.exists(temp):
+            os.unlink(temp)
+PY
+}
+
+paqet_iptables_migrate_legacy(){
+  local state prof port proto failed tmp
+  [[ -d "$CONF" ]] && have iptables || return 0
+  for state in "$CONF"/*.paqet-rules; do
+    [[ -f "$state" ]] || continue
+    prof="${state##*/}"; prof="${prof%.paqet-rules}"
+    [[ "$prof" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] || continue
+    if grep -qx '# A,S Paqet firewall rules v2' "$state"; then
+      is_running "$prof" || paqet_iptables_remove "$prof"
+      continue
+    fi
+    if ! is_running "$prof"; then
+      while read -r port proto; do
+        [[ "$port" =~ ^[0-9]{1,5}$ ]] && [[ "$proto" == tcp || "$proto" == udp ]] || continue
+        paqet_iptables_remove_legacy_rule "$port" "$proto"
+      done < "$state"
+      paqet_iptables_remove_legacy_persistent "$state"
+      rm -f "$state"
+      continue
+    fi
+    failed=0
+    while read -r port proto; do
+      [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || continue
+      [[ "$proto" == tcp || "$proto" == udp ]] || continue
+      if ! paqet_iptables_rule add "$prof" "$port" "$proto"; then failed=1; break; fi
+      paqet_iptables_remove_legacy_rule "$port" "$proto"
+    done < "$state"
+    [[ "$failed" -eq 0 ]] || continue
+    paqet_iptables_remove_legacy_persistent "$state"
+    tmp="$(mktemp "$CONF/.${prof}.paqet-migrate.XXXXXX")" || continue
+    { echo '# A,S Paqet firewall rules v2'; grep -v '^#' "$state" || true; } > "$tmp"
+    chmod 600 "$tmp"
+    mv -f "$tmp" "$state"
+  done
 }
 
 paqet_iptables_apply(){
-  local port proto
+  local prof state tmp port proto failed=0
+  prof="$1"; state="$CONF/${prof}.paqet-rules"
+  paqet_iptables_remove "$prof" >/dev/null 2>&1 || true
+  tmp="$(mktemp "$CONF/.${prof}.rules.XXXXXX")" || return 1
+  echo '# A,S Paqet firewall rules v2' > "$tmp"
   while read -r port proto; do
     [[ -n "$port" ]] || continue
-    paqet_iptables_rule add "$port" "$proto" || echo "[!] iptables rule for ${port}/${proto} failed." > "$TTY_OUT"
+    if ! paqet_iptables_rule add "$prof" "$port" "$proto"; then
+      echo "[!] iptables rule for ${port}/${proto} failed." > "$TTY_OUT"
+      failed=1
+      break
+    fi
+    printf '%s %s\n' "$port" "$proto" >> "$tmp"
   done < <(paqet_rule_ports "$1")
-  save_iptables
+  if [[ "$failed" -ne 0 ]]; then
+    while read -r port proto; do
+      [[ "$port" =~ ^[0-9]{1,5}$ ]] && [[ "$proto" == tcp || "$proto" == udp ]] || continue
+      paqet_iptables_rule del "$prof" "$port" "$proto" || true
+    done < "$tmp"
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp"
+  mv -f "$tmp" "$state"
+  return 0
 }
 
 paqet_iptables_remove(){
-  local port proto
-  while read -r port proto; do
-    [[ -n "$port" ]] || continue
-    paqet_iptables_rule del "$port" "$proto" || true
-  done < <(paqet_rule_ports "$1")
-  save_iptables
+  local prof state port proto
+  prof="$1"; state="$CONF/${prof}.paqet-rules"
+  if [[ -f "$state" ]]; then
+    while read -r port proto; do
+      [[ "$port" =~ ^[0-9]{1,5}$ ]] && [[ "$proto" == tcp || "$proto" == udp ]] || continue
+      paqet_iptables_rule del "$prof" "$port" "$proto" || true
+    done < "$state"
+    rm -f "$state"
+  fi
+  # The profile owns these chains exclusively. Flush them to repair interrupted
+  # starts/stops even when the old state file was never written or is incomplete.
+  paqet_iptables_clear_profile "$prof"
 }
 
 # ===================== Runtime control (per method) =====================
@@ -1245,7 +1550,7 @@ is_running(){
   prof="$1"
   m="$(get_method "$prof")"
   if [[ "$m" == "gre" ]]; then
-    ip link show "gre${prof}" >/dev/null 2>&1
+    ip link show "$(gre_ifname "$prof")" >/dev/null 2>&1
   else
     s="$(session_name "$prof")"
     out="$(screen -ls 2>/dev/null || true)"
@@ -1290,6 +1595,7 @@ asnative_validate_profile(){
     echo "[-] Reverse: side must be eu or iran." > "$TTY_OUT"; return 1
   fi
   asnative_valid_port "$BRIDGE" && asnative_valid_port "$SYNC" || { echo "[-] Reverse: bridge/sync ports must be 1-65535." > "$TTY_OUT"; return 1; }
+  BRIDGE=$((10#$BRIDGE)); SYNC=$((10#$SYNC))
   [[ "$BRIDGE" != "$SYNC" ]] || { echo "[-] Reverse: bridge and sync ports must be different." > "$TTY_OUT"; return 1; }
   if [[ "$ROLE" == "eu" ]]; then
     host="${IRAN_IP:-}"
@@ -1302,6 +1608,7 @@ asnative_validate_profile(){
     *) echo "[-] Reverse: AutoSync must be true or false." > "$TTY_OUT"; return 1 ;;
   esac
   [[ -n "${PORTS:-}" ]] || { echo "[-] Reverse: add at least one port or enable AutoSync." > "$TTY_OUT"; return 1; }
+  PORTS="$(tunnel_normalize_ports "$PORTS")" || { echo "[-] Reverse: forwarded ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
   local IFS=','
   read -ra _reverse_ports <<< "$PORTS"
   for p in "${_reverse_ports[@]}"; do
@@ -1317,7 +1624,6 @@ run_slot_asnative(){
   local prof cmd
   prof="$1"
   asnative_validate_profile "$prof" || return 1
-  load_profile "$prof"
   if [[ "$ROLE" == "eu" ]]; then
     cmd="printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | PAHLAVI_POOL=\"${PAHLAVI_POOL:-0}\" python3 '$PY'"
   elif [[ "${AUTO_SYNC:-true}" == "true" || -z "$AUTO_SYNC" ]]; then
@@ -1332,8 +1638,9 @@ run_slot_asnative(){
 run_backhaul_slot(){
   local prof
   prof="$1"
+  backhaul_validate_profile "$prof" || return 1
   install_backhaul || return 1
-  write_backhaul_config "$prof"
+  write_backhaul_config "$prof" || return 1
   launch_in_screen "$prof" "'$BIN_DIR/backhaul' -c '$CONF/${prof}.toml'" || return 1
   echo "[+] Started: $(session_name "$prof") (backhaul)" > "$TTY_OUT"
 }
@@ -1344,7 +1651,6 @@ run_rathole_slot(){
   rathole_validate_profile "$prof" || return 1
   install_rathole || return 1
   write_rathole_config "$prof" || return 1
-  load_profile "$prof"
   [[ "$RT_ROLE" == "server" ]] && flag="--server" || flag="--client"
   launch_in_screen "$prof" "'$BIN_DIR/rathole' $flag '$CONF/${prof}.toml'" || return 1
   echo "[+] Started: $(session_name "$prof") (rathole)" > "$TTY_OUT"
@@ -1353,9 +1659,10 @@ run_rathole_slot(){
 run_frp_slot(){
   local prof bin
   prof="$1"
+  frp_validate_profile "$prof" || return 1
   load_profile "$prof"
   install_frp || return 1
-  write_frp_config "$prof"
+  write_frp_config "$prof" || return 1
   [[ "$FRP_ROLE" == "server" ]] && bin="frps" || bin="frpc"
   launch_in_screen "$prof" "'$BIN_DIR/$bin' -c '$CONF/${prof}.toml'" || return 1
   echo "[+] Started: $(session_name "$prof") (frp $FRP_ROLE)" > "$TTY_OUT"
@@ -1366,21 +1673,46 @@ gost_port_list(){
   prof="$1"
   load_profile "$prof"
   if [[ "${PORT_MODE:-manual}" == "range" ]]; then
-    seq "$RANGE_START" "$RANGE_END"
+    seq "$(tunnel_normalize_port "$RANGE_START")" "$(tunnel_normalize_port "$RANGE_END")"
   else
-    csv_ports_to_array "$PORTS"
+    csv_ports_to_array "$(tunnel_normalize_ports "${PORTS:-}")"
   fi
 }
 
+gost_validate_profile(){
+  local prof p count
+  prof="$1"; load_profile "$prof"
+  tunnel_valid_host "${DEST_IP:-}" || { echo "[-] Gost: enter a valid destination IP or hostname." > "$TTY_OUT"; return 1; }
+  [[ "$PROTO" == tcp || "$PROTO" == udp ]] || { echo "[-] Gost: protocol must be tcp or udp." > "$TTY_OUT"; return 1; }
+  case "${PORT_MODE:-manual}" in
+    manual)
+      PORTS="$(tunnel_normalize_ports "${PORTS:-}")" || { echo "[-] Gost: port list must contain unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+      [[ -n "$PORTS" ]] || { echo "[-] Gost: at least one port is required." > "$TTY_OUT"; return 1; }
+      count=0
+      while IFS= read -r p; do [[ -n "$p" ]] && count=$((count + 1)); done < <(csv_ports_to_array "$PORTS")
+      (( count <= 1024 )) || { echo "[-] Gost: at most 1024 forwarded ports can be started in one profile." > "$TTY_OUT"; return 1; }
+      ;;
+    range)
+      tunnel_valid_port "${RANGE_START:-}" && tunnel_valid_port "${RANGE_END:-}" || { echo "[-] Gost: range endpoints must be ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+      (( 10#$RANGE_START <= 10#$RANGE_END )) || { echo "[-] Gost: range start must not exceed range end." > "$TTY_OUT"; return 1; }
+      RANGE_START="$(tunnel_normalize_port "$RANGE_START")"; RANGE_END="$(tunnel_normalize_port "$RANGE_END")"
+      (( RANGE_END - RANGE_START < 1024 )) || { echo "[-] Gost: a range can include at most 1024 ports per profile." > "$TTY_OUT"; return 1; }
+      ;;
+    *) echo "[-] Gost: port mode must be manual or range." > "$TTY_OUT"; return 1 ;;
+  esac
+}
+
 run_gost_slot(){
-  local prof args n p
+  local prof args n p host
   prof="$1"
-  load_profile "$prof"
+  gost_validate_profile "$prof" || return 1
   install_gost || return 1
+  host="$DEST_IP"
+  [[ "$host" != *:* || "$host" == \[*\] ]] || host="[$host]"
   args=""; n=0
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
-    args+=" -L=${PROTO}://:${p}/[${DEST_IP}]:${p}"
+    args+=" -L=${PROTO}://:${p}/${host}:${p}"
     n=$((n+1))
   done < <(gost_port_list "$prof")
   [[ -n "$args" ]] || { echo "[-] No ports to forward." > "$TTY_OUT"; return 1; }
@@ -1392,26 +1724,38 @@ run_paqet_slot(){
   local prof
   prof="$1"
   load_profile "$prof"
+  paqet_validate || return 1
   install_paqet || return 1
   write_paqet_config "$prof" || return 1
-  paqet_iptables_apply "$prof" || true
-  launch_in_screen "$prof" "'$BIN_DIR/paqet' run -c '$CONF/${prof}.yaml'" || return 1
+  if ! paqet_iptables_apply "$prof"; then
+    paqet_iptables_remove "$prof" >/dev/null 2>&1 || true
+    echo "[-] Paqet: could not apply the required firewall rules." > "$TTY_OUT"
+    return 1
+  fi
+  if ! launch_in_screen "$prof" "'$BIN_DIR/paqet' run -c '$CONF/${prof}.yaml'"; then
+    paqet_iptables_remove "$prof" >/dev/null 2>&1 || true
+    return 1
+  fi
   echo "[+] Started: $(session_name "$prof") (paqet ${PQ_ROLE})" > "$TTY_OUT"
 }
 
 run_gre_slot(){
   local prof ifname
   prof="$1"
-  load_profile "$prof"
-  ifname="gre${prof}"
+  gre_validate_profile "$prof" || return 1
+  ifname="$(gre_ifname "$prof")"
   if ip link show "$ifname" >/dev/null 2>&1; then ip link del "$ifname" >/dev/null 2>&1 || true; fi
   if ! ip tunnel add "$ifname" mode gre remote "$PEER_IP" local "$LOCAL_IP" ttl 255; then
     echo "[-] Could not create GRE interface $ifname (check the local/peer IPs and that the gre module is available)." > "$TTY_OUT"
     log_event "$prof" "GRE: failed to create $ifname"
     return 1
   fi
-  ip link set "$ifname" up
-  ip addr add "${SELF_TUN_IP}/30" dev "$ifname" 2>/dev/null || true
+  if ! ip addr add "${SELF_TUN_IP}/30" dev "$ifname" || ! ip link set "$ifname" up; then
+    ip link del "$ifname" >/dev/null 2>&1 || true
+    echo "[-] Could not assign the GRE tunnel address or bring the interface up." > "$TTY_OUT"
+    log_event "$prof" "GRE: failed to configure $ifname"
+    return 1
+  fi
   log_event "$prof" "GRE up: $ifname ${SELF_TUN_IP} <-> ${PEER_TUN_IP} (local ${LOCAL_IP}, peer ${PEER_IP})"
   echo "[+] GRE up: $ifname  ${SELF_TUN_IP} <-> ${PEER_TUN_IP}" > "$TTY_OUT"
   echo "[i] You can now route/NAT specific ports across this tunnel with iptables as needed." > "$TTY_OUT"
@@ -1419,7 +1763,7 @@ run_gre_slot(){
 stop_gre_slot(){
   local prof ifname
   prof="$1"
-  ifname="gre${prof}"
+  ifname="$(gre_ifname "$prof")"
   ip link del "$ifname" >/dev/null 2>&1 || true
   log_event "$prof" "GRE down: $ifname"
   echo "[+] GRE down: $ifname" > "$TTY_OUT"
@@ -1427,7 +1771,7 @@ stop_gre_slot(){
 status_gre_slot(){
   local prof ifname
   prof="$1"
-  ifname="gre${prof}"
+  ifname="$(gre_ifname "$prof")"
   if ip link show "$ifname" >/dev/null 2>&1; then
     echo -e "Profile: $prof | Method: gre | Interface: $ifname | Running: ${CLR_GREEN}ON${CLR_RESET}" > "$TTY_OUT"
   else
@@ -1464,6 +1808,7 @@ stop_slot(){
     s="$(session_name "$prof")"
     screen -S "$s" -X quit >/dev/null 2>&1 || true
     log_event "$prof" "=== stopped by user/panel ==="
+    [[ "$m" == "paqet" ]] && paqet_iptables_remove "$prof" >/dev/null 2>&1 || true
     echo "[+] Stopped: $s" > "$TTY_OUT"
   fi
 }
@@ -1502,7 +1847,7 @@ logs_slot(){
   lf="$(log_file "$prof")"
   if [[ "$m" == "gre" ]]; then
     echo "[i] Interface counters:" > "$TTY_OUT"
-    ip -s link show "gre${prof}" 2>/dev/null > "$TTY_OUT" || echo "[-] Interface not up." > "$TTY_OUT"
+    ip -s link show "$(gre_ifname "$prof")" 2>/dev/null > "$TTY_OUT" || echo "[-] Interface not up." > "$TTY_OUT"
   fi
   if [[ ! -f "$lf" ]]; then
     echo "[i] No log yet for ${prof} — start it first." > "$TTY_OUT"
@@ -1530,6 +1875,7 @@ env_set(){
     fi
   done < "$f"
   if [[ $found -eq 0 ]]; then printf '%s=%q\n' "$k" "$v" >> "$tmp"; fi
+  chmod 600 "$tmp"
   mv -f "$tmp" "$f"
 }
 
@@ -1615,6 +1961,7 @@ Everything that touches the server goes through the installed script's `--api`
 interface, so the CLI menu, the panel and remote nodes always see the same state.
 """
 import json
+import ipaddress
 import os
 import re
 import shlex
@@ -1628,7 +1975,18 @@ import urllib.request
 
 INSTALL_PATH = os.environ.get("INSTALL_PATH", "/usr/local/bin/A,S-tunnel")
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")
-HOST_RE = re.compile(r"^(?:[A-Za-z0-9](?:[A-Za-z0-9.-]{0,250}[A-Za-z0-9])?|[0-9A-Fa-f:]{2,45})$")
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}\.?$)(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)(?:\.(?:[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?))*\.?$")
+
+
+def valid_host(value):
+    host = str(value or "").strip()
+    if not host or len(host) > 253:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return bool(_HOSTNAME_RE.fullmatch(host))
 
 
 def load_env(path):
@@ -1813,7 +2171,7 @@ def ensure_pkg(binary, apt_name):
 
 def ping_host(target, count=3):
     target = str(target or "").strip()
-    if not HOST_RE.match(target):
+    if not valid_host(target):
         return {"error": "bad_target"}
     try:
         count = max(1, min(10, int(count)))
@@ -1822,19 +2180,48 @@ def ping_host(target, count=3):
     if not ensure_pkg("ping", "iputils-ping"):
         return {"error": "ping_not_available"}
     try:
-        p = subprocess.run(["ping", "-n", "-c", str(count), "-W", "2", target],
-                           capture_output=True, text=True, timeout=count * 3 + 5)
-        out = p.stdout or ""
-    except subprocess.TimeoutExpired:
-        out = ""
-    samples = [float(x) for x in re.findall(r"time[=<]([\d.]+)\s*ms", out)]
-    m = re.search(r"(\d+(?:\.\d+)?)% packet loss", out)
-    loss = float(m.group(1)) if m else (0.0 if samples else 100.0)
-    res = {"ok": True, "target": target, "loss": loss, "samples": samples}
-    if samples:
-        res.update(min=round(min(samples), 2), avg=round(sum(samples) / len(samples), 2),
-                   max=round(max(samples), 2))
-    return res
+        address = ipaddress.ip_address(target)
+        candidates = [(socket.AF_INET6 if address.version == 6 else socket.AF_INET,
+                       "-6" if address.version == 6 else "-4", str(address))]
+    except ValueError:
+        try:
+            info = socket.getaddrinfo(target, None, socket.AF_UNSPEC, socket.SOCK_DGRAM)
+        except OSError as exc:
+            return {"error": "dns_failed", "detail": str(exc)[:200]}
+        by_family = {socket.AF_INET: [], socket.AF_INET6: []}
+        for family, _socktype, _proto, _canonname, sockaddr in info:
+            if family in by_family and sockaddr[0] not in by_family[family]:
+                by_family[family].append(sockaddr[0])
+        candidates = []
+        for family, flag in ((socket.AF_INET, "-4"), (socket.AF_INET6, "-6")):
+            if by_family[family]:
+                candidates.append((family, flag, by_family[family][0]))
+        if not candidates:
+            return {"error": "dns_failed", "detail": "No IPv4 or IPv6 address was returned."}
+    env = dict(os.environ, LC_ALL="C", LANG="C")
+    last_out = ""
+    last_loss = 100.0
+    for _family, flag, resolved in candidates:
+        cmd = ["ping", flag, "-n", "-c", str(count), "-W", "2", resolved]
+        try:
+            p = subprocess.run(cmd, capture_output=True, text=True, timeout=min(18, count * 2 + 3), env=env)
+            out = (p.stdout or "") + "\n" + (p.stderr or "")
+        except subprocess.TimeoutExpired as exc:
+            out = ((exc.stdout or b"").decode("utf-8", "replace") if isinstance(exc.stdout, bytes) else (exc.stdout or ""))
+            out += "\n" + ((exc.stderr or b"").decode("utf-8", "replace") if isinstance(exc.stderr, bytes) else (exc.stderr or ""))
+            p = None
+        last_out = out.strip()[-300:]
+        samples = [float(x.replace(",", ".")) for x in re.findall(r"time[=<]\s*([\d.,]+)\s*(?:m?s(?:ec)?)?", out, re.I)]
+        m = re.search(r"(\d+(?:\.\d+)?)% packet loss", out)
+        last_loss = float(m.group(1)) if m else (0.0 if samples else 100.0)
+        if samples:
+            return {"ok": True, "target": target, "resolved": resolved, "loss": last_loss,
+                    "samples": samples, "min": round(min(samples), 2),
+                    "avg": round(sum(samples) / len(samples), 2), "max": round(max(samples), 2)}
+        # Hostnames with both address families retry the other family if this
+        # address receives no replies; a server may have only one route enabled.
+    return {"ok": True, "target": target, "resolved": candidates[-1][2], "loss": last_loss,
+            "samples": [], "detail": last_out}
 
 
 _iperf = {"proc": None}
@@ -1875,7 +2262,7 @@ def iperf_server(port):
 
 def iperf_client(host, port, duration, parallel, reverse):
     host = str(host or "").strip()
-    if not HOST_RE.match(host):
+    if not valid_host(host):
         return {"error": "bad_target"}
     try:
         port, duration, parallel = int(port), int(duration), int(parallel)
@@ -2486,7 +2873,7 @@ def update_all():
 # ----------------------------------------------------- link two panel nodes
 LINK_METHODS = ("asnative", "backhaul", "rathole", "gre", "frp", "gost", "paqet", "assecure")
 KCP_MODES = ("fast", "normal", "fast2", "fast3")
-KCP_BLOCKS = ("aes-128-gcm", "aes", "aes-128", "aes-192", "aes-256", "none")
+KCP_BLOCKS = ("aes-128-gcm", "aes", "aes-128", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none", "null")
 
 
 def _port(v, default=None, lo=1, hi=65535):
@@ -2499,22 +2886,37 @@ def _port(v, default=None, lo=1, hi=65535):
 
 def _ports_csv(v):
     out = []
-    for x in str(v or "").split(","):
+    raw = str(v or "")
+    if not raw.strip():
+        return ""
+    for x in raw.split(","):
         x = x.strip()
         if not x:
-            continue
+            raise ValueError("bad_ports")
         if not x.isdigit() or not 1 <= int(x) <= 65535:
             raise ValueError("bad_ports")
-        if x not in out:
-            out.append(x)
+        x = str(int(x))
+        if x in out:
+            raise ValueError("bad_ports")
+        out.append(x)
     return ",".join(out)
 
 
 def _rand_port(avoid):
-    while True:
-        p = 20000 + secrets.randbelow(40000)
-        if str(p) not in avoid:
-            return p
+    blocked = {str(int(x)) for x in avoid}
+    available = [p for p in range(20000, 60000) if str(p) not in blocked]
+    if not available:
+        raise ValueError("no_control_port_available")
+    return secrets.choice(available)
+
+
+def _configured_port(value, default=None, avoid=()):
+    if value is None or str(value).strip() == "":
+        return _rand_port(avoid) if default is None else default
+    port = _port(value)
+    if port is None:
+        raise ValueError("bad_port")
+    return port
 
 
 def _make_assecure_cert(server_name):
@@ -2564,7 +2966,8 @@ def build_link(method, p, sip, cip):
     fwd = _ports_csv(p.get("forward_ports"))
     fwd_list = fwd.split(",") if fwd else []
     if method == "asnative":
-        bridge, sync = _port(p.get("bridge"), 7000), _port(p.get("sync"), 7001)
+        bridge = _configured_port(p.get("bridge"), default=7000)
+        sync = _configured_port(p.get("sync"), default=7001)
         if bridge == sync:
             raise ValueError("ports_conflict")
         port_mode = p.get("port_mode") if p.get("port_mode") in ("auto", "manual") else "auto"
@@ -2578,19 +2981,32 @@ def build_link(method, p, sip, cip):
         return (iran_fields,
                 {"IRAN_IP": sip, "BRIDGE": bridge, "SYNC": sync})
     if method == "gre":
+        try:
+            valid_endpoints = (ipaddress.ip_address(sip).version == 4 and
+                               ipaddress.ip_address(cip).version == 4)
+        except ValueError:
+            valid_endpoints = False
+        if not valid_endpoints:
+            raise ValueError("gre_requires_ipv4")
         return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
     if method == "gost":
         if not fwd:
             raise ValueError("ports_required")
-        proto = p.get("proto") if p.get("proto") in ("tcp", "udp", "grpc") else "tcp"
+        proto = p.get("proto") if p.get("proto") in ("tcp", "udp") else "tcp"
         return (None, {"DEST_IP": sip, "PORT_MODE": "manual", "PORTS": fwd, "PROTO": proto})
-    port = _port(p.get("port")) or _rand_port(fwd_list)
+    control_avoid = list(fwd_list)
+    if method in ("assecure", "paqet"):
+        udp_ports = _ports_csv(p.get("forward_udp_ports"))
+        control_avoid.extend(udp_ports.split(",") if udp_ports else [])
+    port = _configured_port(p.get("port"), avoid=control_avoid)
     if str(port) in fwd_list:
         raise ValueError("ports_conflict")
     if method == "backhaul":
         if not fwd:
             raise ValueError("ports_required")
-        tr = p.get("transport") if p.get("transport") in ("tcp", "ws", "wss") else "tcp"
+        tr = p.get("transport") or "tcp"
+        if tr not in ("tcp", "ws"):
+            raise ValueError("bad_transport")
         return ({"BH_ROLE": "server", "TOKEN": key, "TRANSPORT": tr, "BIND_PORT": port, "FORWARD_PORTS": fwd},
                 {"BH_ROLE": "client", "TOKEN": key, "TRANSPORT": tr, "SERVER_IP": sip, "BIND_PORT": port})
     if method == "rathole":
@@ -2601,7 +3017,7 @@ def build_link(method, p, sip, cip):
     if method == "frp":
         if not fwd:
             raise ValueError("ports_required")
-        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port},
+        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd},
                 {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd})
     if method == "assecure":
         tcp = _ports_csv(p.get("forward_ports"))
@@ -2609,8 +3025,8 @@ def build_link(method, p, sip, cip):
         if not tcp and not udp:
             raise ValueError("ports_required")
         transport = p.get("transport") if p.get("transport") in ("quic", "wss", "tcp") else "quic"
-        control = _port(p.get("port")) or _rand_port(fwd_list)
         forbidden = set(tcp.split(",") if tcp else []) | set(udp.split(",") if udp else [])
+        control = port
         if str(control) in forbidden:
             raise ValueError("ports_conflict")
         cert, private_key = _make_assecure_cert(sip)
@@ -2621,13 +3037,25 @@ def build_link(method, p, sip, cip):
                              AS_TCP_PORTS=tcp, AS_UDP_PORTS=udp)
         return server_fields, client_fields
     if method == "paqet":
+        try:
+            valid_server_ip = ipaddress.ip_address(sip).version == 4
+        except ValueError:
+            valid_server_ip = False
+        if not valid_server_ip:
+            raise ValueError("paqet_requires_ipv4")
         udp = _ports_csv(p.get("forward_udp_ports"))
         if not fwd and not udp:
             raise ValueError("ports_required")
         mode = p.get("kcp_mode") if p.get("kcp_mode") in KCP_MODES else "fast"
         block = p.get("block") if p.get("block") in KCP_BLOCKS else "aes-128-gcm"
+        if p.get("conn") not in (None, "") and _port(p.get("conn"), lo=1, hi=256) is None:
+            raise ValueError("bad_conn")
+        if p.get("mtu") not in (None, "") and _port(p.get("mtu"), lo=50, hi=1500) is None:
+            raise ValueError("bad_mtu")
+        if str(port) in set(fwd.split(",") + udp.split(",")):
+            raise ValueError("ports_conflict")
         common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": mode, "BLOCK": block,
-                  "CONN": _port(p.get("conn"), 4, 1, 32), "MTU": _port(p.get("mtu"), 1150, 500, 9000)}
+                  "CONN": _port(p.get("conn"), 4, 1, 256), "MTU": _port(p.get("mtu"), 1150, 50, 1500)}
         client = dict(common, PQ_ROLE="client", SERVER_IP=sip)
         if fwd:
             client["FORWARD_PORTS"] = fwd
@@ -2662,10 +3090,13 @@ def api_link():
     cname, cdef = node_label_ip(client)
     sip = str(b.get("server_ip") or sdef or "").strip()
     cip = str(b.get("client_ip") or cdef or "").strip()
-    if not asnode.HOST_RE.match(sip) or not asnode.HOST_RE.match(cip):
+    if not asnode.valid_host(sip) or not asnode.valid_host(cip):
         return jsonify({"error": "bad_address"}), 400
+    params = b.get("params") or {}
+    if not isinstance(params, dict):
+        return jsonify({"error": "bad_params"}), 400
     try:
-        sfields, cfields = build_link(method, b.get("params") or {}, sip, cip)
+        sfields, cfields = build_link(method, params, sip, cip)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -3487,7 +3918,7 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <div class="grid3">
         <div>
           <label class="f" data-i="optimize">Optimize server</label>
-          <p class="muted" style="margin:0 0 10px;font-size:13px" data-i="optimizeDesc">BBR + sysctl hardening for every tunnel</p>
+          <p class="muted" style="margin:0 0 10px;font-size:13px" data-i="optimizeDesc">BBR and network performance tuning</p>
           <button class="btn o-acc" onclick="optimizeNode()">⚡ <span data-i="optimizeBtn">Run optimization</span></button>
         </div>
         <div>
@@ -3684,7 +4115,7 @@ en:{
  tabConfig:'Node & Config', tabNodes:'Nodes', tabSpeed:'Speedtest (iperf3)', tabPing:'Live Ping & Latency', tabTunnels:'Tunnels Manager',
  cfgTitle:'Node & Master Configuration', cfgDesc:"Manage this node's identity, tunnels, tuning and updates", wizard:'Launch Setup Wizard',
  startAll:'Start All', restartAll:'Restart All', stopAll:'Stop All', save:'Save Changes', identity:'Node Identity', nodeName:'Node Name', netName:'Network Name',
- side:'Side', publicIp:'Public IP', nodeId:'Node ID', tuning:'Server Tuning & Updates', optimize:'Optimize server', optimizeDesc:'BBR + sysctl hardening for every tunnel',
+ side:'Side', publicIp:'Public IP', nodeId:'Node ID', tuning:'Server Tuning & Updates', optimize:'Optimize server', optimizeDesc:'BBR and network performance tuning',
  optimizeBtn:'Run optimization', health:'Health-check cron', healthDesc:'Restart any stopped tunnel automatically', minutes:'min', scriptUpd:'Script version', updateBtn:'Update script',
  nodeOnline:'Node Online', nodeOffline:'Node Offline', upToDate:'Up to date', updateAvail:'Update available',
  nodesTitle:'Peers & Nodes', nodesDesc:'Every Iran and abroad server connected to this master', updateAll:'Update all nodes',
@@ -3728,7 +4159,7 @@ fa:{
  tabConfig:'نود و تنظیمات', tabNodes:'نودها', tabSpeed:'تست سرعت (iperf3)', tabPing:'پینگ و تأخیر زنده', tabTunnels:'مدیریت تانل‌ها',
  cfgTitle:'پیکربندی نود و مستر', cfgDesc:'مدیریت هویت نود، تانل‌ها، بهینه‌سازی و به‌روزرسانی', wizard:'راه‌اندازی تانل جدید',
  startAll:'روشن کردن همه', restartAll:'ریستارت همه', stopAll:'توقف همه', save:'ذخیره تغییرات', identity:'هویت نود', nodeName:'نام نود', netName:'نام شبکه',
- side:'سمت', publicIp:'آی‌پی عمومی', nodeId:'شناسه نود', tuning:'بهینه‌سازی و به‌روزرسانی سرور', optimize:'بهینه‌سازی سرور', optimizeDesc:'BBR و سخت‌سازی sysctl برای همه تانل‌ها',
+ side:'سمت', publicIp:'آی‌پی عمومی', nodeId:'شناسه نود', tuning:'بهینه‌سازی و به‌روزرسانی سرور', optimize:'بهینه‌سازی سرور', optimizeDesc:'BBR و تنظیم کارایی شبکه',
  optimizeBtn:'اجرای بهینه‌سازی', health:'کرون هلث‌چک', healthDesc:'هر تانل متوقف‌شده خودکار دوباره روشن می‌شود', minutes:'دقیقه', scriptUpd:'نسخه اسکریپت', updateBtn:'به‌روزرسانی اسکریپت',
  nodeOnline:'نود آنلاین', nodeOffline:'نود آفلاین', upToDate:'به‌روز', updateAvail:'به‌روزرسانی موجود است',
  nodesTitle:'نودها و همتاها', nodesDesc:'همه سرورهای ایران و خارج که به این مستر وصل‌اند', updateAll:'به‌روزرسانی همه نودها',
@@ -4159,19 +4590,19 @@ const ROLE_KEYS = ['BH_ROLE', 'RT_ROLE', 'FRP_ROLE', 'PQ_ROLE', 'AS_ROLE'];
 const ROLE_KEY_OF = {backhaul: 'BH_ROLE', rathole: 'RT_ROLE', frp: 'FRP_ROLE', paqet: 'PQ_ROLE', assecure: 'AS_ROLE'};
 const T = (k, l, o = {}) => Object.assign({k, l, t: 'text'}, o);
 const SEL = (k, l, opts, o = {}) => Object.assign({k, l, t: 'select', opts}, o);
-const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'aes-256', 'none'];
+const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'salsa20', 'blowfish', 'twofish', 'cast5', '3des', 'tea', 'xtea', 'xor', 'sm4', 'none', 'null'];
 /* Location keys: eu = abroad and iran = Iran; protocol roles are method-specific. */
 const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP', {full: true}), T('PEER_IP', 'Other side public IP', {full: true})];
 const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']),
-  T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'grpc'])];
+  T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp'])];
 const FIELDS = {
   asnative: {
     eu: [T('IRAN_IP', 'Iran server IP', {full: true}), T('BRIDGE', 'Bridge port', {ph: '7000'}), T('SYNC', 'Sync port', {ph: '7001'})],
     iran: [T('BRIDGE', 'Bridge port', {ph: '7000'}), T('SYNC', 'Sync port', {ph: '7001'}),
       SEL('AUTO_SYNC', 'Auto-sync ports from the abroad side', ['true', 'false']), T('PORTS', 'Manual ports CSV (when auto-sync is false)', {full: true})]},
   backhaul: {
-    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port')],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws', 'wss']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
+    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port')],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
   rathole: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
       T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true})],
@@ -4189,20 +4620,20 @@ const FIELDS = {
   gost: {eu: GOST_FIELDS, iran: GOST_FIELDS},
   paqet: {
     eu: [T('SERVER_PORT', 'Tunnel port (listens)', {ph: '8888', v: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}), SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}),
-      SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-32)', {ph: '4', v: '4'}), T('MTU', 'MTU', {ph: '1150', v: '1150'}), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})],
+      SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-256)', {ph: '4', v: '4'}), T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150'}), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})],
     iran: [T('SERVER_IP', 'Abroad server IP'), T('SERVER_PORT', 'Tunnel port (of the server)', {ph: '8888', v: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
-      SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}), SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-32)', {ph: '4', v: '4'}), T('MTU', 'MTU', {ph: '1150', v: '1150'}),
+      SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}), SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-256)', {ph: '4', v: '4'}), T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150'}),
       T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
       T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]},
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
   asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'})],
-  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws', 'wss']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
+  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
   rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'})],
   frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
   gre: [],
-  gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'grpc'])],
+  gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp'])],
   assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true})],
   paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
     T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true})],
@@ -5109,7 +5540,7 @@ api_list(){
     done < "$f"
     running=false
     if [[ "$m" == "gre" ]]; then
-      ip link show "gre${prof}" >/dev/null 2>&1 && running=true
+      ip link show "$(gre_ifname "$prof")" >/dev/null 2>&1 && running=true
     else
       s="$(session_name "$prof")"
       grep -Eq "\\.${s}[[:space:]]" <<<"$sessions" && running=true
@@ -5151,6 +5582,7 @@ api_save(){
   prof="$1"
   f="$CONF/${prof}.env"
   valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
+  umask 077
   local body; body="$(cat)"
   local method; method="$(printf '%s' "$body" | jq -r '.method // empty' 2>/dev/null)"
   [[ -n "$method" ]] || { echo '{"error":"missing_method"}'; return 1; }
@@ -5185,6 +5617,7 @@ api_save(){
     if [[ "$role" == "eu" ]]; then printf 'SELF_TUN_IP=10.10.10.1\nPEER_TUN_IP=10.10.10.2\n' >> "$f"
     else printf 'SELF_TUN_IP=10.10.10.2\nPEER_TUN_IP=10.10.10.1\n' >> "$f"; fi
   fi
+  chmod 600 "$f"
 
   local log ok running
   log="$(run_slot "$prof" 2>&1)" && ok=0 || ok=$?
@@ -5229,7 +5662,7 @@ api_logs(){
   lf="$(log_file "$prof")"
   out=""
   if [[ "$m" == "gre" ]]; then
-    out="$(ip -s link show "gre${prof}" 2>&1 || true)"
+    out="$(ip -s link show "$(gre_ifname "$prof")" 2>&1 || true)"
   fi
   if [[ -f "$lf" ]]; then
     if [[ -n "$out" ]]; then out+=$'\n\n'; fi
@@ -5323,6 +5756,7 @@ api_selfupdate(){
 # ===================== Main =====================
 need_root
 ensure
+paqet_iptables_migrate_legacy >/dev/null 2>&1 || true
 
 case "${1:-}" in
   --join)
@@ -5408,7 +5842,7 @@ while true; do
   echo -e "${B} ${CLR_YELLOW}${CLR_BOLD}RELIABILITY & SPEED${CLR_RESET}"
   echo -e "${B}   ${CLR_CYAN}3${CLR_RESET}) ✅ Enable health-check cron"
   echo -e "${B}   ${CLR_CYAN}4${CLR_RESET}) ❌ Disable health-check cron"
-  echo -e "${B}   ${CLR_CYAN}8${CLR_RESET}) ⚡ Optimize server   ${CLR_DIM}(BBR + sysctl hardening)${CLR_RESET}"
+  echo -e "${B}   ${CLR_CYAN}8${CLR_RESET}) ⚡ Optimize server   ${CLR_DIM}(BBR + network performance)${CLR_RESET}"
   echo -e "${B}"
   echo -e "${B} ${CLR_YELLOW}${CLR_BOLD}WEB & SCRIPT${CLR_RESET}"
   echo -e "${B}   ${CLR_CYAN}9${CLR_RESET}) 🌐 Master panel & nodes ${CLR_DIM}(web)${CLR_RESET}"
