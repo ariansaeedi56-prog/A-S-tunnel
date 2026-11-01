@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.0.5"
+VERSION="4.0.8"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -37,7 +37,7 @@ LOG_DIR="/var/log/A,S"
 
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
-PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC"
+PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC"
 
 HC_SCRIPT="/usr/local/bin/A,S-health-check"
 HC_CRON_TAG="# A,STunnelHealthCheck"
@@ -151,8 +151,16 @@ install_rathole(){
 }
 
 install_frp(){
-  [[ -x "$BIN_DIR/frps" && -x "$BIN_DIR/frpc" ]] && return 0
-  echo "[*] Installing FRP..." > "$TTY_OUT"
+  if [[ -x "$BIN_DIR/frps" && -x "$BIN_DIR/frpc" ]]; then
+    local frp_version
+    frp_version="$("$BIN_DIR/frpc" --version 2>/dev/null | grep -Eo 'v?[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | sed 's/^v//' || true)"
+    if [[ "$frp_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] && [[ "$(printf '%s\n' 0.69.0 "$frp_version" | sort -V | head -n1)" == "0.69.0" ]]; then
+      return 0
+    fi
+    echo "[*] Updating FRP to a release with wire-protocol v2 support..." > "$TTY_OUT"
+  else
+    echo "[*] Installing FRP..." > "$TTY_OUT"
+  fi
   local arch; arch="$(detect_arch)"
   local url; url="$(gh_latest_asset_url "fatedier/frp" "linux_${arch}\\.tar\\.gz$")"
   [[ -n "$url" ]] || { echo "[-] Could not find an FRP release asset for linux_${arch}." > "$TTY_OUT"; return 1; }
@@ -485,13 +493,13 @@ edit_profile(){
   echo -e "${CLR_DIM}┌───────────────────────────────────────────────────┐${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_YELLOW}${CLR_BOLD}⚙  Configuring: ${prof}${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}├───────────────────────────────────────────────────┤${CLR_RESET}" > "$TTY_OUT"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) A,S native   ${CLR_DIM}packet reverse tunnel (built-in)${CLR_RESET}" > "$TTY_OUT"
+  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}1${CLR_RESET}) Reverse      ${CLR_DIM}Iran listens; abroad connects (built-in)${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}2${CLR_RESET}) Backhaul     ${CLR_DIM}TCP/WS/WSS multiplexed tunnel${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}3${CLR_RESET}) Rathole      ${CLR_DIM}lightweight NAT-traversal tunnel${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}4${CLR_RESET}) GRE          ${CLR_DIM}kernel-level IP tunnel${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}5${CLR_RESET}) FRP          ${CLR_DIM}fast reverse proxy${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}6${CLR_RESET}) Gost         ${CLR_DIM}per-port IPv4/IPv6 forwarder${CLR_RESET}" > "$TTY_OUT"
-  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}7${CLR_RESET}) Paqet        ${CLR_DIM}raw packet tunnel (KCP over pcap)${CLR_RESET}" > "$TTY_OUT"
+  echo -e "${CLR_DIM}│${CLR_RESET}  ${CLR_CYAN}7${CLR_RESET}) Paqet        ${CLR_DIM}recommended for TCP/UDP forwarding (KCP over raw TCP packets)${CLR_RESET}" > "$TTY_OUT"
   echo -e "${CLR_DIM}└───────────────────────────────────────────────────┘${CLR_RESET}" > "$TTY_OUT"
   read -r -p "Select [1-7]: " m < /dev/tty
   case "$m" in
@@ -515,44 +523,24 @@ edit_profile(){
 }
 
 edit_profile_asnative(){
-  local prof f role
-  prof="$1"
-  f="$2"
-  role="$3"
+  local prof f role AS
+  prof="$1"; f="$2"; role="$3"
   if [[ "$role" == "eu" ]]; then
-    read -r -p "Iran IP: " IRAN_IP < /dev/tty
-    read -r -p "Bridge port (e.g. 7000): " BRIDGE < /dev/tty
-    read -r -p "Sync port   (e.g. 7001): " SYNC < /dev/tty
-    cat >"$f" <<EOF
-METHOD=asnative
-ROLE=eu
-IRAN_IP=$IRAN_IP
-BRIDGE=$BRIDGE
-SYNC=$SYNC
-EOF
+    read -r -p "Iran server IP: " IRAN_IP < /dev/tty
+    read -r -p "Bridge port (default 7000): " BRIDGE < /dev/tty
+    read -r -p "Sync port (default 7001): " SYNC < /dev/tty
+    BRIDGE="${BRIDGE:-7000}"; SYNC="${SYNC:-7001}"
+    write_env_file "$f" "METHOD=asnative" "ROLE=eu" "IRAN_IP=$IRAN_IP" "BRIDGE=$BRIDGE" "SYNC=$SYNC"
   else
-    read -r -p "Bridge port (e.g. 7000): " BRIDGE < /dev/tty
-    read -r -p "Sync port   (e.g. 7001): " SYNC < /dev/tty
-    read -r -p "Auto-Sync ports from EU? (y/n): " AS < /dev/tty
-    if [[ "${AS,,}" == "y" ]]; then
-      cat >"$f" <<EOF
-METHOD=asnative
-ROLE=iran
-BRIDGE=$BRIDGE
-SYNC=$SYNC
-AUTO_SYNC=true
-PORTS=
-EOF
+    read -r -p "Bridge port (default 7000): " BRIDGE < /dev/tty
+    read -r -p "Sync port (default 7001): " SYNC < /dev/tty
+    BRIDGE="${BRIDGE:-7000}"; SYNC="${SYNC:-7001}"
+    read -r -p "Auto-Sync ports from Abroad? (Y/n, default Y): " AS < /dev/tty
+    if [[ "${AS,,}" != "n" ]]; then
+      write_env_file "$f" "METHOD=asnative" "ROLE=iran" "BRIDGE=$BRIDGE" "SYNC=$SYNC" "AUTO_SYNC=true"
     else
       read -r -p "Manual ports CSV (e.g. 80,443,2083): " PORTS < /dev/tty
-      cat >"$f" <<EOF
-METHOD=asnative
-ROLE=iran
-BRIDGE=$BRIDGE
-SYNC=$SYNC
-AUTO_SYNC=false
-PORTS=$PORTS
-EOF
+      write_env_file "$f" "METHOD=asnative" "ROLE=iran" "BRIDGE=$BRIDGE" "SYNC=$SYNC" "AUTO_SYNC=false" "PORTS=$PORTS"
     fi
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
@@ -897,6 +885,62 @@ EOF
   fi
 }
 
+write_assecure_config(){
+  local prof cfg cert key ca p
+  prof="$1"; cfg="$CONF/${prof}.toml"
+  load_profile "$prof"
+  [[ "$AS_TRANSPORT" == "quic" || "$AS_TRANSPORT" == "wss" || "$AS_TRANSPORT" == "tcp" ]] || { echo "[-] A,S Secure: invalid transport." > "$TTY_OUT"; return 1; }
+  [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{32,128}$ ]] || { echo "[-] A,S Secure: token must be 32-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
+  [[ "${AS_SERVER_NAME:-}" =~ ^[A-Za-z0-9.:-]{1,253}$ ]] || [[ "$AS_ROLE" == "server" ]] || { echo "[-] A,S Secure: invalid TLS server name." > "$TTY_OUT"; return 1; }
+  for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}") $(csv_ports_to_array "${AS_UDP_PORTS:-}"); do
+    [[ "$p" =~ ^[0-9]{1,5}$ ]] && ((10#$p >= 1 && 10#$p <= 65535)) || { echo "[-] A,S Secure: invalid forwarded port '$p'." > "$TTY_OUT"; return 1; }
+  done
+  [[ "$BIND_PORT" =~ ^[0-9]{1,5}$ ]] && ((10#$BIND_PORT >= 1 && 10#$BIND_PORT <= 65535)) || { echo "[-] A,S Secure: invalid control port." > "$TTY_OUT"; return 1; }
+  cert="$CONF/${prof}.server.crt"; key="$CONF/${prof}.server.key"; ca="$CONF/${prof}.ca.crt"
+  if [[ "$AS_ROLE" == "server" ]]; then
+    [[ -n "$TOKEN" && -n "$AS_CERT_B64" && -n "$AS_KEY_B64" ]] || { echo "[-] A,S Secure server requires a token and certificate/key." > "$TTY_OUT"; return 1; }
+    printf '%s' "$AS_CERT_B64" | base64 -d > "$cert" || return 1
+    printf '%s' "$AS_KEY_B64" | base64 -d > "$key" || return 1
+    chmod 600 "$cert" "$key"
+    {
+      echo 'bindAddr = "0.0.0.0"'; echo "bindPort = ${BIND_PORT}"
+      [[ "$AS_TRANSPORT" == "quic" ]] && echo "quicBindPort = ${BIND_PORT}"
+      echo 'auth.method = "token"'; printf 'auth.token = "%s"\n' "$TOKEN"
+      echo 'transport.tls.force = true'; printf 'transport.tls.certFile = "%s"\n' "$cert"; printf 'transport.tls.keyFile = "%s"\n' "$key"
+      echo 'allowPorts = ['
+      for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}"); do printf '  { single = %s },\n' "$p"; done
+      for p in $(csv_ports_to_array "${AS_UDP_PORTS:-}"); do printf '  { single = %s },\n' "$p"; done
+      echo ']'
+    } > "$cfg"
+  else
+    [[ -n "$TOKEN" && -n "$SERVER_IP" && -n "$AS_CA_B64" && -n "$AS_SERVER_NAME" ]] || { echo "[-] A,S Secure client requires server address, token, and pinned CA." > "$TTY_OUT"; return 1; }
+    [[ "$SERVER_IP" =~ ^[A-Za-z0-9.:-]+$ ]] || { echo "[-] A,S Secure: invalid server address." > "$TTY_OUT"; return 1; }
+    printf '%s' "$AS_CA_B64" | base64 -d > "$ca" || return 1
+    chmod 600 "$ca"
+    {
+      printf 'serverAddr = "%s"\nserverPort = %s\n' "$SERVER_IP" "$BIND_PORT"
+      echo 'auth.method = "token"'; printf 'auth.token = "%s"\n' "$TOKEN"
+      printf 'transport.protocol = "%s"\n' "$AS_TRANSPORT"
+      echo 'transport.wireProtocol = "v2"'; echo 'transport.tls.enable = true'
+      printf 'transport.tls.trustedCaFile = "%s"\n' "$ca"; printf 'transport.tls.serverName = "%s"\n' "$AS_SERVER_NAME"
+      for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}"); do printf '\n[[proxies]]\nname = "tcp_%s"\ntype = "tcp"\nlocalIP = "127.0.0.1"\nlocalPort = %s\nremotePort = %s\n' "$p" "$p" "$p"; done
+      for p in $(csv_ports_to_array "${AS_UDP_PORTS:-}"); do printf '\n[[proxies]]\nname = "udp_%s"\ntype = "udp"\nlocalIP = "127.0.0.1"\nlocalPort = %s\nremotePort = %s\n' "$p" "$p" "$p"; done
+    } > "$cfg"
+  fi
+  chmod 600 "$cfg"
+}
+
+run_assecure_slot(){
+  local prof bin
+  prof="$1"; load_profile "$prof"
+  if [[ -z "$AS_ROLE" ]]; then [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
+  install_frp || return 1
+  write_assecure_config "$prof" || return 1
+  [[ "$AS_ROLE" == "server" ]] && bin="frps" || bin="frpc"
+  launch_in_screen "$prof" "'$BIN_DIR/$bin' -c '$CONF/${prof}.toml'" || return 1
+  echo "[+] Started: $(session_name "$prof") (A,S Secure / $AS_TRANSPORT)" > "$TTY_OUT"
+}
+
 # ===================== Paqet (raw packet tunnel) helpers =====================
 
 paqet_valid_ip(){
@@ -1204,9 +1248,44 @@ launch_in_screen(){
   return 0
 }
 
+asnative_valid_port(){
+  [[ "$1" =~ ^[0-9]{1,5}$ ]] && (( 10#$1 >= 1 && 10#$1 <= 65535 ))
+}
+asnative_validate_profile(){
+  local prof p host port_count=0
+  prof="$1"; load_profile "$prof"
+  BRIDGE="${BRIDGE:-7000}"; SYNC="${SYNC:-7001}"
+  if [[ "$ROLE" != "eu" && "$ROLE" != "iran" ]]; then
+    echo "[-] Reverse: side must be eu or iran." > "$TTY_OUT"; return 1
+  fi
+  asnative_valid_port "$BRIDGE" && asnative_valid_port "$SYNC" || { echo "[-] Reverse: bridge/sync ports must be 1-65535." > "$TTY_OUT"; return 1; }
+  [[ "$BRIDGE" != "$SYNC" ]] || { echo "[-] Reverse: bridge and sync ports must be different." > "$TTY_OUT"; return 1; }
+  if [[ "$ROLE" == "eu" ]]; then
+    host="${IRAN_IP:-}"
+    [[ "$host" =~ ^[A-Za-z0-9][A-Za-z0-9.:-]{0,252}$ ]] || { echo "[-] Reverse: enter a valid Iran server IP or hostname." > "$TTY_OUT"; return 1; }
+    return 0
+  fi
+  case "${AUTO_SYNC:-true}" in
+    true|y|Y) return 0 ;;
+    false|n|N) ;;
+    *) echo "[-] Reverse: AutoSync must be true or false." > "$TTY_OUT"; return 1 ;;
+  esac
+  [[ -n "${PORTS:-}" ]] || { echo "[-] Reverse: add at least one port or enable AutoSync." > "$TTY_OUT"; return 1; }
+  local IFS=','
+  read -ra _reverse_ports <<< "$PORTS"
+  for p in "${_reverse_ports[@]}"; do
+    p="$(echo "$p" | xargs)"
+    asnative_valid_port "$p" || { echo "[-] Reverse: invalid port '$p'; use ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+    port_count=$((port_count + 1))
+    [[ "$p" != "$BRIDGE" && "$p" != "$SYNC" ]] || { echo "[-] Reverse: forwarded ports must differ from bridge and sync ports." > "$TTY_OUT"; return 1; }
+  done
+  (( port_count > 0 )) || { echo "[-] Reverse: enter at least one valid forwarded port." > "$TTY_OUT"; return 1; }
+}
+
 run_slot_asnative(){
   local prof cmd
   prof="$1"
+  asnative_validate_profile "$prof" || return 1
   load_profile "$prof"
   if [[ "$ROLE" == "eu" ]]; then
     cmd="printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | PAHLAVI_POOL=\"${PAHLAVI_POOL:-0}\" python3 '$PY'"
@@ -1216,7 +1295,7 @@ run_slot_asnative(){
     cmd="printf '2\n%s\n%s\nn\n%s\n' '$BRIDGE' '$SYNC' '$PORTS' | PAHLAVI_POOL=\"${PAHLAVI_POOL:-0}\" python3 '$PY'"
   fi
   launch_in_screen "$prof" "$cmd" || return 1
-  echo "[+] Started: $(session_name "$prof") (A,S native)" > "$TTY_OUT"
+  echo "[+] Started: $(session_name "$prof") (Reverse)" > "$TTY_OUT"
 }
 
 run_backhaul_slot(){
@@ -1335,6 +1414,7 @@ run_slot(){
     backhaul) run_backhaul_slot "$prof" ;;
     rathole)  run_rathole_slot "$prof" ;;
     frp)      run_frp_slot "$prof" ;;
+    assecure) run_assecure_slot "$prof" ;;
     gost)     run_gost_slot "$prof" ;;
     paqet)    run_paqet_slot "$prof" ;;
     gre)      run_gre_slot "$prof" ;;
@@ -1869,16 +1949,20 @@ One panel for the whole fleet: this server ("local") plus every node (Iran or
 abroad) whose agent has joined with the join key. Nodes connect OUT to the
 master; commands are relayed to them through a long-poll queue.
 """
+import base64
 import hashlib
+import ipaddress
 import json
 import logging
 import os
 import re
 import secrets
 import ssl
+import subprocess
 import sys
 import threading
 import time
+import tempfile
 import uuid
 from collections import deque
 
@@ -2365,7 +2449,7 @@ def update_all():
 
 
 # ----------------------------------------------------- link two panel nodes
-LINK_METHODS = ("asnative", "backhaul", "rathole", "gre", "frp", "gost", "paqet")
+LINK_METHODS = ("asnative", "backhaul", "rathole", "gre", "frp", "gost", "paqet", "assecure")
 KCP_MODES = ("fast", "normal", "fast2", "fast3")
 KCP_BLOCKS = ("aes-128-gcm", "aes", "aes-128", "aes-192", "aes-256", "none")
 
@@ -2396,6 +2480,35 @@ def _rand_port(avoid):
         p = 20000 + secrets.randbelow(40000)
         if str(p) not in avoid:
             return p
+
+
+def _make_assecure_cert(server_name):
+    """Create a per-link self-signed CA certificate and private key using OpenSSL."""
+    try:
+        import ipaddress
+        san = f"IP:{server_name}" if _is_ip_address(server_name) else f"DNS:{server_name}"
+        with tempfile.TemporaryDirectory(prefix="as-secure-") as td:
+            crt, key = os.path.join(td, "server.crt"), os.path.join(td, "server.key")
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes",
+                            "-days", "825", "-keyout", key, "-out", crt,
+                            "-subj", f"/CN={server_name}", "-addext", f"subjectAltName={san}",
+                            "-addext", "basicConstraints=critical,CA:TRUE"],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
+            with open(crt, "rb") as f:
+                cert_b64 = base64.b64encode(f.read()).decode("ascii")
+            with open(key, "rb") as f:
+                key_b64 = base64.b64encode(f.read()).decode("ascii")
+        return cert_b64, key_b64
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("certificate_generation_failed") from exc
+
+
+def _is_ip_address(value):
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        return False
 
 
 def build_link(method, p, sip, cip):
@@ -2436,6 +2549,23 @@ def build_link(method, p, sip, cip):
             raise ValueError("ports_required")
         return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port},
                 {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd})
+    if method == "assecure":
+        tcp = _ports_csv(p.get("forward_ports"))
+        udp = _ports_csv(p.get("forward_udp_ports"))
+        if not tcp and not udp:
+            raise ValueError("ports_required")
+        transport = p.get("transport") if p.get("transport") in ("quic", "wss", "tcp") else "quic"
+        control = _port(p.get("port")) or _rand_port(fwd_list)
+        forbidden = set(tcp.split(",") if tcp else []) | set(udp.split(",") if udp else [])
+        if str(control) in forbidden:
+            raise ValueError("ports_conflict")
+        cert, private_key = _make_assecure_cert(sip)
+        common = {"TOKEN": secrets.token_urlsafe(32), "AS_TRANSPORT": transport, "BIND_PORT": control,
+                  "AS_TCP_PORTS": tcp, "AS_UDP_PORTS": udp}
+        server_fields = dict(common, AS_ROLE="server", AS_CERT_B64=cert, AS_KEY_B64=private_key)
+        client_fields = dict(common, AS_ROLE="client", SERVER_IP=sip, AS_SERVER_NAME=sip, AS_CA_B64=cert,
+                             AS_TCP_PORTS=tcp, AS_UDP_PORTS=udp)
+        return server_fields, client_fields
     if method == "paqet":
         udp = _ports_csv(p.get("forward_udp_ports"))
         if not fwd and not udp:
@@ -3439,8 +3569,8 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <div class="fgrid">
         <div><label class="f" data-i="tName">Tunnel name</label><input id="nameInput" class="mono" maxlength="32" placeholder="server1"></div>
         <div><label class="f" data-i="protocol">Protocol</label><select id="methodSelect" onchange="onMethodChange()">
-          <option value="asnative">A,S Native</option><option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
-          <option value="gre">GRE</option><option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option></select></div>
+          <option value="asnative">Reverse</option><option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
+          <option value="gre">GRE</option><option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option><option value="assecure">A,S Secure — TLS / QUIC / TCP+UDP</option></select></div>
       </div>
 
       <div id="manualBox">
@@ -3526,7 +3656,7 @@ en:{
  enterName:'Enter a tunnel name (letters, digits, - or _).', overwrite:'A tunnel named "{n}" already exists. Overwrite it?',
  savedRunning:'✔ Saved and running', savedNotRunning:'✔ Config saved, but the tunnel is not running:', saveFailed:'✖ Save failed', never:'never', ago:'{s}s ago', sideEu:'🌍 Abroad side', sideIran:'🇮🇷 Iran side',
  modeManual:'Manual', modeLink:'From panel nodes', addLink:'Link panel nodes', addManual:'Manual tunnel',
- lkServerAbroad:'Server node (Abroad)', lkClientIran:'Client node (Iran)', lkServerIran:'Server node (Iran)', lkClientAbroad:'Client node (Abroad)', lkNoteReverse:'For this method, the protocol server runs in Iran and the client connects from abroad.', lkSIp:'Server address', lkCIp:'Client address',
+ lkServerAbroad:'Server node (Abroad)', lkClientIran:'Client node (Iran)', lkServerIran:'Server node (Iran)', lkClientAbroad:'Client node (Abroad)', lkNoteReverse:'Reverse listens on the Iran server; the abroad server connects to it. Use matching, distinct bridge and sync ports.', lkSIp:'Server address', lkCIp:'Client address',
  lkNote:'Keys and ports are generated and shared with both nodes automatically; addresses come from the nodes.',
  lkNoteGost:'Gost only configures the client node (Iran): it forwards the ports to the server address.',
  lkCreate:'Create on both nodes', lkNeed:'You need one online Iran node and one online abroad node.',
@@ -3570,7 +3700,7 @@ fa:{
  enterName:'یک نام برای تانل وارد کنید (حروف، عدد، - یا _).', overwrite:'تانلی با نام «{n}» وجود دارد. بازنویسی شود؟',
  savedRunning:'✔ ذخیره شد و در حال اجراست', savedNotRunning:'✔ تنظیمات ذخیره شد، ولی تانل اجرا نشده:', saveFailed:'✖ ذخیره ناموفق بود', never:'هرگز', ago:'{s} ثانیه پیش', sideEu:'🌍 سمت خارج', sideIran:'🇮🇷 سمت ایران',
  modeManual:'دستی', modeLink:'از روی نودهای پنل', addLink:'اتصال نودهای پنل', addManual:'تانل دستی',
- lkServerAbroad:'نود سرور (خارج)', lkClientIran:'نود کلاینت (ایران)', lkServerIran:'نود سرور (ایران)', lkClientAbroad:'نود کلاینت (خارج)', lkNoteReverse:'در این روش سرور پروتکل روی نود ایران است و کلاینت از خارج به آن وصل می‌شود.', lkSIp:'آدرس سرور', lkCIp:'آدرس کلاینت',
+ lkServerAbroad:'نود سرور (خارج)', lkClientIran:'نود کلاینت (ایران)', lkServerIran:'نود سرور (ایران)', lkClientAbroad:'نود کلاینت (خارج)', lkNoteReverse:'Reverse روی سرور ایران گوش می‌دهد و سرور خارج به آن وصل می‌شود. پورت‌های Bridge و Sync باید در دو سمت یکسان و با هم متفاوت باشند.', lkSIp:'آدرس سرور', lkCIp:'آدرس کلاینت',
  lkNote:'کلیدها و پورت‌ها خودکار ساخته و روی هر دو نود اعمال می‌شود؛ آدرس‌ها از خود نودها می‌آید.',
  lkNoteGost:'Gost فقط نود کلاینت (ایران) را تنظیم می‌کند و پورت‌ها را به آدرس سرور فوروارد می‌کند.',
  lkCreate:'ساخت روی هر دو نود', lkNeed:'یک نود آنلاین در ایران و یک نود آنلاین در خارج لازم است.',
@@ -3941,6 +4071,7 @@ function drawChart() {
 window.addEventListener('resize', () => { if (S.tab === 'ping') drawChart(); });
 
 /* ---- tunnels tab ---- */
+const methodLabel = m => m === 'asnative' ? 'Reverse' : m === 'assecure' ? 'A,S Secure' : m;
 function renderTunnels() {
   const n = cur(); if (!n) return;
   $('tunNode').textContent = n.name;
@@ -3949,7 +4080,7 @@ function renderTunnels() {
   if (S.tunKey === key) return; S.tunKey = key;
   $('tunGrid').innerHTML = list.length ? list.map(x => `<div class="tcard ${x.running ? 'on' : ''}" onclick="openSlotByName('${esc(x.prof)}')">
     <div class="top"><span class="nm">${esc(x.prof)}</span><i class="dot ${x.running ? 'on' : 'off'}"></i></div>
-    <div class="meta"><span class="badge">${esc(x.method)}</span><span class="rb ${esc(x.role)}">${sideLabel(x.role)}</span><span class="muted" style="font-size:12px">${t(x.running ? 'running' : 'stopped')}</span></div>
+    <div class="meta"><span class="badge">${esc(methodLabel(x.method))}</span><span class="rb ${esc(x.role)}">${sideLabel(x.role)}</span><span class="muted" style="font-size:12px">${t(x.running ? 'running' : 'stopped')}</span></div>
     <div class="btns" onclick="event.stopPropagation()">
       <button class="btn sm o-green" onclick="quick('${esc(x.prof)}','start')">▶</button>
       <button class="btn sm o-amber" onclick="quick('${esc(x.prof)}','restart')">⟳</button>
@@ -3967,8 +4098,8 @@ async function reloadTunnels() {
 
 /* ============================ tunnel modal ============================ */
 let CURRENT = null, LIVE_TIMER = null;
-const ROLE_KEYS = ['BH_ROLE', 'RT_ROLE', 'FRP_ROLE', 'PQ_ROLE'];
-const ROLE_KEY_OF = {backhaul: 'BH_ROLE', rathole: 'RT_ROLE', frp: 'FRP_ROLE', paqet: 'PQ_ROLE'};
+const ROLE_KEYS = ['BH_ROLE', 'RT_ROLE', 'FRP_ROLE', 'PQ_ROLE', 'AS_ROLE'];
+const ROLE_KEY_OF = {backhaul: 'BH_ROLE', rathole: 'RT_ROLE', frp: 'FRP_ROLE', paqet: 'PQ_ROLE', assecure: 'AS_ROLE'};
 const T = (k, l, o = {}) => Object.assign({k, l, t: 'text'}, o);
 const SEL = (k, l, opts, o = {}) => Object.assign({k, l, t: 'select', opts}, o);
 const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'aes-256', 'none'];
@@ -3992,15 +4123,20 @@ const FIELDS = {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)')],
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', 'Control port (of the server)'),
       T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
+  assecure: {
+    eu: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('BIND_PORT', 'Control port (TCP; QUIC also uses UDP)', {ph: '24000'}),
+      T('AS_TCP_PORTS', 'Allowed TCP ports (CSV)', {full: true}), T('AS_UDP_PORTS', 'Allowed UDP ports (CSV)', {full: true}), T('AS_CERT_B64', 'Server certificate (base64)', {full: true}), T('AS_KEY_B64', 'Server private key (base64)', {full: true})],
+    iran: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('SERVER_IP', 'Abroad server address'), T('BIND_PORT', 'Server control port'), T('AS_SERVER_NAME', 'TLS server name'),
+      T('AS_CA_B64', 'Pinned server CA certificate (base64)', {full: true}), T('AS_TCP_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('AS_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true})]},
   gre: {eu: GRE_FIELDS, iran: GRE_FIELDS},
   gost: {eu: GOST_FIELDS, iran: GOST_FIELDS},
   paqet: {
-    eu: [T('SERVER_PORT', 'Tunnel port (listens)', {ph: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}), SEL('KCP_MODE', 'KCP mode', KCP_MODES),
-      SEL('BLOCK', 'Encryption', KCP_BLOCKS), T('CONN', 'Connections (1-32)', {ph: '4'}), T('MTU', 'MTU', {ph: '1150'}), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})],
-    iran: [T('SERVER_IP', 'Abroad server IP'), T('SERVER_PORT', 'Tunnel port (of the server)', {ph: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
-      SEL('KCP_MODE', 'KCP mode', KCP_MODES), SEL('BLOCK', 'Encryption', KCP_BLOCKS), T('CONN', 'Connections (1-32)', {ph: '4'}), T('MTU', 'MTU', {ph: '1150'}),
+    eu: [T('SERVER_PORT', 'Tunnel port (listens)', {ph: '8888', v: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}), SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}),
+      SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-32)', {ph: '4', v: '4'}), T('MTU', 'MTU', {ph: '1150', v: '1150'}), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})],
+    iran: [T('SERVER_IP', 'Abroad server IP'), T('SERVER_PORT', 'Tunnel port (of the server)', {ph: '8888', v: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
+      SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}), SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-32)', {ph: '4', v: '4'}), T('MTU', 'MTU', {ph: '1150', v: '1150'}),
       T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
-      T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]}
+      T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]},
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
@@ -4010,8 +4146,9 @@ const LINK_PARAMS = {
   frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
   gre: [],
   gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'grpc'])],
+  assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true})],
   paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
-    T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true})]
+    T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true})],
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
@@ -4029,7 +4166,7 @@ function openSlot(existing, mode) {
   paintStatus(existing ? !!existing.running : false, !!existing);
   setMsg('', ''); $('lkSteps').innerHTML = ''; mTab('config');
   const nm = $('nameInput'); nm.value = existing ? existing.prof : ''; nm.disabled = !!existing;
-  $('methodSelect').value = existing ? existing.method : 'asnative';
+  $('methodSelect').value = existing ? existing.method : 'assecure';
   setRole(existing ? existing.role : (cur().role || 'eu'));
   $('rcToggle').checked = false; $('rcHours').value = '';
   setMode(CURRENT.mode);
@@ -4065,6 +4202,9 @@ function renderFields() {
   fieldDefsFor().forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'f_'); grid.appendChild(w);
+    const el = document.getElementById('f_' + f.k);
+    if (el && f.v) el.value = f.v;
+    if (el && f.gen && CURRENT && CURRENT.isNew) genInto('f_' + f.k);
   });
 }
 /* ---- link two nodes from the panel ---- */
@@ -4952,6 +5092,7 @@ api_save(){
     rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS SERVER_IP" ;;
     gre)      allowed="LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP" ;;
     frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS" ;;
+    assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS" ;;
     gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
     paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
