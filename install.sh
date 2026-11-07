@@ -1,4 +1,6 @@
 #!/usr/bin/env bash
+# Copyright (c) 2026 A,S Tunnel (@Asnejad; GitHub: ariansaeedi56-prog). All rights reserved.
+# See LICENSE for permitted use and restrictions.
 set -euo pipefail
 
 REPO="https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/main"
@@ -21,10 +23,29 @@ fi
 
 export DEBIAN_FRONTEND=noninteractive
 
-info "Updating package lists (best effort)..."
-if ! apt-get update -y; then
-  echo "[!] apt-get update failed; continuing with existing package indexes." >&2
+# Keep unattended installs compatible with the previous behavior, while letting
+# interactive users skip apt-get update when the package indexes are recent.
+UPDATE_PACKAGE_LISTS="${AS_UPDATE_PACKAGE_LISTS:-yes}"
+if [[ -z "${AS_UPDATE_PACKAGE_LISTS:-}" && -r /dev/tty ]]; then
+  if ! read -r -p "[*] Update package lists before installing? [Y/n]: " UPDATE_PACKAGE_LISTS < /dev/tty; then
+    UPDATE_PACKAGE_LISTS="yes"
+  fi
 fi
+
+case "${UPDATE_PACKAGE_LISTS,,}" in
+  ""|y|yes|1)
+    info "Updating package lists (best effort)..."
+    if ! apt-get update -y; then
+      echo "[!] apt-get update failed; continuing with existing package indexes." >&2
+    fi
+    ;;
+  n|no|0)
+    info "Skipping package list update as requested."
+    ;;
+  *)
+    err "Invalid AS_UPDATE_PACKAGE_LISTS value. Use yes or no."
+    ;;
+esac
 
 # Minimal deps: run manager + core safely
 BASE_DEPS=(curl ca-certificates python3 iproute2 screen)
