@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.1.5"
+VERSION="4.2.1"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -37,7 +37,10 @@ LOG_DIR="/var/log/A,S"
 
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
-PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC"
+PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_LANES NT_CONNS NT_REVERSE NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY"
+
+NEOTUNNEL_BIN="/usr/local/bin/neotunnel"
+NEOTUNNEL_STATE="/etc/neotunnel/state.json"
 
 HC_SCRIPT="/usr/local/bin/A,S-health-check"
 HC_CRON_TAG="# A,STunnelHealthCheck"
@@ -1233,6 +1236,243 @@ write_paqet_config(){
   chmod 600 "$cfg" 2>/dev/null || true
 }
 
+# Extended tunnel integration -----------------------------------------------
+# The tunnel engine owns one systemd daemon and one state file per host. A,S profiles
+# are metadata/control handles for that daemon; they must never launch a second
+# copy in screen.
+install_neotunnel(){
+  local arch asset base tmp expected actual
+  if [[ -x "$NEOTUNNEL_BIN" ]] && "$NEOTUNNEL_BIN" version >/dev/null 2>&1; then
+    "$NEOTUNNEL_BIN" install >/dev/null 2>&1 || {
+      echo "[-] The tunnel service is present, but its systemd service could not be installed or started." > "$TTY_OUT"
+      return 1
+    }
+    return 0
+  fi
+  if have neotunnel; then NEOTUNNEL_BIN="$(command -v neotunnel)"; fi
+  if [[ -x "$NEOTUNNEL_BIN" ]] && "$NEOTUNNEL_BIN" version >/dev/null 2>&1; then
+    "$NEOTUNNEL_BIN" install >/dev/null 2>&1 || { echo "[-] Tunnel service could not be installed or started." > "$TTY_OUT"; return 1; }
+    return 0
+  fi
+  echo "[*] Installing the tunnel engine (SHA-256 verified; network tuning skipped)..." > "$TTY_OUT"
+  if ! have curl && ! have wget; then
+    echo "[-] Downloading the tunnel engine requires curl or wget. Install one manually, then retry." > "$TTY_OUT"
+    return 1
+  fi
+  if ! have sha256sum; then
+    echo "[-] Verifying the tunnel engine requires sha256sum. Install coreutils, then retry." > "$TTY_OUT"
+    return 1
+  fi
+  arch="$(detect_arch)"
+  [[ "$arch" == "amd64" || "$arch" == "arm64" ]] || { echo "[-] The tunnel engine supports amd64 and arm64 only." > "$TTY_OUT"; return 1; }
+  asset="neotunnel-linux-${arch}"
+  base="https://github.com/neoauroraproject/neotunnel/releases/latest/download"
+  tmp="$(mktemp -d)"
+  if ! fetch_url_to "$base/$asset" "$tmp/$asset" || ! fetch_url_to "$base/SHA256SUMS" "$tmp/SHA256SUMS"; then
+    rm -rf "$tmp"
+    echo "[-] Could not download the tunnel engine and its checksum." > "$TTY_OUT"
+    return 1
+  fi
+  expected="$(awk -v n="$asset" '$2 == n || $2 == ("*" n) {print $1; exit}' "$tmp/SHA256SUMS")"
+  actual="$(sha256sum "$tmp/$asset" | awk '{print $1}')"
+  if [[ ! "$expected" =~ ^[a-fA-F0-9]{64}$ || "${expected,,}" != "${actual,,}" ]]; then
+    rm -rf "$tmp"
+    echo "[-] Tunnel engine checksum verification failed." > "$TTY_OUT"
+    return 1
+  fi
+  install -m 0755 "$tmp/$asset" "$NEOTUNNEL_BIN"
+  rm -rf "$tmp"
+  if ! "$NEOTUNNEL_BIN" version >/dev/null 2>&1; then
+    rm -f "$NEOTUNNEL_BIN"
+    echo "[-] Tunnel engine verification failed after installation." > "$TTY_OUT"
+    return 1
+  fi
+  if ! "$NEOTUNNEL_BIN" install >/dev/null 2>&1; then
+    echo "[-] Tunnel systemd service installation failed." > "$TTY_OUT"
+    return 1
+  fi
+}
+
+neotunnel_state_has_tunnel(){
+  local name="$1"
+  [[ -r "$NEOTUNNEL_STATE" ]] && jq -e --arg n "$name" '(.tunnels // []) | any(.name == $n)' "$NEOTUNNEL_STATE" >/dev/null 2>&1
+}
+
+neotunnel_tunnel_running(){
+  local name="$1" out
+  [[ -x "$NEOTUNNEL_BIN" ]] || return 1
+  out="$(NO_COLOR=1 "$NEOTUNNEL_BIN" status 2>/dev/null || true)"
+  grep -Fq "● up ${name} " <<<"$out"
+}
+
+neotunnel_run_profile(){
+  local prof name kind peer remote output
+  prof="$1"
+  load_profile "$prof"
+  name="${NT_TUNNEL_NAME:-}"
+  kind="${NT_KIND:-}"
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,9}$ ]] || { echo "[-] Tunnel id is missing or invalid." > "$TTY_OUT"; return 1; }
+  install_neotunnel || return 1
+  if [[ "${NT_ROLE:-owner}" == "managed" ]]; then
+    "$NEOTUNNEL_BIN" apply > "$TTY_OUT" 2>&1 || return 1
+    return 0
+  fi
+  if ! neotunnel_state_has_tunnel "$name"; then
+    [[ "$kind" =~ ^(sit|ipip|gre|gretap|ip6gre|ip6gretap|ipip6|ip6ip6|vxlan|geneve|l2tpv3|wireguard|obfs|tcp|eoip|stream-tcp|stream-tls)$ ]] || {
+      echo "[-] Tunnel kind is missing or unsupported." > "$TTY_OUT"; return 1;
+    }
+    if [[ "${NT_MODE:-linked}" == "remote" ]]; then
+      remote="${NT_REMOTE_IP:-}"
+      [[ -n "$remote" ]] || { echo "[-] Set the remote IP for this tunnel profile." > "$TTY_OUT"; return 1; }
+      case "$kind" in obfs|tcp|stream-tcp|stream-tls) echo "[-] ${kind} requires a managed peer; use Link panel nodes." > "$TTY_OUT"; return 1 ;; esac
+      [[ "$kind" != "wireguard" || -n "${NT_PEER_KEY:-}" ]] || { echo "[-] WireGuard needs the peer's public key." > "$TTY_OUT"; return 1; }
+      [[ "${NT_ENCRYPT:-}" == "none" ]] && NT_ENCRYPT=""
+      [[ -z "${NT_KEEPALIVE:-}" || "$kind" == "wireguard" || "$kind" == "obfs" ]] || { echo "[-] Keepalive is only supported by WireGuard and Obfs." > "$TTY_OUT"; return 1; }
+      [[ -z "${NT_PADDING:-}" || "$kind" == "obfs" ]] || { echo "[-] Padding is only supported by Obfs." > "$TTY_OUT"; return 1; }
+      [[ -z "${NT_FORWARD_PORTS:-}" || "$kind" != "gretap" && "$kind" != "ip6gretap" && "$kind" != "vxlan" && "$kind" != "geneve" && "$kind" != "l2tpv3" && "$kind" != "eoip" ]] || { echo "[-] Port forwarding requires a layer-3 tunnel kind." > "$TTY_OUT"; return 1; }
+      if [[ -n "${NT_FORWARD_PORTS:-}${NT_ENCRYPT:-}" ]] && ! have nft; then echo "[-] Port forwarding or additional encryption requires nftables (nft). Install it, then retry." > "$TTY_OUT"; return 1; fi
+      local -a cmd=("$NEOTUNNEL_BIN" tunnel add "$name" --kind "$kind" --remote "$remote")
+      [[ -n "${NT_PORT:-}" ]] && cmd+=(--port "$NT_PORT")
+      [[ -n "${NT_MTU:-}" ]] && cmd+=(--mtu "$NT_MTU")
+      [[ -n "${NT_PEER_KEY:-}" ]] && cmd+=(--peer-key "$NT_PEER_KEY")
+      [[ -n "${NT_ENCRYPT:-}" ]] && cmd+=(--encrypt "$NT_ENCRYPT")
+      [[ -n "${NT_PROFILE:-}" ]] && cmd+=(--profile "$NT_PROFILE")
+      [[ -n "${NT_KEEPALIVE:-}" ]] && cmd+=(--keepalive "$NT_KEEPALIVE")
+      [[ "${NT_MTU_PROBE:-false}" == "true" ]] && cmd+=(--mtu-probe)
+      [[ "${NT_NO_PMTUD:-false}" == "true" ]] && cmd+=(--no-pmtud)
+      output="$(NO_COLOR=1 "${cmd[@]}" 2>&1)" || { echo "$output" > "$TTY_OUT"; return 1; }
+      if [[ -n "${NT_FORWARD_PORTS:-}" ]]; then
+        local proto; proto="${NT_FORWARD_PROTO:-both}"
+        [[ "$proto" == "tcp" || "$proto" == "udp" || "$proto" == "both" ]] || { echo "[-] Invalid forward protocol." > "$TTY_OUT"; return 1; }
+        if ! output+=$'\n'"$(NO_COLOR=1 "$NEOTUNNEL_BIN" forward add "$name" "$NT_FORWARD_PORTS" --proto "$proto" 2>&1)"; then
+          "$NEOTUNNEL_BIN" tunnel remove "$name" >/dev/null 2>&1 || true
+          echo "$output" > "$TTY_OUT"; return 1
+        fi
+      fi
+    else
+      echo "[-] This tunnel is configured by the A,S master. Recreate it from Link panel nodes." > "$TTY_OUT"
+      return 1
+    fi
+  fi
+  "$NEOTUNNEL_BIN" tunnel enable "$name" > "$TTY_OUT" 2>&1 || return 1
+}
+
+neotunnel_stop_profile(){
+  local prof name
+  prof="$1"; load_profile "$prof"; name="${NT_TUNNEL_NAME:-}"
+  [[ "${NT_ROLE:-owner}" != "managed" ]] || { echo "[i] This tunnel is controlled by its A,S master." > "$TTY_OUT"; return 0; }
+  [[ "$name" =~ ^[a-z0-9][a-z0-9-]{0,9}$ ]] || { echo "[-] Tunnel id is missing or invalid." > "$TTY_OUT"; return 1; }
+  "$NEOTUNNEL_BIN" tunnel disable "$name" > "$TTY_OUT" 2>&1
+}
+
+api_neotunnel(){
+  local body action log rc node_name node_name_now node_ip peer_name peer_ip peer_entry key nt_name kind port mtu encrypt profile keepalive padding lanes conns forward_ports forward_proto mode
+  body="$(cat)"
+  action="$(jq -r '.action // empty' <<<"$body" 2>/dev/null || true)"
+  case "$action" in
+    install)
+      if log="$(install_neotunnel 2>&1)"; then printf '{"ok":true,"log":%s}\n' "$(json_str "$log")"; else printf '{"ok":false,"error":"neotunnel_install_failed","log":%s}\n' "$(json_str "$log")"; fi
+      ;;
+    prepare)
+      node_name="$(jq -r '.node_name // empty' <<<"$body")"; node_ip="$(jq -r '.node_ip // empty' <<<"$body")"
+      peer_name="$(jq -r '.peer_name // empty' <<<"$body")"; peer_ip="$(jq -r '.peer_ip // empty' <<<"$body")"
+      [[ "$node_name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && "$peer_name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ && -n "$node_ip" && -n "$peer_ip" ]] || { echo '{"ok":false,"error":"bad_neotunnel_peer"}'; return 0; }
+      install_neotunnel || { echo '{"ok":false,"error":"neotunnel_install_failed"}'; return 0; }
+      node_name_now="$(jq -r '.self // empty' "$NEOTUNNEL_STATE" 2>/dev/null || true)"
+      if [[ -z "$node_name_now" ]]; then
+        log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" node --name "$node_name" --address "$node_ip" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_node_init_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
+      else
+        log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" node --address "$node_ip" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_node_address_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
+      fi
+      peer_entry="$(jq -c --arg n "$peer_name" '.peers[]? | select(.name == $n)' "$NEOTUNNEL_STATE" 2>/dev/null | head -n1 || true)"
+      if [[ -n "$peer_entry" ]]; then
+        [[ "$(jq -r '.address // empty' <<<"$peer_entry")" == "$peer_ip" ]] || { echo '{"ok":false,"error":"neotunnel_peer_address_conflict"}'; return 0; }
+      else
+        log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" peer add "$peer_name" --address "$peer_ip" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_peer_add_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
+      fi
+      log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" peer connect "$peer_name" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_setup_key_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
+      key="$(grep -oE 'NT1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+' <<<"$log" | tail -n1 || true)"
+      [[ -n "$key" ]] || { printf '{"ok":false,"error":"neotunnel_setup_key_missing","log":%s}\n' "$(json_str "$log")"; return 0; }
+      node_name_now="$(jq -r '.self // empty' "$NEOTUNNEL_STATE" 2>/dev/null || true)"
+      printf '{"ok":true,"node_name":%s,"peer_name":%s,"key":%s}\n' "$(json_str "$node_name_now")" "$(json_str "$peer_name")" "$(json_str "$key")"
+      ;;
+    apply)
+      key="$(jq -r '.key // empty' <<<"$body")"
+      [[ "$key" =~ ^NT1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$ ]] || { echo '{"ok":false,"error":"bad_setup_key"}'; return 0; }
+      install_neotunnel || { echo '{"ok":false,"error":"neotunnel_install_failed"}'; return 0; }
+      if log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" apply "$key" 2>&1)"; then printf '{"ok":true,"log":%s}\n' "$(json_str "$log")"; else printf '{"ok":false,"error":"neotunnel_apply_failed","log":%s}\n' "$(json_str "$log")"; fi
+      ;;
+    add_link)
+      nt_name="$(jq -r '.tunnel_name // empty' <<<"$body")"; peer_name="$(jq -r '.peer_name // empty' <<<"$body")"; kind="$(jq -r '.kind // empty' <<<"$body")"
+      port="$(jq -r '.port // empty' <<<"$body")"; mtu="$(jq -r '.mtu // empty' <<<"$body")"; encrypt="$(jq -r '.encrypt // empty' <<<"$body")"; profile="$(jq -r '.profile // empty' <<<"$body")"
+      keepalive="$(jq -r '.keepalive // empty' <<<"$body")"; padding="$(jq -r '.padding // empty' <<<"$body")"; lanes="$(jq -r '.lanes // empty' <<<"$body")"; conns="$(jq -r '.conns // empty' <<<"$body")"
+      forward_ports="$(jq -r '.forward_ports // empty' <<<"$body")"; forward_proto="$(jq -r '.forward_proto // both' <<<"$body")"
+      [[ "$nt_name" =~ ^[a-z0-9][a-z0-9-]{0,9}$ && "$peer_name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { echo '{"ok":false,"error":"bad_neotunnel_name"}'; return 0; }
+      [[ "$kind" =~ ^(sit|ipip|gre|gretap|ip6gre|ip6gretap|ipip6|ip6ip6|vxlan|geneve|l2tpv3|wireguard|obfs|tcp|eoip|stream-tcp|stream-tls)$ ]] || { echo '{"ok":false,"error":"bad_neotunnel_kind"}'; return 0; }
+      [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo '{"ok":false,"error":"bad_port"}'; return 0; }
+      [[ -z "$mtu" || ( "$mtu" =~ ^[0-9]{3,4}$ && 576 -le 10#$mtu && 10#$mtu -le 9000 ) ]] || { echo '{"ok":false,"error":"bad_mtu"}'; return 0; }
+      [[ -z "$encrypt" || "$encrypt" =~ ^(aes-gcm-128|aes-gcm-256|chacha20-poly1305|auto)$ ]] || { echo '{"ok":false,"error":"bad_encrypt"}'; return 0; }
+      [[ -z "$profile" || "$profile" =~ ^(lean|balanced|max)$ ]] || { echo '{"ok":false,"error":"bad_profile"}'; return 0; }
+      [[ -z "$keepalive" || "$keepalive" =~ ^(-1|[0-9]{1,5})$ ]] || { echo '{"ok":false,"error":"bad_keepalive"}'; return 0; }
+      [[ "$keepalive" == "-1" || -z "$keepalive" || 10#$keepalive -le 65535 ]] || { echo '{"ok":false,"error":"bad_keepalive"}'; return 0; }
+      [[ -z "$padding" || ( "$padding" =~ ^[0-9]{1,3}$ && 10#$padding -le 255 ) ]] || { echo '{"ok":false,"error":"bad_padding"}'; return 0; }
+      [[ -z "$lanes" || ( "$lanes" =~ ^[1-8]$ ) ]] || { echo '{"ok":false,"error":"bad_lanes"}'; return 0; }
+      [[ -z "$conns" || ( "$conns" =~ ^([1-9]|1[0-6])$ ) ]] || { echo '{"ok":false,"error":"bad_conns"}'; return 0; }
+      [[ "$forward_proto" == "tcp" || "$forward_proto" == "udp" || "$forward_proto" == "both" ]] || { echo '{"ok":false,"error":"bad_forward_proto"}'; return 0; }
+      if [[ -n "$keepalive" && "$kind" != "wireguard" && "$kind" != "obfs" ]]; then echo '{"ok":false,"error":"keepalive_only_encrypted_udp"}'; return 0; fi
+      if [[ -n "$padding" && "$padding" != "0" && "$kind" != "obfs" ]]; then echo '{"ok":false,"error":"padding_only_obfs"}'; return 0; fi
+      if [[ -n "$lanes" && "$lanes" -gt 1 && "$kind" != "gre" && "$kind" != "gretap" && "$kind" != "ip6gre" && "$kind" != "ip6gretap" ]]; then echo '{"ok":false,"error":"lanes_require_gre"}'; return 0; fi
+      if [[ -n "$conns" && "$kind" != "stream-tcp" && "$kind" != "stream-tls" ]]; then echo '{"ok":false,"error":"conns_require_stream"}'; return 0; fi
+      if [[ "$(jq -r '.reverse // false' <<<"$body")" == "true" && "$kind" != "stream-tcp" && "$kind" != "stream-tls" ]]; then echo '{"ok":false,"error":"reverse_requires_stream"}'; return 0; fi
+      if [[ ( "$(jq -r '.mtu_probe // false' <<<"$body")" == "true" || "$(jq -r '.no_pmtud // false' <<<"$body")" == "true" ) && "$kind" != "sit" && "$kind" != "ipip" && "$kind" != "gre" && "$kind" != "gretap" && "$kind" != "eoip" ]]; then echo '{"ok":false,"error":"mtu_flags_unsupported"}'; return 0; fi
+      if [[ -n "$forward_ports" && ( "$kind" == "gretap" || "$kind" == "ip6gretap" || "$kind" == "vxlan" || "$kind" == "geneve" || "$kind" == "l2tpv3" || "$kind" == "eoip" ) ]]; then echo '{"ok":false,"error":"forward_requires_layer3"}'; return 0; fi
+      if [[ -n "$forward_ports" && ( "$kind" == "stream-tcp" || "$kind" == "stream-tls" ) && "$forward_proto" != "tcp" ]]; then echo '{"ok":false,"error":"stream_tcp_only"}'; return 0; fi
+      install_neotunnel || { echo '{"ok":false,"error":"neotunnel_install_failed"}'; return 0; }
+      local paired=false
+      for _nt_try in {1..20}; do
+        if jq -e --arg n "$peer_name" '.peers[]? | select(.name == $n and .public_key != "")' "$NEOTUNNEL_STATE" >/dev/null 2>&1; then paired=true; break; fi
+        sleep 1
+      done
+      if [[ "$paired" != "true" ]]; then
+        echo '{"ok":false,"error":"neotunnel_peer_not_paired"}'; return 0
+      fi
+      if [[ -n "$forward_ports$encrypt" ]] && ! have nft; then echo '{"ok":false,"error":"neotunnel_nftables_required"}'; return 0; fi
+      if neotunnel_state_has_tunnel "$nt_name"; then echo '{"ok":false,"error":"neotunnel_tunnel_exists"}'; return 0; fi
+      local -a cmd=("$NEOTUNNEL_BIN" tunnel add "$nt_name" --kind "$kind" --peer "$peer_name" --port "$port")
+      [[ -n "$mtu" ]] && cmd+=(--mtu "$mtu")
+      [[ -n "$encrypt" ]] && cmd+=(--encrypt "$encrypt")
+      [[ -n "$profile" && "$profile" != "balanced" ]] && cmd+=(--profile "$profile")
+      [[ -n "$keepalive" ]] && cmd+=(--keepalive "$keepalive")
+      [[ -n "$padding" ]] && cmd+=(--padding "$padding")
+      [[ -n "$lanes" ]] && cmd+=(--lanes "$lanes")
+      [[ -n "$conns" ]] && cmd+=(--conns "$conns")
+      [[ "$(jq -r '.mtu_probe // false' <<<"$body")" == "true" ]] && cmd+=(--mtu-probe)
+      [[ "$(jq -r '.no_pmtud // false' <<<"$body")" == "true" ]] && cmd+=(--no-pmtud)
+      [[ "$(jq -r '.reverse // false' <<<"$body")" == "true" ]] && cmd+=(--reverse)
+      if ! log="$(NO_COLOR=1 "${cmd[@]}" 2>&1)"; then printf '{"ok":false,"error":"neotunnel_add_failed","log":%s}\n' "$(json_str "$log")"; return 0; fi
+      if [[ -n "$forward_ports" ]]; then
+        mode="nat"; [[ "$kind" == "stream-tcp" || "$kind" == "stream-tls" ]] && mode="relay"
+        if ! log+=$'\n'"$(NO_COLOR=1 "$NEOTUNNEL_BIN" forward add "$nt_name" "$forward_ports" --proto "$forward_proto" --mode "$mode" 2>&1)"; then
+          "$NEOTUNNEL_BIN" tunnel remove "$nt_name" >/dev/null 2>&1 || true
+          printf '{"ok":false,"error":"neotunnel_forward_failed","log":%s}\n' "$(json_str "$log")"; return 0
+        fi
+      fi
+      printf '{"ok":true,"log":%s}\n' "$(json_str "$log")"
+      ;;
+    power)
+      nt_name="$(jq -r '.tunnel_name // empty' <<<"$body")"; mode="$(jq -r '.mode // empty' <<<"$body")"
+      [[ "$nt_name" =~ ^[a-z0-9][a-z0-9-]{0,9}$ && ( "$mode" == "enable" || "$mode" == "disable" ) ]] || { echo '{"ok":false,"error":"bad_neotunnel_power"}'; return 0; }
+      if log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" tunnel "$mode" "$nt_name" 2>&1)"; then printf '{"ok":true,"log":%s}\n' "$(json_str "$log")"; else printf '{"ok":false,"error":"neotunnel_power_failed","log":%s}\n' "$(json_str "$log")"; fi
+      ;;
+    remove)
+      nt_name="$(jq -r '.tunnel_name // empty' <<<"$body")"
+      [[ "$nt_name" =~ ^[a-z0-9][a-z0-9-]{0,9}$ ]] || { echo '{"ok":false,"error":"bad_neotunnel_name"}'; return 0; }
+      if log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" tunnel remove "$nt_name" 2>&1)"; then printf '{"ok":true,"log":%s}\n' "$(json_str "$log")"; else printf '{"ok":false,"error":"neotunnel_remove_failed","log":%s}\n' "$(json_str "$log")"; fi
+      ;;
+    *) echo '{"ok":false,"error":"bad_neotunnel_action"}' ;;
+  esac
+}
+
 # Prints "port proto" for every port this Paqet profile needs raw-socket iptables rules for.
 paqet_rule_ports(){
   local p tcp_ports udp_ports
@@ -1549,7 +1789,11 @@ is_running(){
   local prof m s out
   prof="$1"
   m="$(get_method "$prof")"
-  if [[ "$m" == "gre" ]]; then
+  if [[ "$m" == "neotunnel" ]]; then
+    local nt_name
+    nt_name="$(env_get "$prof" NT_TUNNEL_NAME)"
+    [[ -n "$nt_name" ]] && neotunnel_tunnel_running "$nt_name"
+  elif [[ "$m" == "gre" ]]; then
     ip link show "$(gre_ifname "$prof")" >/dev/null 2>&1
   else
     s="$(session_name "$prof")"
@@ -1786,6 +2030,7 @@ run_slot(){
   [[ -f "$f" ]] || { echo "Profile not found: $prof" > "$TTY_OUT"; return 1; }
   m="$(get_method "$prof")"
   case "$m" in
+    neotunnel) run_neotunnel_profile "$prof" ;;
     asnative) run_slot_asnative "$prof" ;;
     backhaul) run_backhaul_slot "$prof" ;;
     rathole)  run_rathole_slot "$prof" ;;
@@ -1802,7 +2047,9 @@ stop_slot(){
   local prof m s
   prof="$1"
   m="$(get_method "$prof")"
-  if [[ "$m" == "gre" ]]; then
+  if [[ "$m" == "neotunnel" ]]; then
+    neotunnel_stop_profile "$prof"
+  elif [[ "$m" == "gre" ]]; then
     stop_gre_slot "$prof"
   else
     s="$(session_name "$prof")"
@@ -1819,7 +2066,12 @@ status_slot(){
   f="$CONF/${prof}.env"
   [[ -f "$f" ]] || { echo "Profile not found: $prof" > "$TTY_OUT"; return 1; }
   m="$(get_method "$prof")"
-  if [[ "$m" == "gre" ]]; then
+  if [[ "$m" == "neotunnel" ]]; then
+    local nt_name nt_kind; nt_name="$(env_get "$prof" NT_TUNNEL_NAME)"; nt_kind="$(env_get "$prof" NT_KIND)"
+    nt_kind="${nt_kind^^}"
+    if neotunnel_tunnel_running "$nt_name"; then st="${CLR_GREEN}ON${CLR_RESET}"; else st="${CLR_RED}OFF${CLR_RESET}"; fi
+    echo -e "Profile: $prof | Protocol: ${nt_kind:-unknown} | Running: $st" > "$TTY_OUT"
+  elif [[ "$m" == "gre" ]]; then
     status_gre_slot "$prof"
   else
     st="${CLR_RED}OFF${CLR_RESET}"
@@ -1832,7 +2084,15 @@ delete_slot(){
   prof="$1"
   f="$CONF/${prof}.env"
   m="$(get_method "$prof")"
-  stop_slot "$prof" >/dev/null 2>&1 || true
+  if [[ "$m" == "neotunnel" && "$(env_get "$prof" NT_ROLE)" == "managed" ]]; then
+    : # The owner removes the managed tunnel and pushes the deletion to this peer.
+  else
+    stop_slot "$prof" >/dev/null 2>&1 || true
+  fi
+  if [[ "$m" == "neotunnel" && "$(env_get "$prof" NT_ROLE)" != "managed" ]]; then
+    local nt_name; nt_name="$(env_get "$prof" NT_TUNNEL_NAME)"
+    [[ -n "$nt_name" ]] && "$NEOTUNNEL_BIN" tunnel remove "$nt_name" >/dev/null 2>&1 || true
+  fi
   clear_slot_restart_cron "$prof" >/dev/null 2>&1 || true
   if [[ "$m" == "paqet" ]]; then paqet_iptables_remove "$prof" >/dev/null 2>&1 || true; fi
   rm -f "$CONF/${prof}.toml" "$CONF/${prof}.yaml" "$(log_file "$prof")" >/dev/null 2>&1 || true
@@ -2340,6 +2600,8 @@ def execute(cmd, args=None):
             return run_api(["nodeinfo"], timeout=30)
         if cmd == "selfupdate":
             return run_api(["selfupdate"], timeout=240)
+        if cmd == "neotunnel":
+            return run_api(["neotunnel"], stdin_data=json.dumps(a), timeout=900)
         if cmd == "ping":
             return ping_host(a.get("target"), a.get("count", 3))
         if cmd == "iperf_server":
@@ -2775,12 +3037,26 @@ def n_slot_save(nid, prof):
 def n_slot_action(nid, prof, action):
     if action not in ("start", "stop", "restart"):
         return jsonify({"error": "bad_action"}), 400
+    current = run_on_node(nid, "get", {"prof": prof}, timeout=40)
+    if isinstance(current, dict) and current.get("method") == "neotunnel":
+        owner = str((current.get("fields") or {}).get("NT_OWNER_NODE") or "")
+        if owner and owner != nid and valid_nid(owner):
+            return respond(run_on_node(owner, action, {"prof": prof}, timeout=330))
     return respond(run_on_node(nid, action, {"prof": prof}, timeout=330))
 
 
 @app.delete("/api/n/<nid>/slots/<prof>")
 def n_slot_delete(nid, prof):
-    return respond(run_on_node(nid, "delete", {"prof": prof}, timeout=120))
+    current = run_on_node(nid, "get", {"prof": prof}, timeout=40)
+    if isinstance(current, dict) and current.get("method") == "neotunnel":
+        owner = str((current.get("fields") or {}).get("NT_OWNER_NODE") or "")
+        if owner and owner != nid and valid_nid(owner):
+            res = run_on_node(owner, "delete", {"prof": prof}, timeout=180)
+            if not isinstance(res, dict) or not res.get("ok"):
+                return respond(res)
+            run_on_node(nid, "delete", {"prof": prof}, timeout=120)
+            return respond(res)
+    return respond(run_on_node(nid, "delete", {"prof": prof}, timeout=180))
 
 
 @app.get("/api/n/<nid>/slots/<prof>/logs")
@@ -2871,7 +3147,8 @@ def update_all():
 
 
 # ----------------------------------------------------- link two panel nodes
-LINK_METHODS = ("asnative", "backhaul", "rathole", "gre", "frp", "gost", "paqet", "assecure")
+LINK_METHODS = ("asnative", "backhaul", "rathole", "gre", "frp", "gost", "paqet", "assecure", "neotunnel")
+NEOTUNNEL_KINDS = ("sit", "ipip", "gre", "gretap", "ip6gre", "ip6gretap", "ipip6", "ip6ip6", "vxlan", "geneve", "l2tpv3", "wireguard", "obfs", "tcp", "eoip", "stream-tcp", "stream-tls")
 KCP_MODES = ("fast", "normal", "fast2", "fast3")
 KCP_BLOCKS = ("aes-128-gcm", "aes", "aes-128", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none", "null")
 
@@ -2959,7 +3236,7 @@ def _is_ip_address(value):
         return False
 
 
-def build_link(method, p, sip, cip):
+def build_link(method, p, sip, cip, link_name="tunnel"):
     """Fields for the selected protocol server and client; geography is method-dependent.
     The server value may be None when only one end needs configuring (gost)."""
     key = secrets.token_hex(16)  # shared secret, never typed by hand
@@ -2989,6 +3266,79 @@ def build_link(method, p, sip, cip):
         if not valid_endpoints:
             raise ValueError("gre_requires_ipv4")
         return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
+    if method == "neotunnel":
+        try:
+            ipaddress.ip_address(sip); ipaddress.ip_address(cip)
+        except ValueError:
+            raise ValueError("neotunnel_requires_ip")
+        kind = str(p.get("kind") or "wireguard").strip().lower()
+        if kind not in NEOTUNNEL_KINDS:
+            raise ValueError("bad_neotunnel_kind")
+        fwd = _ports_csv(p.get("forward_ports"))
+        fwd_list = fwd.split(",") if fwd else []
+        port = _configured_port(p.get("port"), avoid=fwd_list)
+        if str(port) in fwd_list:
+            raise ValueError("ports_conflict")
+        mtu = p.get("mtu")
+        if mtu not in (None, "") and _port(mtu, lo=576, hi=9000) is None:
+            raise ValueError("bad_mtu")
+        encrypt = str(p.get("encrypt") or "").strip().lower()
+        if encrypt not in ("", "none", "aes-gcm-128", "aes-gcm-256", "chacha20-poly1305", "auto"):
+            raise ValueError("bad_encrypt")
+        profile = str(p.get("profile") or "balanced").strip().lower()
+        if profile not in ("lean", "balanced", "max"):
+            raise ValueError("bad_profile")
+        proto = str(p.get("forward_proto") or "both").lower()
+        if proto not in ("tcp", "udp", "both"):
+            raise ValueError("bad_forward_proto")
+        if kind in ("stream-tcp", "stream-tls") and fwd and proto != "tcp":
+            raise ValueError("stream_tcp_only")
+        if fwd and kind in ("gretap", "ip6gretap", "vxlan", "geneve", "l2tpv3", "eoip"):
+            raise ValueError("forward_requires_layer3")
+        def nt_bool(value):
+            return value is True or str(value or "").strip().lower() in ("1", "true", "yes", "on")
+        def nt_int(key, default, lo, hi):
+            value = p.get(key)
+            if value in (None, ""):
+                return default
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                raise ValueError("bad_" + key)
+            if not lo <= number <= hi:
+                raise ValueError("bad_" + key)
+            return number
+        if p.get("keepalive") not in (None, "") and kind not in ("wireguard", "obfs"):
+            raise ValueError("keepalive_only_encrypted_udp")
+        keepalive = nt_int("keepalive", 25 if kind in ("wireguard", "obfs") else 0, -1, 65535)
+        padding = nt_int("padding", 0, 0, 255)
+        lanes = nt_int("lanes", 1, 1, 8)
+        conns = nt_int("conns", 4, 1, 16)
+        if padding and kind != "obfs":
+            raise ValueError("padding_only_obfs")
+        if lanes > 1 and kind not in ("gre", "gretap", "ip6gre", "ip6gretap"):
+            raise ValueError("lanes_require_gre")
+        if conns != 4 and kind not in ("stream-tcp", "stream-tls"):
+            raise ValueError("conns_require_stream")
+        reverse = nt_bool(p.get("reverse"))
+        if reverse and kind not in ("stream-tcp", "stream-tls"):
+            raise ValueError("reverse_requires_stream")
+        mtu_probe, no_pmtud = nt_bool(p.get("mtu_probe")), nt_bool(p.get("no_pmtud"))
+        if (mtu_probe or no_pmtud) and kind not in ("sit", "ipip", "gre", "gretap", "eoip"):
+            raise ValueError("mtu_flags_unsupported")
+        nt_name = "a" + re.sub(r"[^a-z0-9-]", "", str(link_name).lower())[:5] + secrets.token_hex(2)
+        common = {"NT_MODE": "linked", "NT_TUNNEL_NAME": nt_name, "NT_KIND": kind,
+                  "NT_PORT": port, "NT_MTU": _port(mtu, None, 576, 9000) if mtu not in (None, "") else "",
+                  "NT_ENCRYPT": "" if encrypt == "none" else encrypt, "NT_PROFILE": "" if profile == "balanced" else profile,
+                  "NT_KEEPALIVE": keepalive if kind in ("wireguard", "obfs") else "",
+                  "NT_PADDING": padding if kind == "obfs" else "", "NT_LANES": lanes if lanes > 1 else "",
+                  "NT_CONNS": conns if kind in ("stream-tcp", "stream-tls") else "",
+                  "NT_MTU_PROBE": "true" if mtu_probe else "false",
+                  "NT_NO_PMTUD": "true" if no_pmtud else "false",
+                  "NT_REVERSE": "true" if reverse else "false", "NT_FORWARD_PORTS": fwd,
+                  "NT_FORWARD_PROTO": proto}
+        return (dict(common, NT_ROLE="owner", NT_PEER_IP=cip),
+                dict(common, NT_ROLE="managed", NT_PEER_IP=sip))
     if method == "gost":
         if not fwd:
             raise ValueError("ports_required")
@@ -3073,6 +3423,65 @@ def node_label_ip(nid):
         return n["name"], (n.get("hello") or {}).get("public_ip") or n["remote_ip"]
 
 
+def _neotunnel_action(nid, action, **params):
+    return run_on_node(nid, "neotunnel", {"action": action, **params}, timeout=900)
+
+
+def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfields, cfields):
+    if not (_is_ip_address(sip) and _is_ip_address(cip)):
+        return jsonify({"ok": False, "saved": False, "error": "neotunnel_requires_ip", "steps": []}), 400
+    # A,S names can exceed the tunnel engine's interface-safe 10-character ID.
+    # Keep a separate short engine ID and retain the A,S profile as the UI name.
+    nt_name = sfields["NT_TUNNEL_NAME"]
+    peer_name = "as-" + re.sub(r"[^a-z0-9-]", "", client.lower())[-8:]
+    for nid in (server, client):
+        listing = run_on_node(nid, "list", timeout=45)
+        if isinstance(listing, list) and any(str(x.get("prof")) == name for x in listing if isinstance(x, dict)):
+            return jsonify({"ok": False, "saved": False, "error": "neotunnel_profile_exists", "steps": []}), 409
+
+    steps = []
+    def record(side, nid, label, role, result):
+        result = result if isinstance(result, dict) else {"error": "bad_result"}
+        ok = result.get("ok") is True
+        step = {"side": side, "role": role, "node": label, "node_id": nid,
+                "saved": ok, "running": ok, "error": "" if ok else str(result.get("log") or result.get("detail") or result.get("error") or "")[-600:]}
+        steps.append(step)
+        return ok, result
+
+    step_ok, prepared = record("server", server, sname, "eu", _neotunnel_action(
+        server, "prepare", node_name="as-" + re.sub(r"[^a-z0-9-]", "", server.lower())[-8:],
+        node_ip=sip, peer_name=peer_name, peer_ip=cip))
+    if not step_ok:
+        return jsonify({"ok": False, "saved": False, "steps": steps, "error": "neotunnel_prepare_failed"})
+
+    step_ok, _ = record("client", client, cname, "iran", _neotunnel_action(client, "apply", key=prepared.get("key", "")))
+    if not step_ok:
+        return jsonify({"ok": False, "saved": False, "steps": steps, "error": "neotunnel_pair_failed"})
+
+    options = {
+        "tunnel_name": nt_name, "peer_name": peer_name, "kind": sfields["NT_KIND"],
+        "port": sfields["NT_PORT"], "mtu": sfields["NT_MTU"], "encrypt": sfields["NT_ENCRYPT"],
+        "profile": sfields["NT_PROFILE"], "keepalive": sfields["NT_KEEPALIVE"],
+        "padding": sfields["NT_PADDING"], "lanes": sfields["NT_LANES"], "conns": sfields["NT_CONNS"],
+        "mtu_probe": sfields["NT_MTU_PROBE"] == "true", "no_pmtud": sfields["NT_NO_PMTUD"] == "true",
+        "reverse": sfields["NT_REVERSE"] == "true", "forward_ports": sfields["NT_FORWARD_PORTS"],
+        "forward_proto": sfields["NT_FORWARD_PROTO"]
+    }
+    step_ok, _ = record("server", server, sname, "eu", _neotunnel_action(server, "add_link", **options))
+    if not step_ok:
+        return jsonify({"ok": False, "saved": False, "steps": steps, "error": "neotunnel_add_failed"})
+
+    owner_fields = dict(sfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True)
+    managed_fields = dict(cfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True)
+    for side, nid, label, role, fields in (("server", server, sname, "eu", owner_fields),
+                                           ("client", client, cname, "iran", managed_fields)):
+        record(side, nid, label, role, run_on_node(nid, "save", {
+            "prof": name, "body": {"method": "neotunnel", "role": role, "fields": fields}}, timeout=180))
+    return jsonify({"ok": all(x["running"] for x in steps), "saved": all(x["saved"] for x in steps),
+                    "steps": steps, "name": name, "server_ip": sip, "client_ip": cip,
+                    "neotunnel_name": nt_name})
+
+
 @app.post("/api/link")
 def api_link():
     b = request.get_json(force=True, silent=True) or {}
@@ -3096,9 +3505,12 @@ def api_link():
     if not isinstance(params, dict):
         return jsonify({"error": "bad_params"}), 400
     try:
-        sfields, cfields = build_link(method, params, sip, cip)
+        sfields, cfields = build_link(method, params, sip, cip, name)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+
+    if method == "neotunnel":
+        return _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfields, cfields)
 
     server_role, client_role = (("iran", "eu") if method in ("asnative", "backhaul", "rathole") else ("eu", "iran"))
 
@@ -4053,9 +4465,10 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       </div>
       <div class="fgrid">
         <div><label class="f" data-i="tName">Tunnel name</label><input id="nameInput" class="mono" maxlength="32" placeholder="server1"></div>
-        <div><label class="f" data-i="protocol">Protocol</label><select id="methodSelect" onchange="onMethodChange()">
+        <div class="full"><label class="f" data-i="protocol">Protocol</label><input class="mono" id="protocolSearch" type="search" placeholder="Search protocols…" oninput="filterProtocols()"><select id="methodSelect" onchange="onMethodChange()">
           <option value="asnative">Reverse</option><option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
-          <option value="gre">GRE</option><option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option><option value="assecure">A,S Secure — TLS / QUIC / TCP+UDP</option></select></div>
+          <option value="gre">GRE (kernel)</option><option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option><option value="assecure">A,S Secure — TLS / QUIC / TCP+UDP</option>
+          <option value="kind:sit">SIT — IPv6 over IPv4</option><option value="kind:ipip">IPIP — IPv4 over IPv4</option><option value="kind:gre">GRE — Layer 3</option><option value="kind:gretap">GRETAP — Layer 2</option><option value="kind:ip6gre">IP6GRE — Layer 3</option><option value="kind:ip6gretap">IP6GRETAP — Layer 2</option><option value="kind:ipip6">IPIP6 — IPv4 over IPv6</option><option value="kind:ip6ip6">IP6IP6 — IPv6 over IPv6</option><option value="kind:vxlan">VXLAN</option><option value="kind:geneve">Geneve</option><option value="kind:l2tpv3">L2TPv3</option><option value="kind:wireguard">WireGuard</option><option value="kind:obfs">Obfs — encrypted UDP</option><option value="kind:tcp">TCP — IP over TCP</option><option value="kind:eoip">EoIP</option><option value="kind:stream-tcp">Stream TCP</option><option value="kind:stream-tls">Stream TLS</option></select></div>
       </div>
 
       <div id="manualBox">
@@ -4112,7 +4525,7 @@ en:{
  badLogin:'Wrong username or password.', tooMany:'Too many attempts — wait a few minutes.', sessionEnd:'Session expired — sign in again.',
  stIp:'Node Public IP', hostname:'Hostname', stNodes:'Connected Nodes', stNodesNote:'Active nodes connected to master', stLat:'Average Latency', stLatNote:'Node ⇄ Master, live',
  stRes:'Host Server Resources', cpu:'CPU Usage', ram:'RAM Usage', uptime:'Uptime', load:'Load',
- tabConfig:'Node & Config', tabNodes:'Nodes', tabSpeed:'Speedtest (iperf3)', tabPing:'Live Ping & Latency', tabTunnels:'Tunnels Manager',
+  tabConfig:'Node & Config', tabNodes:'Nodes', tabSpeed:'Speedtest (iperf3)', tabPing:'Live Ping & Latency', tabTunnels:'Tunnels Manager',
  cfgTitle:'Node & Master Configuration', cfgDesc:"Manage this node's identity, tunnels, tuning and updates", wizard:'Launch Setup Wizard',
  startAll:'Start All', restartAll:'Restart All', stopAll:'Stop All', save:'Save Changes', identity:'Node Identity', nodeName:'Node Name', netName:'Network Name',
  side:'Side', publicIp:'Public IP', nodeId:'Node ID', tuning:'Server Tuning & Updates', optimize:'Optimize server', optimizeDesc:'BBR and network performance tuning',
@@ -4132,7 +4545,7 @@ en:{
  cur:'Now', avg:'Avg', min:'Min', max:'Max', trend:'Trend', livePing:'Live Ping', pgFrom:'From node', pgTo:'Target', pgCustom:'Custom host / IP',
  pgStart:'Start live ping', pgStop:'Stop', clear:'Clear', loss:'Loss', custom:'Custom…',
  tunTitle:'Tunnels Manager', addTunnel:'Add tunnel', tunDesc:'Tunnels running on the selected node. Click one to configure, view live logs or schedule restarts.', noTunnels:'No tunnels yet — add one.',
- mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
+ mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', protocolSearchHint:'Search protocols…', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
  sched:'Scheduled restart', schedNote:'(regardless of status)', hours:'hours', save2:'Save', live:'Live', newTunnel:'New tunnel',
  running:'running', stopped:'stopped', crafted:'Crafted by', keepPrivate:'Keep this URL and your password private',
  savedOk:'Saved ✔', failed:'Failed', nodeOfflineErr:'That node is offline.', timeoutErr:'The node did not answer in time.', removeConfirm:'Remove node "{n}" from the master?',
@@ -4143,12 +4556,23 @@ en:{
  modeManual:'Manual', modeLink:'From panel nodes', addLink:'Link panel nodes', addManual:'Manual tunnel',
  lkServerAbroad:'Server node (Abroad)', lkClientIran:'Client node (Iran)', lkServerIran:'Server node (Iran)', lkClientAbroad:'Client node (Abroad)', lkNoteReverse:'Reverse listens on the Iran server; the abroad server connects to it. Use matching, distinct bridge and sync ports.', lkSIp:'Server address', lkCIp:'Client address',
  lkNote:'Keys and ports are generated and shared with both nodes automatically; addresses come from the nodes.',
+  lkNoteExtended:'The selected tunnel kind is installed on both servers. Allow the tunnel and peer service ports between them.',
  lkNoteGost:'Gost only configures the client node (Iran): it forwards the ports to the server address.',
  lkCreate:'Create on both nodes', lkNeed:'You need one online Iran node and one online abroad node.',
  lkOk:'✔ Tunnel created and running on both nodes', lkPartial:'⚠ Saved on both nodes, but at least one is not running yet:', lkRolled:'The server side was removed again so nothing is left half-configured.',
  e_bad_name:'Use letters, digits, - or _ for the name.', e_bad_ports:'Ports must be numbers between 1 and 65535.', e_ports_required:'Enter at least one port to forward.',
  e_ports_conflict:'The control port must differ from the forwarded ports (and bridge ≠ sync).', e_bad_address:'Check the server / client address.', e_same_node:'Pick two different nodes.',
- e_server_failed:'Could not configure the server node.', e_node_not_found:'Node not found.', e_bad_method:'Unknown protocol.'
+  e_server_failed:'Could not configure the server node.', e_node_not_found:'Node not found.', e_bad_method:'Unknown protocol.',
+  e_neotunnel_requires_ip:'Public IP addresses (IPv4 or IPv6) are required for both servers.', e_neotunnel_profile_exists:'This A,S tunnel name already exists on one of the nodes. Delete it first, then retry.',
+  e_neotunnel_prepare_failed:'Could not prepare the tunnel peer on the server.', e_neotunnel_pair_failed:'The second server could not connect to its peer.', e_neotunnel_add_failed:'Could not add the tunnel. Check the peer connection and tunnel settings.',
+  e_bad_neotunnel_kind:'Choose one of the supported tunnel kinds.', e_bad_mtu:'MTU must be between 576 and 9000.', e_bad_encrypt:'Unsupported encryption option.', e_bad_profile:'Choose lean, balanced or max.',
+  e_bad_forward_proto:'Forward protocol must be TCP, UDP or both.', e_stream_tcp_only:'Connection tunnels carry TCP only; choose TCP for their port forwarding.', e_padding_only_obfs:'Padding is only available for Obfs.', e_lanes_require_gre:'Multiple lanes are only supported by the GRE family.', e_conns_require_stream:'Session count is only available for stream tunnels.', e_reverse_requires_stream:'Reverse direction is only available for stream tunnels.',
+  e_neotunnel_tunnel_exists:'This tunnel ID already exists on the server. Choose another A,S tunnel name.', e_neotunnel_peer_not_paired:'The tunnel peer has not connected yet. Check that its service port is reachable, then retry.',
+  e_bad_padding:'Padding must be between 0 and 255.', e_bad_keepalive:'Keepalive must be between -1 and 65535 seconds.', e_keepalive_only_encrypted_udp:'Keepalive is only available for WireGuard and Obfs.',
+  e_bad_lanes:'GRE lanes must be between 1 and 8.', e_bad_conns:'Stream sessions must be between 1 and 16.', e_lanes_require_gre:'Multiple lanes are only supported by the GRE family.',
+  e_conns_require_stream:'Session count is only available for stream tunnels.', e_reverse_requires_stream:'Reverse direction is only available for stream tunnels.', e_mtu_flags_unsupported:'Path MTU options are only available for SIT, IPIP, GRE, GRETAP and EoIP.',
+  e_forward_requires_layer3:'Port forwarding is available for layer-3 tunnel kinds, not layer-2 bridges.', e_neotunnel_nftables_required:'Port forwarding and additional IPsec encryption require nftables (nft) on this server.',
+  e_neotunnel_forward_failed:'Could not configure port forwarding.',
 },
 fa:{
  appTitle:'مستر تانل A,S', masterBadge:'مستر', network:'شبکه', masterActive:'مستر فعال', palette:'پالت رنگ', accent:'رنگ اصلی',
@@ -4176,7 +4600,7 @@ fa:{
  cur:'اکنون', avg:'میانگین', min:'کمینه', max:'بیشینه', trend:'روند', livePing:'پینگ زنده', pgFrom:'از نود', pgTo:'مقصد', pgCustom:'هاست / آی‌پی دلخواه',
  pgStart:'شروع پینگ زنده', pgStop:'توقف', clear:'پاک کردن', loss:'از دست رفته', custom:'دلخواه…',
  tunTitle:'مدیریت تانل‌ها', addTunnel:'افزودن تانل', tunDesc:'تانل‌های نود انتخاب‌شده. برای تنظیم، لاگ زنده یا ریستارت زمان‌بندی‌شده روی یکی کلیک کنید.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
- mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
+ mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', protocolSearchHint:'جست‌وجوی پروتکل…', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
  sched:'ریستارت زمان‌بندی‌شده', schedNote:'(بدون توجه به وضعیت)', hours:'ساعت', save2:'ذخیره', live:'زنده', newTunnel:'تانل جدید',
  running:'در حال اجرا', stopped:'متوقف', crafted:'ساخته‌شده توسط', keepPrivate:'این آدرس و رمز عبور را محرمانه نگه دارید',
  savedOk:'ذخیره شد ✔', failed:'ناموفق', nodeOfflineErr:'این نود آفلاین است.', timeoutErr:'نود به موقع پاسخ نداد.', removeConfirm:'نود «{n}» از مستر حذف شود؟',
@@ -4187,12 +4611,23 @@ fa:{
  modeManual:'دستی', modeLink:'از روی نودهای پنل', addLink:'اتصال نودهای پنل', addManual:'تانل دستی',
  lkServerAbroad:'نود سرور (خارج)', lkClientIran:'نود کلاینت (ایران)', lkServerIran:'نود سرور (ایران)', lkClientAbroad:'نود کلاینت (خارج)', lkNoteReverse:'Reverse روی سرور ایران گوش می‌دهد و سرور خارج به آن وصل می‌شود. پورت‌های Bridge و Sync باید در دو سمت یکسان و با هم متفاوت باشند.', lkSIp:'آدرس سرور', lkCIp:'آدرس کلاینت',
  lkNote:'کلیدها و پورت‌ها خودکار ساخته و روی هر دو نود اعمال می‌شود؛ آدرس‌ها از خود نودها می‌آید.',
+  lkNoteExtended:'نوع تانل انتخاب‌شده روی هر دو سرور نصب می‌شود. پورت تانل و سرویس همتا باید بین دو سرور باز باشد.',
  lkNoteGost:'Gost فقط نود کلاینت (ایران) را تنظیم می‌کند و پورت‌ها را به آدرس سرور فوروارد می‌کند.',
  lkCreate:'ساخت روی هر دو نود', lkNeed:'یک نود آنلاین در ایران و یک نود آنلاین در خارج لازم است.',
  lkOk:'✔ تانل روی هر دو نود ساخته شد و در حال اجراست', lkPartial:'⚠ روی هر دو نود ذخیره شد، ولی حداقل یکی هنوز اجرا نشده:', lkRolled:'سمت سرور دوباره حذف شد تا چیزی نیمه‌کاره نماند.',
  e_bad_name:'برای نام از حروف، عدد، - یا _ استفاده کنید.', e_bad_ports:'پورت‌ها باید عددی بین ۱ تا ۶۵۵۳۵ باشند.', e_ports_required:'حداقل یک پورت برای فوروارد وارد کنید.',
  e_ports_conflict:'پورت کنترل باید با پورت‌های فوروارد فرق داشته باشد (و bridge با sync).', e_bad_address:'آدرس سرور / کلاینت را بررسی کنید.', e_same_node:'دو نود متفاوت انتخاب کنید.',
- e_server_failed:'نود سرور تنظیم نشد.', e_node_not_found:'نود پیدا نشد.', e_bad_method:'پروتکل ناشناخته.'
+  e_server_failed:'نود سرور تنظیم نشد.', e_node_not_found:'نود پیدا نشد.', e_bad_method:'پروتکل ناشناخته.',
+  e_neotunnel_requires_ip:'هر دو سرور باید آی‌پی عمومی IPv4 یا IPv6 داشته باشند.', e_neotunnel_profile_exists:'این نام تانل A,S روی یکی از نودها وجود دارد. اول آن را حذف و دوباره تلاش کنید.',
+  e_neotunnel_prepare_failed:'آماده‌سازی همتای تانل روی سرور انجام نشد.', e_neotunnel_pair_failed:'سرور دوم نتوانست به همتا وصل شود.', e_neotunnel_add_failed:'ساخت تانل انجام نشد؛ اتصال همتا و تنظیمات را بررسی کنید.',
+  e_bad_neotunnel_kind:'یکی از انواع پشتیبانی‌شدهٔ تانل را انتخاب کنید.', e_bad_mtu:'MTU باید بین ۵۷۶ تا ۹۰۰۰ باشد.', e_bad_encrypt:'گزینهٔ رمزنگاری پشتیبانی نمی‌شود.', e_bad_profile:'یکی از حالت‌های lean، balanced یا max را انتخاب کنید.',
+  e_bad_forward_proto:'پروتکل فوروارد باید TCP، UDP یا هر دو باشد.', e_stream_tcp_only:'تانل‌های connection فقط TCP دارند؛ برای فوروارد آن‌ها TCP را انتخاب کنید.', e_padding_only_obfs:'Padding فقط برای Obfs فعال است.', e_lanes_require_gre:'چند مسیر هم‌زمان فقط در خانوادهٔ GRE پشتیبانی می‌شود.', e_conns_require_stream:'تعداد نشست فقط برای stream tunnel پشتیبانی می‌شود.', e_reverse_requires_stream:'جهت معکوس فقط برای stream tunnel فعال است.',
+    e_neotunnel_tunnel_exists:'این شناسه روی سرور وجود دارد؛ نام دیگری برای تانل A,S انتخاب کنید.', e_neotunnel_peer_not_paired:'همتای تانل هنوز وصل نشده است. دسترسی به پورت سرویس را بررسی و دوباره تلاش کنید.',
+    e_bad_padding:'Padding باید بین ۰ تا ۲۵۵ باشد.', e_bad_keepalive:'Keepalive باید بین منفی ۱ تا ۶۵۵۳۵ ثانیه باشد.', e_keepalive_only_encrypted_udp:'Keepalive فقط برای WireGuard و Obfs فعال است.',
+   e_bad_lanes:'تعداد GRE lane باید بین ۱ تا ۸ باشد.', e_bad_conns:'تعداد نشست stream باید بین ۱ تا ۱۶ باشد.', e_lanes_require_gre:'چند lane فقط در خانوادهٔ GRE پشتیبانی می‌شود.',
+   e_conns_require_stream:'تعداد نشست فقط برای stream tunnel فعال است.', e_reverse_requires_stream:'جهت معکوس فقط برای stream tunnel فعال است.', e_mtu_flags_unsupported:'تنظیم‌های Path MTU فقط برای SIT، IPIP، GRE، GRETAP و EoIP فعال‌اند.',
+    e_forward_requires_layer3:'فوروارد پورت برای نوع‌های لایهٔ ۳ فعال است، نه پل‌های لایهٔ ۲.', e_neotunnel_nftables_required:'فوروارد پورت و رمزگذاری IPsec اضافه به nftables (nft) روی این سرور نیاز دارد.',
+    e_neotunnel_forward_failed:'تنظیم فوروارد پورت ناموفق بود.'
 }};
 
 let LANG = localStorage.getItem('as_lang') || 'en';
@@ -4559,7 +4994,7 @@ function drawChart() {
 window.addEventListener('resize', () => { if (S.tab === 'ping') drawChart(); });
 
 /* ---- tunnels tab ---- */
-const methodLabel = m => m === 'asnative' ? 'Reverse' : m === 'assecure' ? 'A,S Secure' : m;
+const methodLabel = (m, k) => m === 'asnative' ? 'Reverse' : m === 'assecure' ? 'A,S Secure' : m === 'neotunnel' ? (k ? ({'ip6gre':'IP6GRE','ip6gretap':'IP6GRETAP','ipip6':'IPIP6','ip6ip6':'IP6IP6','l2tpv3':'L2TPv3','stream-tcp':'Stream TCP','stream-tls':'Stream TLS'}[k] || k.toUpperCase()) : 'Tunnel') : m;
 function renderTunnels() {
   const n = cur(); if (!n) return;
   $('tunNode').textContent = n.name;
@@ -4568,7 +5003,7 @@ function renderTunnels() {
   if (S.tunKey === key) return; S.tunKey = key;
   $('tunGrid').innerHTML = list.length ? list.map(x => `<div class="tcard ${x.running ? 'on' : ''}" onclick="openSlotByName('${esc(x.prof)}')">
     <div class="top"><span class="nm">${esc(x.prof)}</span><i class="dot ${x.running ? 'on' : 'off'}"></i></div>
-    <div class="meta"><span class="badge">${esc(methodLabel(x.method))}</span><span class="rb ${esc(x.role)}">${sideLabel(x.role)}</span><span class="muted" style="font-size:12px">${t(x.running ? 'running' : 'stopped')}</span></div>
+    <div class="meta"><span class="badge">${esc(methodLabel(x.method, x.kind))}</span><span class="rb ${esc(x.role)}">${sideLabel(x.role)}</span><span class="muted" style="font-size:12px">${t(x.running ? 'running' : 'stopped')}</span></div>
     <div class="btns" onclick="event.stopPropagation()">
       <button class="btn sm o-green" onclick="quick('${esc(x.prof)}','start')">▶</button>
       <button class="btn sm o-amber" onclick="quick('${esc(x.prof)}','restart')">⟳</button>
@@ -4591,6 +5026,15 @@ const ROLE_KEY_OF = {backhaul: 'BH_ROLE', rathole: 'RT_ROLE', frp: 'FRP_ROLE', p
 const T = (k, l, o = {}) => Object.assign({k, l, t: 'text'}, o);
 const SEL = (k, l, opts, o = {}) => Object.assign({k, l, t: 'select', opts}, o);
 const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'salsa20', 'blowfish', 'twofish', 'cast5', '3des', 'tea', 'xtea', 'xor', 'sm4', 'none', 'null'];
+const NEOTUNNEL_KINDS = ['sit','ipip','gre','gretap','ip6gre','ip6gretap','ipip6','ip6ip6','vxlan','geneve','l2tpv3','wireguard','obfs','tcp','eoip','stream-tcp','stream-tls'];
+const NT_ENCRYPT = ['none','aes-gcm-128','aes-gcm-256','chacha20-poly1305','auto'];
+function selectedMethod() { const v = $('methodSelect').value || 'assecure'; return v.startsWith('kind:') ? 'neotunnel' : v; }
+function selectedKind() { const v = $('methodSelect').value || ''; return v.startsWith('kind:') ? v.slice(5) : 'wireguard'; }
+function selectProtocol(method, kind) { $('methodSelect').value = method === 'neotunnel' ? 'kind:' + (kind || 'wireguard') : method; filterProtocols(); }
+function filterProtocols() {
+  const q = ($('protocolSearch').value || '').trim().toLowerCase();
+  [...$('methodSelect').options].forEach(o => { o.hidden = !!q && !o.textContent.toLowerCase().includes(q); });
+}
 /* Location keys: eu = abroad and iran = Iran; protocol roles are method-specific. */
 const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP', {full: true}), T('PEER_IP', 'Other side public IP', {full: true})];
 const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']),
@@ -4625,6 +5069,9 @@ const FIELDS = {
       SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}), SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-256)', {ph: '4', v: '4'}), T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150'}),
       T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
       T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]},
+  neotunnel: {
+    eu: [T('NT_REMOTE_IP','Remote IP',{full:true}),T('NT_PORT','Tunnel port',{ph:'20000'}),T('NT_PEER_KEY','WireGuard peer public key',{full:true}),T('NT_MTU','MTU (576-9000)'),SEL('NT_ENCRYPT','Additional encryption',NT_ENCRYPT,{v:'none'}),SEL('NT_PROFILE','Speed profile',['balanced','lean','max'],{v:'balanced'}),T('NT_KEEPALIVE','Keepalive (seconds)',{ph:'25'}),T('NT_PADDING','Obfs padding (0-255)',{ph:'0'}),T('NT_FORWARD_PORTS','Forward ports (CSV)',{full:true,ph:'443,8080'}),SEL('NT_FORWARD_PROTO','Forward protocol',['both','tcp','udp'],{v:'both'}),SEL('NT_MTU_PROBE','Probe path MTU',['false','true'],{v:'false'}),SEL('NT_NO_PMTUD','Disable PMTU discovery',['false','true'],{v:'false'})],
+    iran: [T('NT_REMOTE_IP','Remote IP',{full:true}),T('NT_PORT','Tunnel port',{ph:'20000'}),T('NT_PEER_KEY','WireGuard peer public key',{full:true}),T('NT_MTU','MTU (576-9000)'),SEL('NT_ENCRYPT','Additional encryption',NT_ENCRYPT,{v:'none'}),SEL('NT_PROFILE','Speed profile',['balanced','lean','max'],{v:'balanced'}),T('NT_KEEPALIVE','Keepalive (seconds)',{ph:'25'}),T('NT_PADDING','Obfs padding (0-255)',{ph:'0'}),T('NT_FORWARD_PORTS','Forward ports (CSV)',{full:true,ph:'443,8080'}),SEL('NT_FORWARD_PROTO','Forward protocol',['both','tcp','udp'],{v:'both'}),SEL('NT_MTU_PROBE','Probe path MTU',['false','true'],{v:'false'}),SEL('NT_NO_PMTUD','Disable PMTU discovery',['false','true'],{v:'false'})]},
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
@@ -4637,6 +5084,7 @@ const LINK_PARAMS = {
   assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true})],
   paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
     T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true})],
+  neotunnel: [T('port','Tunnel port',{rand:1}),T('mtu','MTU (576-9000)'),SEL('encrypt','Additional encryption',NT_ENCRYPT,{v:'none'}),SEL('profile','Speed profile',['balanced','lean','max'],{v:'balanced'}),T('keepalive','Keepalive seconds',{ph:'25'}),T('padding','Obfs padding (0-255)',{ph:'0'}),T('lanes','GRE lanes (1-8)',{ph:'1'}),T('conns','Stream sessions (1-16)',{ph:'4'}),SEL('mtu_probe','Probe path MTU',['false','true'],{v:'false'}),SEL('no_pmtud','Disable PMTU discovery',['false','true'],{v:'false'}),SEL('reverse','Reverse stream direction',['false','true'],{v:'false'}),T('forward_ports','Forward ports on server (CSV)',{full:true,ph:'443,8080'}),SEL('forward_proto','Forward protocol',['both','tcp','udp'],{v:'both'})],
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
@@ -4654,7 +5102,7 @@ function openSlot(existing, mode) {
   paintStatus(existing ? !!existing.running : false, !!existing);
   setMsg('', ''); $('lkSteps').innerHTML = ''; mTab('config');
   const nm = $('nameInput'); nm.value = existing ? existing.prof : ''; nm.disabled = !!existing;
-  $('methodSelect').value = existing ? existing.method : 'assecure';
+  selectProtocol(existing ? existing.method : 'assecure', existing ? 'wireguard' : '');
   setRole(existing ? existing.role : (cur().role || 'eu'));
   $('rcToggle').checked = false; $('rcHours').value = '';
   setMode(CURRENT.mode);
@@ -4662,7 +5110,7 @@ function openSlot(existing, mode) {
   if (existing) {
     napi('/slots/' + encodeURIComponent(existing.prof)).then(d => {
       if (target !== S.sel || !CURRENT || CURRENT.prof !== existing.prof) return;
-      if (d.role) { setRole(d.role); renderFields(); }
+      if (d.role) { setRole(d.role); if (d.method === 'neotunnel' && d.fields?.NT_KIND) selectProtocol('neotunnel', d.fields.NT_KIND); renderFields(); }
       if (d.fields) fillFields(d.fields);
       if (d.restart_hours) { $('rcToggle').checked = true; $('rcHours').value = d.restart_hours; }
     }).catch(() => {});
@@ -4678,7 +5126,7 @@ function setMode(mode) {
   if (mode === 'manual') renderFields(); else initLink();
 }
 function onMethodChange() { if (!CURRENT) return; if (CURRENT.mode === 'link') initLink(); else renderFields(); }
-function fieldDefsFor() { const m = $('methodSelect').value, role = $('roleSelect').value; return (FIELDS[m] || {})[role] || []; }
+function fieldDefsFor() { const m = selectedMethod(), role = $('roleSelect').value; return (FIELDS[m] || {})[role] || []; }
 function inputHtml(f, prefix) {
   const id = prefix + f.k;
   if (f.t === 'select') return '<select class="mono" id="' + id + '">' + f.opts.map(o => '<option value="' + o + '">' + o + '</option>').join('') + '</select>';
@@ -4698,7 +5146,7 @@ function renderFields() {
 /* ---- link two nodes from the panel ---- */
 function onlineNodes() { return S.nodes.filter(n => n.online); }
 function initLink() {
-  const nodes = onlineNodes(), method = $('methodSelect').value;
+  const nodes = onlineNodes(), method = selectedMethod();
   const reverse = ['asnative', 'backhaul', 'rathole'].includes(method);
   const serverRole = reverse ? 'iran' : 'eu', clientRole = reverse ? 'eu' : 'iran';
   const serverNodes = nodes.filter(n => n.role === serverRole), clientNodes = nodes.filter(n => n.role === clientRole);
@@ -4724,25 +5172,27 @@ function lkNodeChanged() {
   $('lkSIp').value = sv ? (sv.public_ip || '') : ''; $('lkCIp').value = cl ? (cl.public_ip || '') : '';
 }
 function renderLinkParams() {
-  const m = $('methodSelect').value, box = $('lkParams'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
+  const m = selectedMethod(), box = $('lkParams'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
   (LINK_PARAMS[m] || []).forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'lk_'); grid.appendChild(w);
     const el = $('lk_' + f.k); if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
   });
   const reverse = ['asnative', 'backhaul', 'rathole'].includes(m);
-  const noteKey = m === 'gost' ? 'lkNoteGost' : (reverse ? 'lkNoteReverse' : 'lkNote');
+  const noteKey = m === 'gost' ? 'lkNoteGost' : (m === 'neotunnel' ? 'lkNoteExtended' : (reverse ? 'lkNoteReverse' : 'lkNote'));
   $('lkNote').dataset.i = noteKey; $('lkNote').textContent = t(noteKey);
 }
 function linkParams() {
-  const out = {}; (LINK_PARAMS[$('methodSelect').value] || []).forEach(f => { const el = $('lk_' + f.k); if (el && el.value.trim() !== '') out[f.k] = el.value.trim(); });
+  const method = selectedMethod(), out = {}; (LINK_PARAMS[method] || []).forEach(f => { const el = $('lk_' + f.k); if (el && el.value.trim() !== '') out[f.k] = el.value.trim(); });
+  if (method === 'neotunnel') out.kind = selectedKind();
   return out;
 }
 async function createLink() {
-  const name = cleanName($('nameInput').value), server = $('lkServer').value, client = $('lkClient').value, method = $('methodSelect').value;
+  const name = cleanName($('nameInput').value), server = $('lkServer').value, client = $('lkClient').value, method = selectedMethod();
   if (!name) { setMsg(t('enterName'), 'err'); return; }
   if (!server || !client || server === client) { setMsg(t('pickDiff'), 'err'); return; }
   const has = id => ((S.nodes.find(n => n.id === id) || {}).tunnels || []).some(x => x.prof === name);
+  if (method === 'neotunnel' && (has(server) || has(client))) { setMsg(t('e_neotunnel_profile_exists'), 'err'); return; }
   if ((has(server) || has(client)) && !confirm(t('overwrite', {n: name}))) return;
   const btn = $('lkBtn'); btn.disabled = true; setMsg('⏳ …', ''); $('lkSteps').innerHTML = '';
   try {
@@ -4759,7 +5209,8 @@ async function createLink() {
 function fillFields(fields) { Object.keys(fields).forEach(k => { const el = $('f_' + k); if (el) el.value = fields[k]; }); }
 function collectFields() {
   const out = {}; fieldDefsFor().forEach(f => { const el = $('f_' + f.k); if (el && el.value !== '') out[f.k] = el.value; });
-  const method = $('methodSelect').value, rk = ROLE_KEY_OF[method];
+  const method = selectedMethod(), rk = ROLE_KEY_OF[method];
+  if (method === 'neotunnel') out.NT_KIND = selectedKind();
   if (rk) {
     const side = $('roleSelect').value;
     const serverHere = ['backhaul', 'rathole'].includes(method) ? side === 'iran' : side === 'eu';
@@ -4782,7 +5233,7 @@ async function refreshSlotState() {
   if (d && !d.error) { paintStatus(!!d.running); return d; } return null;
 }
 async function saveSlot() {
-  const method = $('methodSelect').value, role = $('roleSelect').value, fields = collectFields();
+  const method = selectedMethod(), role = $('roleSelect').value, fields = collectFields();
   if (CURRENT.isNew) {
     const nm = cleanName($('nameInput').value);
     if (!nm) { setMsg(t('enterName'), 'err'); return; }
@@ -4846,6 +5297,7 @@ async function refreshLog(force) {
 function applyLang() {
   document.documentElement.lang = LANG; document.documentElement.dir = LANG === 'fa' ? 'rtl' : 'ltr';
   document.querySelectorAll('[data-i]').forEach(e => { e.textContent = t(e.dataset.i); });
+  $('protocolSearch').placeholder = t('protocolSearchHint');
   $('lgEn').classList.toggle('on', LANG === 'en'); $('lgFa').classList.toggle('on', LANG === 'fa');
   document.title = t('appTitle');
   S.barKey = ''; S.tunKey = ''; S.spKey = ''; S.pgKey = '';
@@ -5525,30 +5977,34 @@ valid_prof(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; }
 
 api_list(){
   echo "["
-  local first=1 prof m running role sessions s f k v
+  local first=1 prof m running role sessions s f k v nt_name nt_kind extra
   # Calling screen -ls once per profile made the panel list crawl as tunnels
   # accumulated. Take one snapshot and use it for every screen-managed tunnel.
   sessions="$(screen -ls 2>/dev/null || true)"
   while IFS= read -r prof; do
     [[ -n "$prof" ]] || continue
-    m="asnative"; role="iran"; f="$CONF/${prof}.env"
+    m="asnative"; role="iran"; nt_name=""; nt_kind=""; f="$CONF/${prof}.env"
     [[ -f "$f" ]] || continue
     # Read the two display fields with Bash builtins instead of spawning grep
     # and cut twice for every tunnel in the panel's list refresh.
     while IFS='=' read -r k v; do
-      case "$k" in METHOD) m="${v:-asnative}" ;; ROLE) role="${v:-iran}" ;; esac
+      case "$k" in METHOD) m="${v:-asnative}" ;; ROLE) role="${v:-iran}" ;; NT_TUNNEL_NAME) nt_name="$v" ;; NT_KIND) nt_kind="$v" ;; esac
     done < "$f"
     running=false
     if [[ "$m" == "gre" ]]; then
       ip link show "$(gre_ifname "$prof")" >/dev/null 2>&1 && running=true
+    elif [[ "$m" == "neotunnel" ]]; then
+      [[ -n "$nt_name" ]] && neotunnel_tunnel_running "$nt_name" && running=true
     else
       s="$(session_name "$prof")"
       grep -Eq "\\.${s}[[:space:]]" <<<"$sessions" && running=true
     fi
     [[ $first -eq 1 ]] || echo ","
     first=0
-    printf '{%s,%s,%s,"running":%s}' "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
-      "$(api_json_field method "$m")" "$running"
+    extra=""
+    [[ "$m" == "neotunnel" && -n "$nt_kind" ]] && extra=",$(api_json_field kind "$nt_kind")"
+    printf '{%s,%s,%s,"running":%s%s}' "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
+      "$(api_json_field method "$m")" "$running" "$extra"
   done < <(list_profiles)
   echo ""; echo "]"
 }
@@ -5578,7 +6034,7 @@ api_get(){
 }
 
 api_save(){
-  local prof f role
+  local prof f role register_only
   prof="$1"
   f="$CONF/${prof}.env"
   valid_prof "$prof" || { echo '{"error":"bad_slot"}'; return 1; }
@@ -5588,6 +6044,11 @@ api_save(){
   [[ -n "$method" ]] || { echo '{"error":"missing_method"}'; return 1; }
   role="$(printf '%s' "$body" | jq -r '.role // empty' 2>/dev/null)"
   [[ "$role" == "eu" || "$role" == "iran" ]] || role="iran"
+  register_only="$(printf '%s' "$body" | jq -r '.fields.NT_REGISTER_ONLY // false' 2>/dev/null)"
+  if [[ "$method" == "neotunnel" && "$register_only" != "true" && ! "$prof" =~ ^[a-z0-9][a-z0-9-]{0,9}$ ]]; then
+    echo '{"error":"neotunnel_name_must_be_1_to_10_lowercase_letters_digits_or_hyphens"}'
+    return 1
+  fi
 
   local allowed=""
   case "$method" in
@@ -5599,6 +6060,7 @@ api_save(){
     assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS" ;;
     gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
     paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC" ;;
+    neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_LANES NT_CONNS NT_REVERSE NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
   esac
 
@@ -5608,9 +6070,14 @@ api_save(){
     local k v
     for k in $allowed; do
       v="$(printf '%s' "$body" | jq -r --arg k "$k" '.fields[$k] // empty' 2>/dev/null)"
+      if [[ "$method" == "neotunnel" && "$k" == "NT_TUNNEL_NAME" && -z "$v" && "$register_only" != "true" ]]; then v="$prof"; fi
       [[ -n "$v" ]] || continue
       printf '%s=%q\n' "$k" "$v"   # %q: safely shell-quoted, so later `source` can never execute injected input
     done
+    if [[ "$method" == "neotunnel" ]]; then
+      grep -q '^NT_MODE=' "$f" || echo 'NT_MODE=remote'
+      grep -q '^NT_ROLE=' "$f" || echo 'NT_ROLE=owner'
+    fi
   } > "$f"
 
   if [[ "$method" == "gre" ]] && ! grep -q '^SELF_TUN_IP=' "$f"; then
@@ -5620,6 +6087,11 @@ api_save(){
   chmod 600 "$f"
 
   local log ok running
+  if [[ "$method" == "neotunnel" && "$register_only" == "true" ]]; then
+    running=false; is_running "$prof" && running=true
+    printf '{"ok":true,"saved":true,"running":%s}\n' "$running"
+    return 0
+  fi
   log="$(run_slot "$prof" 2>&1)" && ok=0 || ok=$?
   running=false; if is_running "$prof"; then running=true; fi
   # "saved":true — the config is on disk no matter whether the start succeeded
@@ -5661,13 +6133,15 @@ api_logs(){
   m="$(get_method "$prof")"
   lf="$(log_file "$prof")"
   out=""
-  if [[ "$m" == "gre" ]]; then
+  if [[ "$m" == "neotunnel" ]]; then
+    out="$(journalctl -u neotunnel -n "$n" --no-pager 2>&1 || true)"
+  elif [[ "$m" == "gre" ]]; then
     out="$(ip -s link show "$(gre_ifname "$prof")" 2>&1 || true)"
   fi
   if [[ -f "$lf" ]]; then
     if [[ -n "$out" ]]; then out+=$'\n\n'; fi
     out+="$(tail -n "$n" "$lf" 2>/dev/null || true)"
-  elif [[ "$m" != "gre" ]]; then
+  elif [[ "$m" != "gre" && "$m" != "neotunnel" ]]; then
     sn="$(session_name "$prof")"; tmpf="$(mktemp)"
     screen -S "$sn" -X hardcopy "$tmpf" >/dev/null 2>&1 || true
     out="$(cat "$tmpf" 2>/dev/null || true)"
@@ -5790,6 +6264,7 @@ if [[ "${1:-}" == "--api" ]]; then
     bulk)     api_bulk "${1:-}" ;;
     nodeinfo) api_nodeinfo ;;
     selfupdate) api_selfupdate ;;
+    neotunnel) api_neotunnel ;;
     *) echo '{"error":"unknown_command"}' ;;
   esac
   exit 0
