@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.8"
+VERSION="4.2.9"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -37,7 +37,7 @@ LOG_DIR="/var/log/A,S"
 
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
-PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE"
+PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS LOCAL_ADDR SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE"
 
 NEOTUNNEL_BIN="/usr/local/bin/neotunnel"
 NEOTUNNEL_STATE="/etc/neotunnel/state.json"
@@ -784,6 +784,78 @@ tunnel_host_port(){
   [[ "$host" == *:* && "$host" != \[*\] ]] && host="[$host]"
   printf '%s:%s' "$host" "$port"
 }
+tunnel_local_target_host(){
+  local port="$1" proto="${2:-tcp}" preferred="${3:-${LOCAL_ADDR:-auto}}" host
+  if [[ -n "$preferred" && "$preferred" != "auto" ]]; then
+    host="$preferred"
+    [[ "$host" == \[*\] ]] && host="${host:1:${#host}-2}"
+    tunnel_valid_host "$host" || return 1
+    printf '%s' "$host"
+    return 0
+  fi
+  # Prefer IPv6 loopback when the service is reachable there and IPv4 is
+  # either unavailable or captured by a local tunnel DNAT rule. This avoids
+  # sending a local tunnel dial to a different peer on the same TCP port.
+  python3 - "$port" "$proto" <<'PYLOCALHOST'
+import re, socket, subprocess, sys
+port, proto = int(sys.argv[1]), sys.argv[2]
+
+def tcp_open(family, address):
+    sock = socket.socket(family, socket.SOCK_STREAM)
+    sock.settimeout(0.45)
+    try:
+        sock.connect((address, port))
+        return True
+    except OSError:
+        return False
+    finally:
+        sock.close()
+
+def udp_bound(family):
+    flag = '-6' if family == socket.AF_INET6 else '-4'
+    try:
+        out = subprocess.run(['ss', '-H', '-lun', flag, f'sport = :{port}'],
+                             capture_output=True, text=True, timeout=1).stdout
+        return bool(out.strip())
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+nat_redirect = False
+try:
+    rules = subprocess.run(['nft', 'list', 'ruleset'], capture_output=True,
+                           text=True, timeout=2).stdout
+    for line in rules.splitlines():
+        if 'fib daddr type local' not in line or 'dnat' not in line or f'{proto} dport' not in line:
+            continue
+        tail = line.split(f'{proto} dport', 1)[1]
+        if re.search(r'(?<!\d)' + re.escape(str(port)) + r'(?!\d)', tail):
+            nat_redirect = True
+            break
+except (OSError, subprocess.TimeoutExpired):
+    pass
+
+if proto == 'udp':
+    v4 = udp_bound(socket.AF_INET)
+    v6 = udp_bound(socket.AF_INET6)
+else:
+    v4 = tcp_open(socket.AF_INET, '127.0.0.1')
+    v6 = tcp_open(socket.AF_INET6, '::1')
+
+if v6 and (not v4 or nat_redirect):
+    print('::1')
+elif v4:
+    print('127.0.0.1')
+elif v6:
+    print('::1')
+else:
+    print('127.0.0.1')
+PYLOCALHOST
+}
+tunnel_local_target_addr(){
+  local port="$1" proto="${2:-tcp}" host
+  host="$(tunnel_local_target_host "$port" "$proto" "${3:-${LOCAL_ADDR:-auto}}")" || return 1
+  tunnel_host_port "$host" "$port"
+}
 tunnel_valid_ipv4(){
   local ip="$1" octet; local -a octets=()
   [[ "$ip" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || return 1
@@ -863,9 +935,15 @@ write_backhaul_config(){
   load_profile "$prof"
   backhaul_validate_profile "$prof" || return 1
   if [[ "$BH_ROLE" == "server" ]]; then
-    local lines="" p
+    local lines="" p target local_target_host
     while IFS= read -r p; do
-      [[ -n "$p" ]] && lines+="  \"${p}=${p}\",\n"
+      [[ -n "$p" ]] || continue
+      local_target_host="${LOCAL_ADDR:-127.0.0.1}"
+      [[ -n "$local_target_host" && "$local_target_host" != auto ]] || local_target_host=127.0.0.1
+      [[ "$local_target_host" == \[*\] ]] && local_target_host="${local_target_host:1:${#local_target_host}-2}"
+      tunnel_valid_host "$local_target_host" || { echo "[-] Backhaul: invalid client local target address." > "$TTY_OUT"; return 1; }
+      target="$(tunnel_host_port "$local_target_host" "$p")"
+      lines+="  \"${p}=${target}\",\n"
     done < <(csv_ports_to_array "$FORWARD_PORTS")
     cat > "$cfg" <<EOF
 [server]
@@ -912,7 +990,7 @@ rathole_validate_profile(){
 }
 
 write_rathole_config(){
-  local prof cfg tmp p remote
+  local prof cfg tmp p remote local_target
   prof="$1"; cfg="$CONF/${prof}.toml"
   rathole_validate_profile "$prof" || return 1
   # Rathole watches this file for hot reload. Build the complete TOML beside
@@ -935,7 +1013,8 @@ write_rathole_config(){
       while IFS= read -r p; do
         [[ -n "$p" ]] || continue
         echo ""; echo "[client.services.svc${p}]"; echo 'type = "tcp"'
-        printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "127.0.0.1:%s"\n' "$p"
+        local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}")" || { rm -f -- "$tmp"; echo "[-] Rathole: invalid local target address." > "$TTY_OUT"; return 1; }
+        printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "%s"\n' "$local_target"
       done < <(csv_ports_to_array "$FORWARD_PORTS")
     } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   fi
@@ -944,7 +1023,7 @@ write_rathole_config(){
 }
 
 write_frp_config(){
-  local prof cfg p
+  local prof cfg p local_target_host
   prof="$1"
   cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
@@ -972,12 +1051,13 @@ EOF
     local p
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
+      local_target_host="$(tunnel_local_target_host "$p" tcp "${LOCAL_ADDR:-auto}")" || { echo "[-] FRP: invalid local target address." > "$TTY_OUT"; return 1; }
       cat >> "$cfg" <<EOF
 
 [[proxies]]
 name = "p${p}"
 type = "tcp"
-localIP = "127.0.0.1"
+localIP = "${local_target_host}"
 localPort = ${p}
 remotePort = ${p}
 EOF
@@ -987,7 +1067,7 @@ EOF
 }
 
 write_assecure_config(){
-  local prof cfg cert key ca p seen_ports
+  local prof cfg cert key ca p seen_ports local_target_host
   prof="$1"; cfg="$CONF/${prof}.toml"
   load_profile "$prof"
   if [[ -z "${AS_ROLE:-}" ]]; then [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
@@ -1033,8 +1113,14 @@ write_assecure_config(){
       printf 'transport.protocol = "%s"\n' "$AS_TRANSPORT"
       echo 'transport.wireProtocol = "v2"'; echo 'transport.tls.enable = true'
       printf 'transport.tls.trustedCaFile = "%s"\n' "$ca"; printf 'transport.tls.serverName = "%s"\n' "$AS_SERVER_NAME"
-      for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}"); do printf '\n[[proxies]]\nname = "tcp_%s"\ntype = "tcp"\nlocalIP = "127.0.0.1"\nlocalPort = %s\nremotePort = %s\n' "$p" "$p" "$p"; done
-      for p in $(csv_ports_to_array "${AS_UDP_PORTS:-}"); do printf '\n[[proxies]]\nname = "udp_%s"\ntype = "udp"\nlocalIP = "127.0.0.1"\nlocalPort = %s\nremotePort = %s\n' "$p" "$p" "$p"; done
+      for p in $(csv_ports_to_array "${AS_TCP_PORTS:-}"); do
+        local_target_host="$(tunnel_local_target_host "$p" tcp "${LOCAL_ADDR:-auto}")" || return 1
+        printf '\n[[proxies]]\nname = "tcp_%s"\ntype = "tcp"\nlocalIP = "%s"\nlocalPort = %s\nremotePort = %s\n' "$p" "$local_target_host" "$p" "$p"
+      done
+      for p in $(csv_ports_to_array "${AS_UDP_PORTS:-}"); do
+        local_target_host="$(tunnel_local_target_host "$p" udp "${LOCAL_ADDR:-auto}")" || return 1
+        printf '\n[[proxies]]\nname = "udp_%s"\ntype = "udp"\nlocalIP = "%s"\nlocalPort = %s\nremotePort = %s\n' "$p" "$local_target_host" "$p" "$p"
+      done
     } > "$cfg"
   fi
   chmod 600 "$cfg"
@@ -1165,7 +1251,7 @@ install_paqet(){
 }
 
 write_paqet_config(){
-  local prof cfg mode conn mtu block mac p
+  local prof cfg mode conn mtu block mac p local_target
   prof="$1"
   cfg="$CONF/${prof}.yaml"
   load_profile "$prof"
@@ -1200,13 +1286,15 @@ write_paqet_config(){
       if [[ -n "$FORWARD_PORTS$FORWARD_UDP_PORTS" ]]; then
         echo "forward:"
         for p in $(csv_ports_to_array "$FORWARD_PORTS"); do
+          local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}")" || return 1
           echo "  - listen: \"0.0.0.0:${p}\""
-          echo "    target: \"127.0.0.1:${p}\""
+          echo "    target: \"${local_target}\""
           echo "    protocol: \"tcp\""
         done
         for p in $(csv_ports_to_array "$FORWARD_UDP_PORTS"); do
+          local_target="$(tunnel_local_target_addr "$p" udp "${LOCAL_ADDR:-auto}")" || return 1
           echo "  - listen: \"0.0.0.0:${p}\""
-          echo "    target: \"127.0.0.1:${p}\""
+          echo "    target: \"${local_target}\""
           echo "    protocol: \"udp\""
         done
       fi
@@ -3186,6 +3274,8 @@ def linked_profile_pair_matches(method, left, right):
             "assecure": ("TOKEN", "AS_TRANSPORT", "BIND_PORT", "AS_TCP_PORTS", "AS_UDP_PORTS"),
             "paqet": ("SECRET_KEY", "SERVER_PORT", "KCP_MODE", "BLOCK"),
         }[method]
+        if lf.get("LOCAL_ADDR", "auto") != rf.get("LOCAL_ADDR", "auto"):
+            return False
         return all(lf.get(k) not in (None, "") and lf.get(k) == rf.get(k) for k in keys)
     if method == "asnative":
         return (left.get("role") != right.get("role") and
@@ -3433,6 +3523,11 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
     """Fields for the selected protocol server and client; geography is method-dependent.
     The server value may be None when only one end needs configuring (gost)."""
     key = secrets.token_hex(16)  # shared secret, never typed by hand
+    local_addr = str(p.get("local_addr") or "auto").strip()
+    if local_addr.startswith("[") and local_addr.endswith("]"):
+        local_addr = local_addr[1:-1]
+    if local_addr != "auto" and not asnode.valid_host(local_addr):
+        raise ValueError("bad_local_address")
     fwd = _ports_csv(p.get("forward_ports"))
     fwd_list = fwd.split(",") if fwd else []
     if method == "asnative":
@@ -3610,18 +3705,19 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         tr = p.get("transport") or "tcp"
         if tr not in ("tcp", "ws"):
             raise ValueError("bad_transport")
-        return ({"BH_ROLE": "server", "TOKEN": key, "TRANSPORT": tr, "BIND_PORT": port, "FORWARD_PORTS": fwd},
-                {"BH_ROLE": "client", "TOKEN": key, "TRANSPORT": tr, "SERVER_IP": sip, "BIND_PORT": port})
+        bh_local_addr = "127.0.0.1" if local_addr == "auto" else local_addr
+        return ({"BH_ROLE": "server", "TOKEN": key, "TRANSPORT": tr, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": bh_local_addr},
+                {"BH_ROLE": "client", "TOKEN": key, "TRANSPORT": tr, "SERVER_IP": sip, "BIND_PORT": port, "LOCAL_ADDR": bh_local_addr})
     if method == "rathole":
         if not fwd:
             raise ValueError("ports_required")
-        return ({"RT_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd},
-                {"RT_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd})
+        return ({"RT_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr},
+                {"RT_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr})
     if method == "frp":
         if not fwd:
             raise ValueError("ports_required")
-        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd},
-                {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd})
+        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr},
+                {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr})
     if method == "assecure":
         tcp = _ports_csv(p.get("forward_ports"))
         udp = _ports_csv(p.get("forward_udp_ports"))
@@ -3634,7 +3730,7 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             raise ValueError("ports_conflict")
         cert, private_key = _make_assecure_cert(sip)
         common = {"TOKEN": secrets.token_urlsafe(32), "AS_TRANSPORT": transport, "BIND_PORT": control,
-                  "AS_TCP_PORTS": tcp, "AS_UDP_PORTS": udp}
+                  "AS_TCP_PORTS": tcp, "AS_UDP_PORTS": udp, "LOCAL_ADDR": local_addr}
         server_fields = dict(common, AS_ROLE="server", AS_CERT_B64=cert, AS_KEY_B64=private_key)
         client_fields = dict(common, AS_ROLE="client", SERVER_IP=sip, AS_SERVER_NAME=sip, AS_CA_B64=cert,
                              AS_TCP_PORTS=tcp, AS_UDP_PORTS=udp)
@@ -3658,7 +3754,7 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         if str(port) in set(fwd.split(",") + udp.split(",")):
             raise ValueError("ports_conflict")
         common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": mode, "BLOCK": block,
-                  "CONN": _port(p.get("conn"), 4, 1, 256), "MTU": _port(p.get("mtu"), 1150, 50, 1500)}
+                  "CONN": _port(p.get("conn"), 4, 1, 256), "MTU": _port(p.get("mtu"), 1150, 50, 1500), "LOCAL_ADDR": local_addr}
         client = dict(common, PQ_ROLE="client", SERVER_IP=sip)
         if fwd:
             client["FORWARD_PORTS"] = fwd
@@ -5662,20 +5758,20 @@ const FIELDS = {
       SEL('AUTO_SYNC', 'Auto-sync ports from the abroad side', ['true', 'false']), T('PORTS', 'Manual ports CSV (when auto-sync is false)', {full: true})]},
   backhaul: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port')],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Client local target host (127.0.0.1 or ::1)', {full: true, v: '127.0.0.1'})]},
   rathole: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
-      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true})],
+      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true})]},
   frp: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)')],
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', 'Control port (of the server)'),
-      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
+      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})]},
   assecure: {
     eu: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('BIND_PORT', 'Control port (TCP; QUIC also uses UDP)', {ph: '24000'}),
       T('AS_TCP_PORTS', 'Allowed TCP ports (CSV)', {full: true}), T('AS_UDP_PORTS', 'Allowed UDP ports (CSV)', {full: true}), T('AS_CERT_B64', 'Server certificate (base64)', {full: true}), T('AS_KEY_B64', 'Server private key (base64)', {full: true})],
     iran: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('SERVER_IP', 'Abroad server address'), T('BIND_PORT', 'Server control port'), T('AS_SERVER_NAME', 'TLS server name'),
-      T('AS_CA_B64', 'Pinned server CA certificate (base64)', {full: true}), T('AS_TCP_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('AS_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true})]},
+      T('AS_CA_B64', 'Pinned server CA certificate (base64)', {full: true}), T('AS_TCP_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('AS_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})]},
   gre: {eu: GRE_FIELDS, iran: GRE_FIELDS},
   gost: {eu: GOST_FIELDS, iran: GOST_FIELDS},
   paqet: {
@@ -5684,19 +5780,19 @@ const FIELDS = {
     iran: [T('SERVER_IP', 'Abroad server IP'), T('SERVER_PORT', 'Tunnel port (of the server)', {ph: '8888', v: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
       SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}), SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-256)', {ph: '4', v: '4'}), T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150'}),
       T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
-      T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]},
+      T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'}), T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]},
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
   asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'})],
-  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
-  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'})],
-  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
+  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Client local target host (127.0.0.1 or ::1)', {full: true, v: '127.0.0.1'})],
+  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
   gre: [],
   gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp'])],
-  assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true})],
+  assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
   paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
-    T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true})],
+    T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
@@ -6741,13 +6837,13 @@ api_save(){
   local allowed=""
   case "$method" in
     asnative) allowed="IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS" ;;
-    backhaul) allowed="BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP" ;;
-    rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS SERVER_IP" ;;
+    backhaul) allowed="BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP LOCAL_ADDR" ;;
+    rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS SERVER_IP LOCAL_ADDR" ;;
     gre)      allowed="LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP" ;;
-    frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS" ;;
-    assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS" ;;
+    frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS LOCAL_ADDR" ;;
+    assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS LOCAL_ADDR" ;;
     gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
-    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC" ;;
+    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOCAL_ADDR" ;;
     neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
   esac
