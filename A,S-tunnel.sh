@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.3"
+VERSION="4.2.4"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -1434,7 +1434,7 @@ api_neotunnel(){
       vni="$(jq -r '.vni // empty' <<<"$body")"; tunnel_id="$(jq -r '.tunnel_id // empty' <<<"$body")"; pool4="$(jq -r '.pool4 // empty' <<<"$body")"; pool6="$(jq -r '.pool6 // empty' <<<"$body")"
       encrypt="$(jq -r '.encrypt // empty' <<<"$body")"; profile="$(jq -r '.profile // empty' <<<"$body")"; sni="$(jq -r '.sni // empty' <<<"$body")"
       keepalive="$(jq -r '.keepalive // empty' <<<"$body")"; padding="$(jq -r '.padding // empty' <<<"$body")"; lanes="$(jq -r '.lanes // empty' <<<"$body")"; conns="$(jq -r '.conns // empty' <<<"$body")"
-      forward_ports="$(jq -r '.forward_ports // empty' <<<"$body")"; forward_proto="$(jq -r '.forward_proto // both' <<<"$body")"
+      forward_ports="$(jq -r '.forward_ports // empty' <<<"$body")"; forward_proto="$(jq -r '.forward_proto // "both"' <<<"$body")"
       [[ "$nt_name" =~ ^[a-z0-9][a-z0-9-]{0,9}$ && "$peer_name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { echo '{"ok":false,"error":"bad_neotunnel_name"}'; return 0; }
       [[ "$kind" =~ ^(sit|ipip|gre|gretap|ip6gre|ip6gretap|ipip6|ip6ip6|vxlan|geneve|l2tpv3|wireguard|obfs|tcp|eoip|stream-tcp|stream-tls)$ ]] || { echo '{"ok":false,"error":"bad_neotunnel_kind"}'; return 0; }
       if [[ -n "$port" ]]; then
@@ -2347,7 +2347,9 @@ def run_api(args, stdin_data=None, timeout=180):
         return {"error": str(e)}
     out = (p.stdout or "").strip()
     if not out:
-        return {"error": "empty_response", "stderr": (p.stderr or "")[-500:]}
+        return {"error": "empty_response", "exit_code": p.returncode,
+                "stderr": (p.stderr or "")[-1200:],
+                "hint": "The tunnel command returned no JSON; check the node service log for its exit reason."}
     try:
         return json.loads(out)
     except ValueError:
@@ -3581,8 +3583,15 @@ def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfield
     def record(side, nid, label, role, result):
         result = result if isinstance(result, dict) else {"error": "bad_result"}
         ok = result.get("ok") is True
+        detail = result.get("log") or result.get("detail") or result.get("stderr") or result.get("raw") or ""
+        if result.get("error") == "empty_response":
+            detail = detail or result.get("hint") or "No stderr output was returned."
+            detail = "empty_response (exit %s)%s%s" % (
+                result.get("exit_code", "unknown"), ": " if detail else "", str(detail))
+        else:
+            detail = detail or result.get("error") or ""
         step = {"side": side, "role": role, "node": label, "node_id": nid,
-                "saved": ok, "running": ok, "error": "" if ok else str(result.get("log") or result.get("detail") or result.get("error") or "")[-600:]}
+                "saved": ok, "running": ok, "error": "" if ok else str(detail)[-1000:]}
         steps.append(step)
         return ok, result
 
@@ -4305,14 +4314,37 @@ td{padding:13px 12px;border-bottom:1px solid rgba(255,255,255,.05);vertical-alig
 tr:last-child td{border-bottom:0}
 td .nm{font-weight:700}
 
-/* tunnels */
-.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}
-.tcard{padding:16px 18px;border-radius:18px;cursor:pointer;border:1px solid rgba(255,255,255,.08);background:rgba(255,255,255,.03);transition:transform .15s,border-color .15s}
-.tcard:hover{transform:translateY(-2px);border-color:color-mix(in srgb,var(--accent) 55%,transparent)}
-.tcard.on{border-color:color-mix(in srgb,var(--green) 40%,transparent)}
-.tcard .top{display:flex;justify-content:space-between;align-items:center;gap:10px}
-.tcard .nm{font-weight:700;font-size:16px;word-break:break-all}
-.tcard .meta{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0 14px;align-items:center}
+/* tunnels: compact, filterable cards; no image requests or heavy animations */
+.tun-summary{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;margin:16px 0}
+.tun-stat{min-width:0;padding:13px 15px;border:1px solid rgba(255,255,255,.08);border-radius:15px;background:rgba(255,255,255,.025)}
+.tun-stat .k{font-size:11px;color:var(--dim);letter-spacing:.04em;text-transform:uppercase}
+.tun-stat .v{font:700 21px/1.3 var(--mono);margin-top:4px;color:var(--txt)}
+.tun-stat.up .v{color:var(--green)}.tun-stat.down .v{color:var(--red)}.tun-stat.kind .v{color:var(--accent2)}
+.tun-controls{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin:16px 0}
+.tun-search{position:relative;display:flex;align-items:center;gap:9px;min-width:min(100%,260px);flex:1;max-width:390px}
+.tun-search .glass{font-size:18px;color:var(--accent2)}.tun-search input{padding:10px 12px;border-radius:12px}
+.tun-filters{display:flex;gap:6px;flex-wrap:wrap}
+.tun-filter{display:inline-flex;align-items:center;gap:7px;padding:8px 11px;border-radius:999px;border:1px solid rgba(255,255,255,.1);background:rgba(255,255,255,.025);color:var(--dim);font:inherit;font-size:12px;cursor:pointer}
+.tun-filter.on{color:var(--accent2);border-color:color-mix(in srgb,var(--accent) 55%,transparent);background:color-mix(in srgb,var(--accent) 10%,transparent)}
+.tun-filter b{font:11px var(--mono);opacity:.8}
+.tgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:12px}
+.tcard{min-width:0;overflow:hidden;border:1px solid rgba(255,255,255,.08);border-radius:17px;background:linear-gradient(145deg,rgba(255,255,255,.035),rgba(255,255,255,.012));contain:content}
+.tcard.on{border-color:color-mix(in srgb,var(--green) 35%,transparent)}
+.tcard-main{width:100%;display:flex;align-items:center;gap:12px;padding:15px 15px 12px;text-align:start;color:inherit;border:0;background:transparent;cursor:pointer}
+.tcard-main:hover .tcard-arrow{color:var(--accent2)}.tcard-main:focus-visible,.tun-action:focus-visible,.tun-filter:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+.tcard-glyph{width:42px;height:42px;display:grid;place-items:center;flex:none;border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);border-radius:13px;color:var(--accent2);background:color-mix(in srgb,var(--accent) 8%,transparent);font-size:20px}
+.tcard.on .tcard-glyph{color:var(--green);border-color:color-mix(in srgb,var(--green) 30%,transparent);background:color-mix(in srgb,var(--green) 8%,transparent)}
+.tcard-copy{min-width:0;flex:1}.tcard-name-row{display:flex;align-items:center;justify-content:space-between;gap:8px}.tcard-name{font-weight:700;font-size:15px;overflow-wrap:anywhere}
+.tcard-status{display:inline-flex;align-items:center;gap:6px;flex:none;padding:3px 8px;border-radius:999px;font-size:11px;color:var(--red);border:1px solid color-mix(in srgb,var(--red) 28%,transparent);background:color-mix(in srgb,var(--red) 7%,transparent)}
+.tcard-status.up{color:var(--green);border-color:color-mix(in srgb,var(--green) 28%,transparent);background:color-mix(in srgb,var(--green) 7%,transparent)}
+.tcard-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.tcard-meta{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}
+.tcard-proto{font-size:11px;color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent) 32%,transparent);border-radius:999px;padding:2px 8px}
+.tcard-arrow{color:var(--faint);font-size:20px;line-height:1;transition:color .12s}.tcard-actions{display:flex;gap:7px;padding:0 15px 13px 69px}
+.tun-action{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid rgba(255,255,255,.1);border-radius:9px;background:rgba(255,255,255,.025);color:var(--dim);font:inherit;font-size:11px;cursor:pointer}
+.tun-action:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent) 48%,transparent);color:var(--txt)}.tun-action:disabled{opacity:.38;cursor:not-allowed}
+.tun-action.start{color:var(--green)}.tun-action.restart{color:var(--amber)}.tun-action.stop{color:var(--red)}
+.tun-empty{grid-column:1/-1;padding:34px 18px;text-align:center;color:var(--dim);border:1px dashed rgba(255,255,255,.12);border-radius:16px}
+@media(max-width:650px){.tun-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.tun-stat{padding:11px 12px}.tun-stat .v{font-size:19px}.tun-controls{align-items:stretch}.tun-search{max-width:none}.tun-filters{justify-content:space-between}.tun-filter{padding:7px 9px}}
 .empty{padding:30px;text-align:center;color:var(--dim)}
 
 /* speed + ping */
@@ -4577,8 +4609,13 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
     <div class="card">
       <div class="card-h"><span class="ico">🔗</span><h2 data-i="tunTitle">Tunnels Manager</h2><span class="rb" id="tunNode"></span>
         <span style="margin-inline-start:auto" class="btns"><button class="btn o-acc" onclick="openNew('link')">🔗 <span data-i="addLink">Link panel nodes</span></button><button class="btn primary" onclick="openNew('manual')">✋ <span data-i="addManual">Manual tunnel</span></button></span></div>
-      <p class="muted" data-i="tunDesc">Tunnels running on the selected node. Click one to configure, view live logs or schedule restarts.</p>
-      <div class="tgrid" id="tunGrid"></div>
+      <p class="muted" data-i="tunDesc">Tunnels on the selected node. Search, filter by status, or open a card to configure it.</p>
+      <div class="tun-summary" id="tunSummary"></div>
+      <div class="tun-controls">
+        <label class="tun-search"><span class="glass" aria-hidden="true">⌕</span><input id="tunSearch" type="search" autocomplete="off" data-i-placeholder="tunSearch" placeholder="Search tunnels…" oninput="setTunnelQuery(this.value)"></label>
+        <div class="tun-filters" id="tunFilters" role="group" aria-label="Tunnel status filter"></div>
+      </div>
+      <div class="tgrid" id="tunGrid" aria-live="polite"></div>
     </div>
   </div>
 
@@ -4685,7 +4722,8 @@ en:{
  pingTitle:'Latency to Master', pingDesc:'Live round-trip time between each node and this master (updates every few seconds)',
  cur:'Now', avg:'Avg', min:'Min', max:'Max', trend:'Trend', livePing:'Live Ping', pgFrom:'From node', pgTo:'Target', pgCustom:'Custom host / IP',
  pgStart:'Start live ping', pgStop:'Stop', clear:'Clear', loss:'Loss', custom:'Custom…',
- tunTitle:'Tunnels Manager', addTunnel:'Add tunnel', tunDesc:'Tunnels running on the selected node. Click one to configure, view live logs or schedule restarts.', noTunnels:'No tunnels yet — add one.',
+ tunTitle:'Tunnels Manager', addTunnel:'Add tunnel', tunDesc:'Tunnels on the selected node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
+ tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings',
  mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', protocolSearchHint:'Search protocols…', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
  sched:'Scheduled restart', schedNote:'(regardless of status)', hours:'hours', save2:'Save', live:'Live', newTunnel:'New tunnel',
  running:'running', stopped:'stopped', crafted:'Crafted by', keepPrivate:'Keep this URL and your password private',
@@ -4704,8 +4742,8 @@ en:{
  e_bad_name:'Use letters, digits, - or _ for the name.', e_bad_ports:'Ports must be numbers between 1 and 65535.', e_ports_required:'Enter at least one port to forward.',
  e_ports_conflict:'The control port must differ from the forwarded ports (and bridge ≠ sync).', e_bad_address:'Check the server / client address.', e_same_node:'Pick two different nodes.',
   e_server_failed:'Could not configure the server node.', e_node_not_found:'Node not found.', e_bad_method:'Unknown protocol.',
-  e_neotunnel_requires_ip:'Public IP addresses (IPv4 or IPv6) are required for both servers.', e_neotunnel_profile_exists:'This A,S tunnel name already exists on one of the nodes. Delete it first, then retry.',
-  e_neotunnel_prepare_failed:'Could not prepare the tunnel peer on the server.', e_neotunnel_pair_failed:'The second server could not connect to its peer.', e_neotunnel_add_failed:'Could not add the tunnel. Check the peer connection and tunnel settings.',
+ e_neotunnel_requires_ip:'Public IP addresses (IPv4 or IPv6) are required for both servers.', e_neotunnel_profile_exists:'This A,S tunnel name already exists on one of the nodes. Delete it first, then retry.',
+  e_neotunnel_prepare_failed:'Could not prepare the tunnel peer on the server.', e_neotunnel_pair_failed:'The second server could not connect to its peer.', e_neotunnel_add_failed:'Could not add the tunnel. The failing server step below includes its command output.',
   e_bad_neotunnel_kind:'Choose one of the supported tunnel kinds.', e_bad_mtu:'MTU must be between 576 and 9000.', e_bad_encrypt:'Unsupported encryption option.', e_bad_profile:'Choose lean, balanced or max.',
   e_bad_forward_proto:'Forward protocol must be TCP, UDP or both.', e_stream_tcp_only:'Connection tunnels carry TCP only; choose TCP for their port forwarding.', e_padding_only_obfs:'Padding is only available for Obfs.', e_lanes_require_gre:'Multiple lanes are only supported by the GRE family.', e_conns_require_stream:'Session count is only available for stream tunnels.', e_reverse_requires_stream:'Reverse direction is only available for stream tunnels.',
   e_neotunnel_tunnel_exists:'This tunnel ID already exists on the server. Choose another A,S tunnel name.', e_neotunnel_peer_not_paired:'The tunnel peer has not connected yet. Check that its service port is reachable, then retry.',
@@ -4740,7 +4778,8 @@ fa:{
  pingTitle:'تأخیر تا مستر', pingDesc:'زمان رفت‌وبرگشت زنده بین هر نود و این مستر (هر چند ثانیه به‌روز می‌شود)',
  cur:'اکنون', avg:'میانگین', min:'کمینه', max:'بیشینه', trend:'روند', livePing:'پینگ زنده', pgFrom:'از نود', pgTo:'مقصد', pgCustom:'هاست / آی‌پی دلخواه',
  pgStart:'شروع پینگ زنده', pgStop:'توقف', clear:'پاک کردن', loss:'از دست رفته', custom:'دلخواه…',
- tunTitle:'مدیریت تانل‌ها', addTunnel:'افزودن تانل', tunDesc:'تانل‌های نود انتخاب‌شده. برای تنظیم، لاگ زنده یا ریستارت زمان‌بندی‌شده روی یکی کلیک کنید.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
+ tunTitle:'مدیریت تانل‌ها', addTunnel:'افزودن تانل', tunDesc:'تانل‌های نود انتخاب‌شده را جست‌وجو و بر اساس وضعیت فیلتر کنید؛ برای تنظیم روی کارت بزنید.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
+ tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات',
  mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', protocolSearchHint:'جست‌وجوی پروتکل…', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
  sched:'ریستارت زمان‌بندی‌شده', schedNote:'(بدون توجه به وضعیت)', hours:'ساعت', save2:'ذخیره', live:'زنده', newTunnel:'تانل جدید',
  running:'در حال اجرا', stopped:'متوقف', crafted:'ساخته‌شده توسط', keepPrivate:'این آدرس و رمز عبور را محرمانه نگه دارید',
@@ -4760,7 +4799,7 @@ fa:{
  e_ports_conflict:'پورت کنترل باید با پورت‌های فوروارد فرق داشته باشد (و bridge با sync).', e_bad_address:'آدرس سرور / کلاینت را بررسی کنید.', e_same_node:'دو نود متفاوت انتخاب کنید.',
   e_server_failed:'نود سرور تنظیم نشد.', e_node_not_found:'نود پیدا نشد.', e_bad_method:'پروتکل ناشناخته.',
   e_neotunnel_requires_ip:'هر دو سرور باید آی‌پی عمومی IPv4 یا IPv6 داشته باشند.', e_neotunnel_profile_exists:'این نام تانل A,S روی یکی از نودها وجود دارد. اول آن را حذف و دوباره تلاش کنید.',
-  e_neotunnel_prepare_failed:'آماده‌سازی همتای تانل روی سرور انجام نشد.', e_neotunnel_pair_failed:'سرور دوم نتوانست به همتا وصل شود.', e_neotunnel_add_failed:'ساخت تانل انجام نشد؛ اتصال همتا و تنظیمات را بررسی کنید.',
+  e_neotunnel_prepare_failed:'آماده‌سازی همتای تانل روی سرور انجام نشد.', e_neotunnel_pair_failed:'سرور دوم نتوانست به همتا وصل شود.', e_neotunnel_add_failed:'ساخت تانل ناموفق بود؛ خروجی فرمان در مرحلهٔ سرور خطادار نمایش داده شده است.',
   e_bad_neotunnel_kind:'یکی از انواع پشتیبانی‌شدهٔ تانل را انتخاب کنید.', e_bad_mtu:'MTU باید بین ۵۷۶ تا ۹۰۰۰ باشد.', e_bad_encrypt:'گزینهٔ رمزنگاری پشتیبانی نمی‌شود.', e_bad_profile:'یکی از حالت‌های lean، balanced یا max را انتخاب کنید.',
   e_bad_forward_proto:'پروتکل فوروارد باید TCP، UDP یا هر دو باشد.', e_stream_tcp_only:'تانل‌های connection فقط TCP دارند؛ برای فوروارد آن‌ها TCP را انتخاب کنید.', e_padding_only_obfs:'Padding فقط برای Obfs فعال است.', e_lanes_require_gre:'چند مسیر هم‌زمان فقط در خانوادهٔ GRE پشتیبانی می‌شود.', e_conns_require_stream:'تعداد نشست فقط برای stream tunnel پشتیبانی می‌شود.', e_reverse_requires_stream:'جهت معکوس فقط برای stream tunnel فعال است.',
     e_neotunnel_tunnel_exists:'این شناسه روی سرور وجود دارد؛ نام دیگری برای تانل A,S انتخاب کنید.', e_neotunnel_peer_not_paired:'همتای تانل هنوز وصل نشده است. دسترسی به پورت سرویس را بررسی و دوباره تلاش کنید.',
@@ -4778,7 +4817,7 @@ const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp
 
 /* ============================ state ============================ */
 let TOKEN = ''; localStorage.removeItem('as_tok');
-const S = {nodes: [], master: null, sel: 'local', tab: 'config', cfgFor: null, hcLoaded: null, joinLoaded: false, timer: null, spKey: '', pgKey: ''};
+const S = {nodes: [], master: null, sel: 'local', tab: 'config', cfgFor: null, hcLoaded: null, joinLoaded: false, timer: null, spKey: '', pgKey: '', tunQuery: '', tunStatus: 'all'};
 const sideLabel = r => r === 'eu' ? t('sideEu') : t('sideIran');
 const cur = () => S.nodes.find(n => n.id === S.sel) || S.nodes[0];
 
@@ -5136,20 +5175,43 @@ window.addEventListener('resize', () => { if (S.tab === 'ping') drawChart(); });
 
 /* ---- tunnels tab ---- */
 const methodLabel = (m, k) => m === 'asnative' ? 'Reverse' : m === 'assecure' ? 'A,S Secure' : m === 'neotunnel' ? (k ? ({'ip6gre':'IP6GRE','ip6gretap':'IP6GRETAP','ipip6':'IPIP6','ip6ip6':'IP6IP6','l2tpv3':'L2TPv3','stream-tcp':'Stream TCP','stream-tls':'Stream TLS'}[k] || k.toUpperCase()) : 'Tunnel') : m;
+const methodGlyph = (m, k) => k === 'wireguard' || m === 'assecure' ? '⬡' : k === 'gre' || m === 'gre' ? '⇄' : k === 'vxlan' || k === 'geneve' ? '◈' : k && k.startsWith('stream-') ? '⇢' : m === 'asnative' ? '↗' : m === 'backhaul' ? '⤢' : m === 'rathole' ? '⌁' : m === 'gost' ? '⇢' : m === 'frp' ? '↗' : m === 'paqet' ? '◉' : '◇';
+function setTunnelQuery(value) { S.tunQuery = String(value || '').trim().toLowerCase(); S.tunKey = ''; renderTunnels(); }
+function setTunnelStatus(value) { S.tunStatus = ['all','up','down'].includes(value) ? value : 'all'; S.tunKey = ''; renderTunnels(); }
 function renderTunnels() {
   const n = cur(); if (!n) return;
   $('tunNode').textContent = n.name;
   const list = Array.isArray(n.tunnels) ? n.tunnels : [];
-  const key = JSON.stringify(list) + n.online + LANG + n.id;
+  const upCount = list.reduce((sum, x) => sum + (x.running ? 1 : 0), 0), downCount = list.length - upCount;
+  const kindCount = new Set(list.map(x => methodLabel(x.method, x.kind))).size;
+  $('tunSummary').innerHTML = `<div class="tun-stat"><div class="k">${t('tunTotal')}</div><div class="v">${list.length}</div></div>
+    <div class="tun-stat up"><div class="k">${t('tunRunningCount')}</div><div class="v">${upCount}</div></div>
+    <div class="tun-stat down"><div class="k">${t('tunStoppedCount')}</div><div class="v">${downCount}</div></div>
+    <div class="tun-stat kind"><div class="k">${t('tunKinds')}</div><div class="v">${kindCount}</div></div>`;
+  const q = S.tunQuery, status = S.tunStatus;
+  const matching = list.filter(x => {
+    if (status === 'up' && !x.running || status === 'down' && x.running) return false;
+    if (!q) return true;
+    return [x.prof, methodLabel(x.method, x.kind), x.role, x.method, x.kind].some(v => String(v || '').toLowerCase().includes(q));
+  });
+  $('tunSearch').value = S.tunQuery;
+  $('tunFilters').innerHTML = [['all','filterAll',list.length],['up','filterRunning',upCount],['down','filterStopped',downCount]]
+    .map(([v,label,count]) => `<button type="button" class="tun-filter ${status === v ? 'on' : ''}" onclick="setTunnelStatus('${v}')" aria-pressed="${status === v}">${t(label)} <b>${count}</b></button>`).join('');
+  $('tunFilters').setAttribute('aria-label', t('tunDesc'));
+  const key = JSON.stringify(list) + n.online + LANG + n.id + status + q;
   if (S.tunKey === key) return; S.tunKey = key;
-  $('tunGrid').innerHTML = list.length ? list.map(x => `<div class="tcard ${x.running ? 'on' : ''}" onclick="openSlotByName('${esc(x.prof)}')">
-    <div class="top"><span class="nm">${esc(x.prof)}</span><i class="dot ${x.running ? 'on' : 'off'}"></i></div>
-    <div class="meta"><span class="badge">${esc(methodLabel(x.method, x.kind))}</span><span class="rb ${esc(x.role)}">${sideLabel(x.role)}</span><span class="muted" style="font-size:12px">${t(x.running ? 'running' : 'stopped')}</span></div>
-    <div class="btns" onclick="event.stopPropagation()">
-      <button class="btn sm o-green" onclick="quick('${esc(x.prof)}','start')">▶</button>
-      <button class="btn sm o-amber" onclick="quick('${esc(x.prof)}','restart')">⟳</button>
-      <button class="btn sm o-red" onclick="quick('${esc(x.prof)}','stop')">■</button></div></div>`).join('')
-    : `<div class="empty">${t('noTunnels')}</div>`;
+  $('tunGrid').innerHTML = matching.length ? matching.map(x => `<article class="tcard ${x.running ? 'on' : ''}">
+    <button type="button" class="tcard-main" onclick="openSlotByName('${esc(x.prof)}')" aria-label="${esc(t('openTunnel'))}: ${esc(x.prof)}">
+      <span class="tcard-glyph" aria-hidden="true">${methodGlyph(x.method, x.kind)}</span>
+      <span class="tcard-copy"><span class="tcard-name-row"><span class="tcard-name">${esc(x.prof)}</span><span class="tcard-status ${x.running ? 'up' : ''}"><i></i>${t(x.running ? 'running' : 'stopped')}</span></span>
+      <span class="tcard-meta"><span class="tcard-proto">${esc(methodLabel(x.method, x.kind))}</span><span class="rb ${esc(x.role)}">${sideLabel(x.role)}</span></span></span>
+      <span class="tcard-arrow" aria-hidden="true">›</span></button>
+    <div class="tcard-actions">
+      <button type="button" class="tun-action start" onclick="quick('${esc(x.prof)}','start')" aria-label="${t('start')} ${esc(x.prof)}" ${!n.online || x.running ? 'disabled' : ''}>▶ ${t('start')}</button>
+      <button type="button" class="tun-action restart" onclick="quick('${esc(x.prof)}','restart')" aria-label="${t('restart')} ${esc(x.prof)}" ${!n.online ? 'disabled' : ''}>⟳ ${t('restart')}</button>
+      <button type="button" class="tun-action stop" onclick="quick('${esc(x.prof)}','stop')" aria-label="${t('stop')} ${esc(x.prof)}" ${!n.online || !x.running ? 'disabled' : ''}>■ ${t('stop')}</button>
+    </div></article>`).join('')
+    : `<div class="tun-empty">${list.length ? t('noTunnelMatches') : t('noTunnels')}</div>`;
 }
 async function quick(prof, action) {
   toast('…'); const r = await napi('/slots/' + encodeURIComponent(prof) + '/' + action, {method: 'POST'});
@@ -5522,6 +5584,7 @@ async function refreshLog(force) {
 function applyLang() {
   document.documentElement.lang = LANG; document.documentElement.dir = LANG === 'fa' ? 'rtl' : 'ltr';
   document.querySelectorAll('[data-i]').forEach(e => { e.textContent = t(e.dataset.i); });
+  document.querySelectorAll('[data-i-placeholder]').forEach(e => { e.placeholder = t(e.dataset.iPlaceholder); });
   $('protocolSearch').placeholder = t('protocolSearchHint');
   $('lgEn').classList.toggle('on', LANG === 'en'); $('lgFa').classList.toggle('on', LANG === 'fa');
   document.title = t('appTitle');
