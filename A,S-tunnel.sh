@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.5"
+VERSION="4.2.6"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -1301,8 +1301,28 @@ neotunnel_state_has_tunnel(){
 neotunnel_tunnel_running(){
   local name="$1" out
   [[ -x "$NEOTUNNEL_BIN" ]] || return 1
-  out="$(NO_COLOR=1 "$NEOTUNNEL_BIN" status 2>/dev/null || true)"
-  grep -Fq "● up ${name} " <<<"$out"
+  out="$(NO_COLOR=1 "$NEOTUNNEL_BIN" status 2>/dev/null | sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g' || true)"
+  awk -v n="$name" '$1 == "●" && $2 == "up" && $3 == n { found=1 } END { exit !found }' <<<"$out"
+}
+
+# Include the engine state and recent tunnel-specific service errors when the
+# CLI saved a config but did not actually bring the interface up.
+neotunnel_status_detail(){
+  local name="$1" context="${2:-}" out line active recent warnings detail
+  if [[ ! -x "$NEOTUNNEL_BIN" ]]; then
+    echo "neotunnel binary is missing at $NEOTUNNEL_BIN"
+    return 0
+  fi
+  out="$(NO_COLOR=1 "$NEOTUNNEL_BIN" status 2>&1 | sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g' || true)"
+  line="$(awk -v n="$name" '$1 == "●" && ($2 == "up" || $2 == "down") && $3 == n { print; exit }' <<<"$out")"
+  active="$(systemctl is-active neotunnel 2>/dev/null || true)"
+  [[ -n "$active" ]] || active="unknown"
+  if [[ -n "$line" ]]; then detail="service=$active; $line"; else detail="service=$active; tunnel '$name' is absent from engine status"; fi
+  warnings="$(printf '%s\n' "$context" | sed -E 's/\x1B\[[0-9;]*[[:alpha:]]//g' | grep -E '^[[:space:]]*(! |✗ )' | tail -n 4 | tr '\n' ';' || true)"
+  [[ -n "$warnings" ]] && detail="engine: $warnings $detail"
+  recent="$(journalctl -u neotunnel -n 100 --no-pager 2>/dev/null | grep -F -- "$name" | tail -n 3 | tr '\n' ';' || true)"
+  [[ -n "$recent" ]] && detail+="; recent: $recent"
+  printf '%s\n' "${detail:0:900}"
 }
 
 neotunnel_run_profile(){
@@ -1522,7 +1542,16 @@ api_neotunnel(){
           printf '{"ok":false,"error":"neotunnel_forward_failed","log":%s}\n' "$(json_str "$log")"; return 0
         fi
       fi
-      printf '{"ok":true,"log":%s}\n' "$(json_str "$log")"
+      local apply_log running=false status_detail attempt
+      apply_log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" apply 2>&1 || true)"
+      [[ -n "$apply_log" ]] && log+=$'\n'"$apply_log"
+      for attempt in 1 2 3; do
+        if neotunnel_tunnel_running "$nt_name"; then running=true; break; fi
+        [[ "$attempt" -lt 3 ]] && sleep 1
+      done
+      if [[ "$running" != "true" ]]; then status_detail="$(neotunnel_status_detail "$nt_name" "$log")"; fi
+      printf '{"ok":true,"saved":true,"running":%s,"status_detail":%s,"log":%s}\n' \
+        "$running" "$(json_str "$status_detail")" "$(json_str "$log")"
       ;;
     power)
       nt_name="$(jq -r '.tunnel_name // empty' <<<"$body")"; mode="$(jq -r '.mode // empty' <<<"$body")"
@@ -4416,6 +4445,8 @@ canvas{width:100%;height:230px;display:block;border-radius:16px;background:#0402
 pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:1px solid rgba(255,255,255,.08);border-radius:14px;padding:14px;
   font-family:var(--mono);font-size:12px;height:340px;overflow:auto;direction:ltr;text-align:left;margin:0}
 .sidebar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;padding:11px 14px;border-radius:14px;border:1px solid color-mix(in srgb,var(--accent) 30%,transparent);background:color-mix(in srgb,var(--accent) 8%,transparent)}
+.side-select{width:auto;min-width:210px;max-width:100%;padding:7px 10px;border:1px solid color-mix(in srgb,var(--accent) 48%,transparent);border-radius:10px;background:var(--panel);color:var(--text);font:inherit}
+.side-select:disabled{opacity:.72;cursor:default}
 .msg{font-size:13px;margin-top:12px;white-space:pre-wrap;color:var(--dim)}
 .msg.ok{color:var(--green)} .msg.err{color:var(--red)}
 .toast{position:fixed;bottom:26px;left:50%;transform:translateX(-50%) translateY(20px);z-index:100;padding:13px 22px;border-radius:14px;
@@ -4694,8 +4725,9 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       </div>
 
       <div id="manualBox">
-        <div class="sidebar" id="sideBar"><span class="muted" data-i="side">Side</span><b id="sideTxt"></b><span class="muted" id="sideNode"></span></div>
+        <div class="sidebar" id="sideBar"><span class="muted" data-i="side">Side</span><select class="side-select" id="sideSelect" onchange="onSideChange()" aria-label="Side"></select></div>
         <input type="hidden" id="roleSelect" value="eu">
+        <div id="linkedHint" class="muted hidden" style="margin-top:12px"></div>
         <div id="fieldsBox" style="margin-top:14px"></div>
         <div class="btns" style="margin-top:20px">
           <button class="btn primary" id="saveBtn" onclick="saveSlot()">💾 <span data-i="saveStart">Save & Start</span></button>
@@ -4767,7 +4799,7 @@ en:{
  cur:'Now', avg:'Avg', min:'Min', max:'Max', trend:'Trend', livePing:'Live Ping', pgFrom:'From node', pgTo:'Target', pgCustom:'Custom host / IP',
  pgStart:'Start live ping', pgStop:'Stop', clear:'Clear', loss:'Loss', custom:'Custom…',
  tunTitle:'Tunnels Manager', tunAllNodes:'All nodes', linkedPair:'Linked pair', addTunnel:'Add tunnel', tunDesc:'All connected nodes. Linked node tunnels appear once; manual profiles remain per node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
- tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings',
+ tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings', linkedReadOnly:'Linked tunnel settings are managed together. This view is read-only; delete and recreate the pair to change its parameters.',
  mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', protocolSearchHint:'Search protocols…', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
  sched:'Scheduled restart', schedNote:'(regardless of status)', hours:'hours', save2:'Save', live:'Live', newTunnel:'New tunnel',
  running:'running', stopped:'stopped', crafted:'Crafted by', keepPrivate:'Keep this URL and your password private',
@@ -4823,7 +4855,7 @@ fa:{
  cur:'اکنون', avg:'میانگین', min:'کمینه', max:'بیشینه', trend:'روند', livePing:'پینگ زنده', pgFrom:'از نود', pgTo:'مقصد', pgCustom:'هاست / آی‌پی دلخواه',
  pgStart:'شروع پینگ زنده', pgStop:'توقف', clear:'پاک کردن', loss:'از دست رفته', custom:'دلخواه…',
  tunTitle:'مدیریت تانل‌ها', tunAllNodes:'همهٔ نودها', linkedPair:'جفت‌شده', addTunnel:'افزودن تانل', tunDesc:'تانل‌های همهٔ نودهای وصل‌شده اینجا هستند؛ تانل‌های جفت‌شده یک‌بار و پروفایل‌های دستی جداگانه برای هر نود نمایش داده می‌شوند.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
- tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات',
+ tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات', linkedReadOnly:'تنظیمات تانل جفت‌شده با هم مدیریت می‌شوند. این بخش فقط‌خواندنی است؛ برای تغییر پارامترها، جفت تانل را حذف و دوباره ایجاد کنید.',
  mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', protocolSearchHint:'جست‌وجوی پروتکل…', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
  sched:'ریستارت زمان‌بندی‌شده', schedNote:'(بدون توجه به وضعیت)', hours:'ساعت', save2:'ذخیره', live:'زنده', newTunnel:'تانل جدید',
  running:'در حال اجرا', stopped:'متوقف', crafted:'ساخته‌شده توسط', keepPrivate:'این آدرس و رمز عبور را محرمانه نگه دارید',
@@ -5474,10 +5506,36 @@ function genInto(id) { $(id).value = randHex(16); }
 function openNew(mode) { openSlot(null, mode || 'manual'); }
 function openSlotByName(prof, nid) { const node = S.nodes.find(n => n.id === (nid || S.sel)); openSlot((node?.tunnels || []).find(x => x.prof === prof) || null, 'manual', nid || S.sel); }
 function setRole(role) { $('roleSelect').value = role === 'iran' ? 'iran' : 'eu'; paintSide(); }
-function paintSide() { const node = S.nodes.find(n => n.id === (CURRENT?.nid || S.sel)); $('sideTxt').textContent = sideLabel($('roleSelect').value); $('sideNode').textContent = '· ' + (node ? node.name : ''); }
+function profileSideRows(nodes, prof, method) {
+  if (!prof || !method) return [];
+  return (Array.isArray(nodes) ? nodes : []).flatMap(node => {
+    const tunnel = (node.tunnels || []).find(x => x.prof === prof && x.method === method);
+    return tunnel ? [{node, tunnel}] : [];
+  });
+}
+function paintSide() {
+  const node = S.nodes.find(n => n.id === (CURRENT?.nid || S.sel));
+  const select = $('sideSelect');
+  const rows = CURRENT?.prof ? profileSideRows(S.nodes, CURRENT.prof, CURRENT.method || '') : [];
+  const choices = rows.length ? rows : (node ? [{node, tunnel: null}] : []);
+  select.innerHTML = choices.map(({node: n, tunnel}) => {
+    const role = (tunnel && tunnel.role) || n.role || 'eu';
+    return '<option value="' + esc(n.id) + '">' + esc(sideLabel(role) + ' · ' + n.name) + '</option>';
+  }).join('');
+  select.value = CURRENT?.nid || S.sel;
+  select.disabled = !CURRENT || CURRENT.isNew || choices.length < 2;
+  $('roleSelect').value = ((choices.find(x => x.node.id === (CURRENT?.nid || S.sel)) || {}).tunnel || {}).role || (node && node.role) || $('roleSelect').value || 'eu';
+}
+function onSideChange() {
+  if (!CURRENT || CURRENT.isNew) return;
+  const nid = $('sideSelect').value;
+  if (!nid || nid === CURRENT.nid) return;
+  const row = profileSideRows(S.nodes, CURRENT.prof, CURRENT.method || '').find(x => x.node.id === nid);
+  if (row) openSlot(row.tunnel, 'manual', nid);
+}
 function openSlot(existing, mode, nodeId) {
   const targetNode = existing ? (nodeId || existing.node_id || S.sel) : S.sel;
-  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual'), nid: targetNode};
+  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual'), nid: targetNode, method: existing ? existing.method : '', linked: !!(existing && existing.method === 'neotunnel' && (existing.nt_mode === 'linked' || (existing.nt_role === 'managed' && existing.owner_node)))};
   $('mTitle').textContent = existing ? existing.prof : t('newTunnel');
   $('modeSeg').classList.toggle('hidden', !!existing);
   paintStatus(existing ? !!existing.running : false, !!existing);
@@ -5487,12 +5545,16 @@ function openSlot(existing, mode, nodeId) {
   setRole(existing ? existing.role : ((S.nodes.find(n => n.id === targetNode) || {}).role || 'eu'));
   $('rcToggle').checked = false; $('rcHours').value = '';
   setMode(CURRENT.mode);
+  updateLinkedProfileUI();
   const target = targetNode;
   if (existing) {
     nodeApi(target, '/slots/' + encodeURIComponent(existing.prof)).then(d => {
       if (!CURRENT || CURRENT.nid !== target || CURRENT.prof !== existing.prof) return;
+      CURRENT.method = d.method || CURRENT.method;
+      if (d.fields) CURRENT.linked = d.method === 'neotunnel' && (d.fields.NT_MODE === 'linked' || (d.fields.NT_ROLE === 'managed' && d.fields.NT_OWNER_NODE));
       if (d.role) { setRole(d.role); if (d.method === 'neotunnel' && d.fields?.NT_KIND) selectProtocol('neotunnel', d.fields.NT_KIND); renderFields(); }
       if (d.fields) fillFields(d.fields);
+      updateLinkedProfileUI();
       if (d.restart_hours) { $('rcToggle').checked = true; $('rcHours').value = d.restart_hours; }
     }).catch(() => {});
   }
@@ -5516,7 +5578,7 @@ function inputHtml(f, prefix) {
 }
 function renderFields() {
   const box = $('fieldsBox'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
-  if (selectedMethod() === 'neotunnel' && NT_MANAGED_ONLY.has(selectedKind())) { box.innerHTML = '<div class="muted" style="padding:12px">This kind needs both nodes paired. Use Link panel nodes. / این نوع به اتصال هر دو سرور نیاز دارد؛ از «اتصال نودهای پنل» استفاده کنید.</div>'; return; }
+  if (selectedMethod() === 'neotunnel' && NT_MANAGED_ONLY.has(selectedKind())) { box.innerHTML = '<div class="muted" style="padding:12px">This kind needs both nodes paired. Use Link panel nodes. / این نوع به اتصال هر دو سرور نیاز دارد؛ از «اتصال نودهای پنل» استفاده کنید.</div>'; updateLinkedProfileUI(); return; }
   fieldDefsFor().forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'f_'); grid.appendChild(w);
@@ -5524,6 +5586,7 @@ function renderFields() {
     if (el && f.v) el.value = f.v;
     if (el && f.gen && CURRENT && CURRENT.isNew) genInto('f_' + f.k);
   });
+  updateLinkedProfileUI();
 }
 /* ---- link two nodes from the panel ---- */
 function onlineNodes() { return S.nodes.filter(n => n.online); }
@@ -5604,8 +5667,18 @@ function collectFields() {
   return out;
 }
 function setMsg(text, kind) { const el = $('mMsg'); el.textContent = text || ''; el.className = 'msg ' + (kind || ''); }
+function updateLinkedProfileUI() {
+  const linked = !!(CURRENT && CURRENT.linked);
+  const hint = $('linkedHint');
+  hint.textContent = linked ? t('linkedReadOnly') : '';
+  hint.classList.toggle('hidden', !linked);
+  $('methodSelect').disabled = linked;
+  $('protocolSearch').disabled = linked;
+  $('fieldsBox').querySelectorAll('input,select,textarea').forEach(el => { el.disabled = linked; });
+  $('saveBtn').disabled = linked;
+}
 function setBusy(on, label) {
-  ['saveBtn', 'startBtn', 'stopBtn', 'restartBtn'].forEach(id => { $(id).disabled = on; });
+  ['saveBtn', 'startBtn', 'stopBtn', 'restartBtn'].forEach(id => { $(id).disabled = on || (id === 'saveBtn' && !!(CURRENT && CURRENT.linked)); });
   const sb = $('saveBtn'), sp = sb.querySelector('span');
   if (on && label) { sb.dataset.l = sp.textContent; sp.textContent = '⏳ ' + label; }
   if (!on && sb.dataset.l) { sp.textContent = sb.dataset.l; delete sb.dataset.l; }
@@ -5618,6 +5691,7 @@ async function refreshSlotState() {
   if (d && !d.error) { paintStatus(!!d.running); return d; } return null;
 }
 async function saveSlot() {
+  if (CURRENT && CURRENT.linked) { setMsg(t('linkedReadOnly'), 'err'); return; }
   const method = selectedMethod(), role = $('roleSelect').value, fields = collectFields();
   if (CURRENT.isNew) {
     const nm = cleanName($('nameInput').value);
@@ -5687,6 +5761,7 @@ function applyLang() {
   $('protocolSearch').placeholder = t('protocolSearchHint');
   $('lgEn').classList.toggle('on', LANG === 'en'); $('lgFa').classList.toggle('on', LANG === 'fa');
   document.title = t('appTitle');
+  if (CURRENT) updateLinkedProfileUI();
   S.barKey = ''; S.tunKey = ''; S.spKey = ''; S.pgKey = '';
   if (PG.timer) $('pgBtn').innerHTML = '■ <span>' + t('pgStop') + '</span>';
   if ($('app').classList.contains('hidden') === false) { renderAll(true); if (S.join) loadJoin(); }
@@ -6480,8 +6555,20 @@ api_save(){
 
   local log ok running
   if [[ "$method" == "neotunnel" && "$register_only" == "true" ]]; then
-    running=false; is_running "$prof" && running=true
-    printf '{"ok":true,"saved":true,"running":%s}\n' "$running"
+    local nt_name apply_log status_detail attempt
+    nt_name="$(env_get "$prof" NT_TUNNEL_NAME)"
+    running=false
+    is_running "$prof" && running=true
+    if [[ "$running" != "true" ]]; then
+      apply_log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" apply 2>&1 || true)"
+      for attempt in 1 2 3; do
+        if is_running "$prof"; then running=true; break; fi
+        [[ "$attempt" -lt 3 ]] && sleep 1
+      done
+      if [[ "$running" != "true" ]]; then status_detail="$(neotunnel_status_detail "$nt_name" "$apply_log")"; fi
+    fi
+    printf '{"ok":true,"saved":true,"running":%s,"status_detail":%s}\n' \
+      "$running" "$(json_str "$status_detail")"
     return 0
   fi
   log="$(run_slot "$prof" 2>&1)" && ok=0 || ok=$?
