@@ -14,8 +14,8 @@ Named Tunnels • Multi-Protocol • Master Web Panel • AutoSync • Health Ch
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/version-4.0.8-cyan">
-  <img src="https://img.shields.io/badge/protocols-8-brightgreen">
+  <img src="https://img.shields.io/badge/version-4.2.1-cyan">
+  <img src="https://img.shields.io/badge/protocols-9-brightgreen">
   <img src="https://img.shields.io/badge/tunnels-unlimited-blue">
   <img src="https://img.shields.io/badge/license-Proprietary-red">
 </p>
@@ -50,15 +50,18 @@ Instead of locking you into one tunneling technology, A,S Tunnel lets you pick �
 | # | Protocol | Type | Best for |
 |---|----------|------|----------|
 | 1 | **Reverse** | Reverse TCP (built-in, pooled connections) | Zero external dependency, dynamic auto-synced ports |
-| 2 | **Backhaul** | TCP / WS / WSS multiplexed tunnel | High throughput, transport flexibility |
+| 2 | **Backhaul** | TCP / WS multiplexed tunnel | High throughput, transport flexibility |
 | 3 | **Rathole** | Lightweight NAT-traversal tunnel | Low overhead, many small services |
 | 4 | **GRE** | Kernel-level IP tunnel | Raw IP-level connectivity, no userspace daemon |
 | 5 | **FRP** | Fast reverse proxy | Battle-tested, widely used, rich proxy types |
-| 6 | **Gost** | Per-port IPv4/IPv6 forwarder (tcp/udp/grpc) | Simple 1:1 port forwarding, huge port ranges |
+| 6 | **Gost** | Per-port IPv4/IPv6 forwarder (tcp/udp) | Simple 1:1 port forwarding, up to 1,024 ports per profile |
 | 7 | **A,S Secure** | FRP-based reverse TCP/UDP forwarding over QUIC, WSS or TCP | TLS with pinned server certificate, token authentication and a server-side port allowlist |
 | 8 | **Paqet** | Packet-based tunnel | Specialized network path; requires compatible network support |
+| 9 | **17 protocol choices** | SIT, IPIP, GRE, GRETAP, IP6GRE, IP6GRETAP, IPIP6, IP6IP6, VXLAN, Geneve, L2TPv3, WireGuard, Obfs, TCP, EoIP, Stream TCP, Stream TLS | Select and search each kind in the Protocol list |
 
 A,S Secure is the project’s managed profile for the established FRP engine; it is not a new cryptographic protocol. The panel creates a per-link token and certificate, requires TLS verification, and limits remote ports to the selected list. QUIC is the default transport; WSS and TCP are alternatives. DPI resistance and fixed latency or throughput cannot be guaranteed.
+
+Choose any of the 17 kinds directly in the **Protocol** list, either for a manual tunnel or in **Tunnels Manager → From panel nodes**. A,S verifies the downloaded engine checksum, connects both nodes with a setup key, and creates the selected kind. Each host runs one systemd service that checks tunnel health and recovers stopped links.
 
 Each tunnel remembers its own protocol, so you can run **Reverse as `office`**, **Backhaul as `bh-main`**, **Gost as `fwd1`**, etc. — all at once, all managed from the same menu.
 
@@ -71,7 +74,7 @@ Client → IR Server ⇄ EU Server
              │
      Protocol of your choice
    (Reverse / Backhaul / Rathole
-        / GRE / FRP / Gost)
+        / GRE / FRP / Gost / extended tunnel engine)
 ```
 
 Every tunnel is independent: pick a protocol, answer a short wizard, and the tunnel **starts automatically** — no extra "start" step needed.
@@ -82,13 +85,13 @@ Every tunnel is independent: pick a protocol, answer a short wizard, and the tun
 
 | Feature | Description |
 |---------|--------------|
-| 🔀 Multi-Protocol | Choose Reverse / Backhaul / Rathole / GRE / FRP / Gost / A,S Secure / Paqet per tunnel |
+| 🔀 Multi-Protocol | Choose Reverse / Backhaul / Rathole / GRE / FRP / Gost / A,S Secure / Paqet, plus 17 individually searchable protocol kinds |
 | 🏷 Named tunnels | Create as many tunnels as you like, each with its own name |
 | ⚡ Auto-Start | Tunnel starts immediately after you save its config |
 | 🔄 AutoSync | Automatic port creation & synchronization (Reverse) |
 | 🕒 Cron Health Check | Auto-restarts any stopped tunnel, any protocol |
 | 🚀 BBR Optimization | Congestion control + sysctl network tuning |
-| 📦 Auto-Install | Official binaries for Backhaul / Rathole / FRP / Gost fetched straight from GitHub Releases |
+| 📦 Auto-Install | Official binaries for Backhaul / Rathole / FRP / Gost; the extended tunnel engine is checksum-verified |
 | 🖥 systemd/cron Integration | Health check survives reboot via cron |
 | 📊 Live Status | See which tunnels are running, and with which protocol, right in the menu |
 
@@ -124,7 +127,7 @@ From the main menu:
 
 1. Type a **name** for the tunnel (e.g. `server1`) — letters, digits, `-` and `_`
 2. Choose this host's location: **Abroad (Kharej)** or **Iran**
-3. Choose a protocol (**1–7**, see table above)
+3. Choose a CLI protocol (**1–7**). The 17 additional kinds are selected in the master panel’s **Tunnels Manager → From panel nodes → Protocol** list.
 4. Answer the protocol's short wizard
 5. ✅ Done — the tunnel **starts automatically** and its status is shown right away
 
@@ -142,7 +145,7 @@ Repeat on the **other server** with the matching side and values (same token / p
 | AutoSync | — | `y`/`n` |
 | Manual ports | — | only if AutoSync = `n` |
 
-The Iran host listens for connections; the abroad host initiates the connection. No external binary — runs on the bundled `A,S.py` core. Existing `METHOD=asnative` profiles continue to work. Bridge and sync ports must match on both ends, be different from each other, and stay within 1–65535.
+The Iran host listens for connections; the abroad host initiates the connection. No external binary — runs on the bundled `A,S.py` core. In the panel node-link wizard, choose Auto to synchronize listening ports from the abroad host, or Manual to forward only the CSV ports you specify. Manual mode requires at least one port. Existing `METHOD=asnative` profiles continue to work. Bridge and sync ports must match on both ends and differ from each other.
 
 ---
 
@@ -153,7 +156,7 @@ In this setup, the protocol **server runs on the Iran host** and the **client ru
 | Field | Server role | Client role |
 |---|---|---|
 | Token | ✅ shared secret | ✅ same value |
-| Transport | `tcp` / `ws` / `wss` | same value |
+| Transport | `tcp` / `ws` | same value |
 | Bind port | ✅ control port | — |
 | Server IP | — | ✅ |
 | Forward ports (CSV) | ✅ | — |
@@ -164,7 +167,7 @@ Binary is auto-downloaded from `Musixal/Backhaul` releases.
 
 ### 3️⃣ Rathole
 
-In this setup, the protocol **server runs on the Iran host** and the **client runs abroad**.
+In this setup, the protocol **server runs on the Iran host** and the **client runs abroad**. The installer checks that the binary actually runs and falls back to the official x86_64 musl build for hosts incompatible with the newest glibc build. Each forwarded service is explicitly configured as TCP with its shared token.
 
 | Field | Server role | Client role |
 |---|---|---|
@@ -207,10 +210,18 @@ Binaries auto-downloaded from `fatedier/frp` releases.
 | Field | Value |
 |---|---|
 | Destination (Kharej) IP | the server traffic gets forwarded to |
-| Ports | manual CSV **or** a full range (e.g. `54,65000`) |
-| Protocol | `tcp` / `udp` / `grpc` |
+| Ports | manual CSV or a range, up to 1,024 ports per profile |
+| Protocol | tcp / udp |
 
 One-sided per-port forwarder — no matching config needed on the other end. Binary auto-downloaded from `go-gost/gost` releases.
+
+---
+
+### 7️⃣ Extended protocol choices — 17 kinds
+
+In either manual setup or **Tunnels Manager → From panel nodes**, choose or search the Protocol list for one of these 17 kinds: **SIT, IPIP, GRE, GRETAP, IP6GRE, IP6GRETAP, IPIP6, IP6IP6, VXLAN, Geneve, L2TPv3, WireGuard, Obfs, TCP, EoIP, Stream TCP, Stream TLS**. TCP stream kinds accept TCP forwarding only. Layer-2 kinds cannot use port forwarding in this form. MTU, speed profile, encryption and advanced fields appear when supported by the selected kind.
+
+Allow the chosen tunnel port and the peer service TCP connection (selected from 20000–60000) between both servers. Port forwarding or extra IPsec encryption requires `nft` on the server. A,S does not install firewall packages or change firewall rules automatically. A,S provides the card controls and logs; the service checks tunnel health and recovers stopped links.
 
 ---
 
@@ -319,6 +330,8 @@ Enables, when supported by the kernel:
 - BBR congestion control
 - `fq` queue discipline
 - Persistent sysctl network tuning
+
+The optimizer applies only its own sysctl file. It does not reload other applications' sysctl files or change host firewall, route-filtering, or ICMP policy.
 
 ---
 
@@ -437,15 +450,18 @@ USDT · BNB
 | شماره | پروتکل | نوع | کاربرد |
 |---|---|---|---|
 | 1 | **Reverse** | TCP معکوس با اتصال‌های تجمیع‌شده | بدون وابستگی خارجی و همگام‌سازی خودکار پورت‌ها |
-| 2 | **Backhaul** | تانل چندگانهٔ TCP / WS / WSS | سرعت بالا و انتخاب نوع انتقال |
+| 2 | **Backhaul** | تانل چندگانهٔ TCP / WS | سرعت بالا و انتخاب نوع انتقال |
 | 3 | **Rathole** | تانل سبک برای عبور از NAT | سربار کم و مناسب سرویس‌های متعدد |
 | 4 | **GRE** | تانل IP در سطح کرنل | ارتباط مستقیم IP بدون برنامهٔ کاربری |
 | 5 | **FRP** | پراکسی معکوس | ابزار پرکاربرد با انواع پراکسی |
-| 6 | **Gost** | فوروارد پورت IPv4/IPv6 با TCP/UDP/GRPC | فوروارد سادهٔ یک‌به‌یک و بازه‌های بزرگ پورت |
+| 6 | **Gost** | فوروارد پورت IPv4/IPv6 با TCP/UDP | فوروارد یک‌به‌یک، حداکثر ۱۰۲۴ پورت در هر پروفایل |
 | 7 | **A,S Secure** | فوروارد معکوس TCP/UDP بر پایهٔ FRP با QUIC، WSS یا TCP | TLS با گواهی سرور pin شده، توکن و فهرست مجاز پورت‌ها |
 | 8 | **Paqet** | تانل بسته‌محور | مسیر شبکهٔ ویژه با نیاز به پشتیبانی سازگار شبکه |
+| 9 | **۱۷ گزینهٔ پروتکل** | SIT، IPIP، GRE، GRETAP، IP6GRE، IP6GRETAP، IPIP6، IP6IP6، VXLAN، Geneve، L2TPv3، WireGuard، Obfs، TCP، EoIP، Stream TCP، Stream TLS | انتخاب و جست‌وجوی جداگانه در فهرست پروتکل‌ها |
 
 A,S Secure یک پروفایل مدیریتی اختصاصی برای هستهٔ شناخته‌شدهٔ FRP است و پروتکل رمزنگاری تازه‌ای نیست. پنل برای هر اتصال توکن و گواهی جدا می‌سازد، اعتبارسنجی TLS را اجباری می‌کند و فهرست پورت‌های مجاز را محدود می‌کند. QUIC پیش‌فرض است و WSS و TCP هم قابل انتخاب‌اند. تضمینی برای شناسایی‌نشدن توسط DPI یا سرعت و پینگ ثابت وجود ندارد.
+
+هر ۱۷ نوع را از فهرست **پروتکل** در تانل دستی یا مسیر **مدیریت تانل‌ها ← اتصال نودهای پنل** انتخاب یا جست‌وجو کن. A,S checksum برنامهٔ لازم را بررسی می‌کند، دو نود را با کلید راه‌اندازی وصل می‌کند و نوع انتخاب‌شده را می‌سازد. هر سرور یک سرویس systemd دارد که سلامت تانل را بررسی و اتصال متوقف‌شده را بازیابی می‌کند.
 
 هر تانل تنظیمات و پروتکل خودش را دارد؛ مثلاً Reverse با نام office و Backhaul با نام bh-main می‌توانند هم‌زمان اجرا شوند.
 
@@ -468,7 +484,7 @@ A,S Secure یک پروفایل مدیریتی اختصاصی برای هستهٔ
 
 | ویژگی | توضیح |
 |---|---|
-| 🔀 چندپروتکلی | انتخاب Reverse، Backhaul، Rathole، GRE، FRP، Gost، A,S Secure یا Paqet برای هر تانل |
+| 🔀 چندپروتکلی | انتخاب Reverse، Backhaul، Rathole، GRE، FRP، Gost، A,S Secure و Paqet، به‌علاوهٔ ۱۷ نوع پروتکل قابل جست‌وجو |
 | 🏷 نام‌گذاری تانل | ساخت هر تعداد تانل با نام جداگانه |
 | ⚡ اجرای خودکار | تانل بلافاصله پس از ذخیرهٔ تنظیمات اجرا می‌شود |
 | 🔄 همگام‌سازی خودکار | ساخت و همگام‌سازی خودکار پورت‌ها در Reverse |
@@ -530,7 +546,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 | همگام‌سازی خودکار | — | y یا n |
 | پورت‌های دستی | — | فقط اگر همگام‌سازی خاموش باشد |
 
-سرور ایران به اتصال‌ها گوش می‌دهد و سرور خارج اتصال را آغاز می‌کند. باینری خارجی لازم نیست؛ این روش از هستهٔ همراه A,S.py استفاده می‌کند. تنظیمات قدیمی `METHOD=asnative` همچنان کار می‌کنند. پورت‌های Bridge و Sync باید در دو سمت یکسان، با هم متفاوت و بین ۱ تا ۶۵۵۳۵ باشند.
+سرور ایران به اتصال‌ها گوش می‌دهد و سرور خارج اتصال را آغاز می‌کند. باینری خارجی لازم نیست؛ این روش از هستهٔ همراه A,S.py استفاده می‌کند. هنگام اتصال دو نود پنل، حالت خودکار پورت‌های در حال گوش‌دادن در سرور خارج را همگام می‌کند؛ حالت دستی فقط پورت‌هایی را فوروارد می‌کند که در CSV وارد می‌کنی. در حالت دستی حداقل یک پورت لازم است. تنظیمات قدیمی `METHOD=asnative` همچنان کار می‌کنند و پورت‌های Bridge و Sync باید در دو سمت یکسان و با هم متفاوت باشند.
 
 ### 2️⃣ Backhaul
 
@@ -539,7 +555,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 | فیلد | نقش سرور | نقش کلاینت |
 |---|---|---|
 | توکن | راز مشترک | همان مقدار |
-| نوع انتقال | tcp / ws / wss | همان مقدار |
+| نوع انتقال | tcp / ws | همان مقدار |
 | پورت Bind | پورت کنترل | — |
 | IP سرور | — | وارد شود |
 | پورت‌های فوروارد | وارد شود | — |
@@ -585,10 +601,18 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 | فیلد | مقدار |
 |---|---|
 | IP مقصد خارج | سروری که ترافیک به آن فرستاده می‌شود |
-| پورت‌ها | فهرست دستی یا بازه؛ مثلاً 54 تا 65000 |
-| پروتکل | tcp / udp / grpc |
+| پورت‌ها | فهرست یا بازه، حداکثر ۱۰۲۴ پورت در هر پروفایل |
+| پروتکل | tcp / udp |
 
 Gost یک‌طرفه است و در سمت دیگر تنظیم متناظر لازم ندارد. باینری از انتشارهای go-gost/gost دریافت می‌شود.
+
+---
+
+### 7️⃣ گزینه‌های پروتکل تکمیلی — ۱۷ نوع
+
+در تانل دستی یا **مدیریت تانل‌ها ← اتصال نودهای پنل**، یکی از این ۱۷ نوع را از فهرست **پروتکل** انتخاب یا جست‌وجو کن: **SIT، IPIP، GRE، GRETAP، IP6GRE، IP6GRETAP، IPIP6، IP6IP6، VXLAN، Geneve، L2TPv3، WireGuard، Obfs، TCP، EoIP، Stream TCP، Stream TLS**. نوع‌های TCP stream فقط فوروارد TCP دارند و نوع‌های لایهٔ ۲ در این فرم فوروارد پورت ندارند. گزینه‌های MTU، سرعت، رمزگذاری و تنظیمات پیشرفته متناسب با نوع انتخاب‌شده فعال می‌شوند.
+
+پورت انتخابی تانل و ارتباط TCP سرویس همتا (که از بازهٔ ۲۰۰۰۰ تا ۶۰۰۰۰ انتخاب می‌شود) باید بین دو سرور قابل دسترسی باشند. فوروارد پورت یا رمزگذاری IPsec اضافه به `nft` نیاز دارد. A,S بسته‌های فایروال نصب نمی‌کند و قانون فایروال را خودکار تغییر نمی‌دهد. کنترل‌ها و لاگ‌ها در کارت A,S هستند و سرویس، سلامت اتصال را بررسی و بازیابی می‌کند.
 
 ---
 
@@ -679,6 +703,8 @@ sudo A,S-tunnel --join 'https://MASTER_IP:PORT' 'JOIN_KEY' 'node-name' iran 'TLS
 - کنترل ازدحام BBR
 - صف fq
 - تنظیمات پایدار شبکه در sysctl
+
+بهینه‌ساز فقط فایل sysctl خودش را اعمال می‌کند؛ فایل‌های تنظیمات برنامه‌های دیگر را دوباره بارگذاری نمی‌کند و قوانین فایروال، فیلتر مسیر یا سیاست ICMP سرور را تغییر نمی‌دهد.
 
 ---
 
@@ -784,15 +810,18 @@ USDT · BNB
 | № | Протокол | Тип | Назначение |
 |---|---|---|---|
 | 1 | **Reverse** | Обратный TCP с пулом соединений | Без внешних зависимостей, автоматическая синхронизация портов |
-| 2 | **Backhaul** | Мультиплексированный TCP / WS / WSS | Высокая пропускная способность и выбор транспорта |
+| 2 | **Backhaul** | Мультиплексированный TCP / WS | Высокая пропускная способность и выбор транспорта |
 | 3 | **Rathole** | Лёгкий туннель для обхода NAT | Низкая нагрузка, несколько сервисов |
 | 4 | **GRE** | IP-туннель на уровне ядра | Прямая IP-связь без пользовательского демона |
 | 5 | **FRP** | Обратный прокси | Проверенное решение с разными типами прокси |
-| 6 | **Gost** | Пересылка IPv4/IPv6-портов через TCP/UDP/GRPC | Простая пересылка портов один к одному и большие диапазоны |
+| 6 | **Gost** | Пересылка IPv4/IPv6-портов через TCP/UDP | Пересылка один к одному, до 1024 портов в профиле |
 | 7 | **A,S Secure** | Пересылка TCP/UDP на базе FRP через QUIC, WSS или TCP | TLS с закреплённым сертификатом, токен и список разрешённых портов |
 | 8 | **Paqet** | Пакетный туннель | Специализированный сетевой режим с требованиями к совместимости |
+| 9 | **17 вариантов протокола** | SIT, IPIP, GRE, GRETAP, IP6GRE, IP6GRETAP, IPIP6, IP6IP6, VXLAN, Geneve, L2TPv3, WireGuard, Obfs, TCP, EoIP, Stream TCP, Stream TLS | Отдельный выбор и поиск в списке протоколов |
 
 A,S Secure — это профиль управления для существующего движка FRP, а не новый криптографический протокол. Панель создаёт отдельные токен и сертификат, требует проверки TLS и ограничивает разрешённые порты. QUIC выбран по умолчанию; доступны WSS и TCP. Обнаружение DPI и постоянные скорость или задержка не гарантируются.
+
+Все 17 типов можно отдельно выбрать или найти в списке **Protocol** как для ручного туннеля, так и в разделе **Tunnels Manager → From panel nodes**. A,S проверяет контрольную сумму загруженного движка, соединяет узлы ключом настройки и создаёт выбранный тип. На каждом сервере работает один systemd-сервис с проверкой состояния и восстановлением туннеля.
 
 Каждому туннелю назначаются собственные имя и протокол. Например, Reverse office, Backhaul bh-main и Gost fwd1 могут работать одновременно.
 
@@ -814,7 +843,7 @@ A,S Secure — это профиль управления для существ�
 
 | Функция | Описание |
 |---|---|
-| 🔀 Несколько протоколов | Reverse, Backhaul, Rathole, GRE, FRP, Gost, A,S Secure или Paqet для каждого туннеля |
+| 🔀 Несколько протоколов | Reverse, Backhaul, Rathole, GRE, FRP, Gost, A,S Secure, Paqet и 17 типов с отдельным поиском |
 | 🏷 Именованные туннели | Создание любого количества туннелей с отдельными именами |
 | ⚡ Автозапуск | Запуск сразу после сохранения конфигурации |
 | 🔄 AutoSync | Автоматическое создание и синхронизация портов Reverse |
@@ -864,7 +893,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 | AutoSync | — | y или n |
 | Ручные порты | — | Только если AutoSync выключен |
 
-Сервер в Иране принимает соединения, зарубежный сервер подключается к нему. Внешний бинарный файл не нужен: используется встроенное ядро A,S.py.
+Сервер в Иране принимает соединения, зарубежный сервер подключается к нему. В мастере панели можно выбрать AutoSync для синхронизации прослушиваемых портов зарубежного сервера или Manual, чтобы открыть только порты из списка CSV. Внешний бинарный файл не нужен: используется встроенное ядро A,S.py.
 
 ### 2️⃣ Backhaul
 
@@ -873,7 +902,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 | Параметр | Сервер | Клиент |
 |---|---|---|
 | Токен | Общий секрет | То же значение |
-| Транспорт | tcp / ws / wss | То же значение |
+| Транспорт | tcp / ws | То же значение |
 | Bind-порт | Порт управления | — |
 | IP сервера | — | Указать |
 | Пересылаемые порты | Указать | — |
@@ -896,7 +925,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 
 ### 6️⃣ Gost
 
-Gost пересылает указанные TCP/UDP/GRPC-порты на IP назначения за рубежом. Можно задать список портов или диапазон. Это односторонний пересылатель, поэтому парная настройка на другом конце не требуется. Бинарный файл загружается из go-gost/gost.
+Gost пересылает указанные TCP/UDP-порты на IP назначения за рубежом. Можно задать список портов или диапазон до 1024 портов в одном профиле. Это односторонний пересылатель без шифрования между серверами, поэтому парная настройка на другом конце не требуется. Бинарный файл загружается из go-gost/gost.
+
+---
+
+### 7️⃣ Дополнительные протоколы — 17 типов
+
+В ручной форме или в **Tunnels Manager → From panel nodes** выберите либо найдите в списке **Protocol** один из 17 типов: **SIT, IPIP, GRE, GRETAP, IP6GRE, IP6GRETAP, IPIP6, IP6IP6, VXLAN, Geneve, L2TPv3, WireGuard, Obfs, TCP, EoIP, Stream TCP, Stream TLS**. Потоковые TCP-типы поддерживают только TCP-переадресацию; типы L2 не поддерживают переадресацию портов в этой форме. Настройки MTU, скорости и шифрования зависят от выбранного типа.
+
+Откройте между серверами выбранный порт туннеля и TCP-порт службы узла (выбирается из диапазона 20000–60000). Для пересылки портов или дополнительного IPsec-шифрования требуется `nft`. A,S не устанавливает firewall-пакеты и не меняет правила автоматически. Карточка A,S предоставляет управление и журналы; служба проверяет состояние и восстанавливает туннель.
 
 ---
 
@@ -955,6 +992,8 @@ Fingerprint закрепляет сертификат мастера. После
 - BBR
 - дисциплину очереди fq
 - постоянные сетевые настройки sysctl
+
+Оптимизатор применяет только свой sysctl-файл. Он не перезагружает настройки других приложений и не меняет firewall, фильтрацию маршрутов или политику ICMP.
 
 ## 🔧 Управление скриптом
 
@@ -1045,15 +1084,18 @@ USDT · BNB
 | 编号 | 协议 | 类型 | 适用场景 |
 |---|---|---|---|
 | 1 | **Reverse** | 内置连接池的反向 TCP | 无外部依赖，端口自动同步 |
-| 2 | **Backhaul** | TCP / WS / WSS 多路复用隧道 | 高吞吐量和灵活传输方式 |
+| 2 | **Backhaul** | TCP / WS 多路复用隧道 | 高吞吐量和灵活传输方式 |
 | 3 | **Rathole** | 轻量 NAT 穿透隧道 | 低开销，适合多个小型服务 |
 | 4 | **GRE** | 内核级 IP 隧道 | 原生 IP 连接，无用户态守护进程 |
 | 5 | **FRP** | 快速反向代理 | 成熟方案，支持多种代理类型 |
-| 6 | **Gost** | IPv4/IPv6 TCP、UDP、GRPC 端口转发 | 简单的一对一转发和大范围端口 |
+| 6 | **Gost** | IPv4/IPv6 TCP、UDP 端口转发 | 一对一转发，每个配置最多 1024 个端口 |
 | 7 | **A,S Secure** | 基于 FRP 的 TCP/UDP 转发，支持 QUIC、WSS 或 TCP | TLS 证书固定、令牌认证和服务端端口白名单 |
 | 8 | **Paqet** | 基于数据包的隧道 | 专用网络路径，需要网络环境兼容 |
+| 9 | **17 种协议选项** | SIT、IPIP、GRE、GRETAP、IP6GRE、IP6GRETAP、IPIP6、IP6IP6、VXLAN、Geneve、L2TPv3、WireGuard、Obfs、TCP、EoIP、Stream TCP、Stream TLS | 可在协议列表中单独选择和搜索 |
 
 A,S Secure 是对成熟 FRP 引擎的专用管理配置，并非自创加密协议。面板为每条连接生成独立令牌和证书，强制验证 TLS，并限制服务端允许开放的端口。默认使用 QUIC，也可选择 WSS 或 TCP。无法保证规避 DPI，也无法保证固定速度或延迟。
+
+这 17 种类型可在手动隧道表单或 **Tunnels Manager → From panel nodes** 的 **Protocol** 列表中单独选择或搜索。A,S 会校验下载程序的 SHA-256、使用配对密钥连接两个节点并创建所选类型。每台服务器运行一个 systemd 服务，用于检查隧道状态并恢复已停止的连接。
 
 每条隧道都有独立的名称和协议。例如，Reverse office、Backhaul bh-main 和 Gost fwd1 可以同时运行。
 
@@ -1075,7 +1117,7 @@ A,S Secure 是对成熟 FRP 引擎的专用管理配置，并非自创加密协�
 
 | 功能 | 说明 |
 |---|---|
-| 🔀 多协议 | 每条隧道可选 Reverse、Backhaul、Rathole、GRE、FRP、Gost、A,S Secure 或 Paqet |
+| 🔀 多协议 | 每条隧道可选 Reverse、Backhaul、Rathole、GRE、FRP、Gost、A,S Secure、Paqet 及 17 种可搜索协议类型 |
 | 🏷 命名隧道 | 创建任意数量的独立命名隧道 |
 | ⚡ 自动启动 | 保存配置后立即启动 |
 | 🔄 AutoSync | Reverse 自动创建并同步端口 |
@@ -1125,7 +1167,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 | AutoSync | — | y 或 n |
 | 手动端口 | — | 仅在关闭 AutoSync 时填写 |
 
-伊朗服务器监听连接，境外服务器发起连接。无需外部二进制文件，使用内置 A,S.py 核心。
+伊朗服务器监听连接，境外服务器发起连接。在面板连接向导中，可选择 AutoSync 同步境外服务器正在监听的端口，或选择 Manual 仅转发 CSV 列表中的端口。无需外部二进制文件，使用内置 A,S.py 核心。
 
 ### 2️⃣ Backhaul
 
@@ -1149,7 +1191,15 @@ bash <(curl -Ls https://raw.githubusercontent.com/ariansaeedi56-prog/A-S-tunnel/
 
 ### 6️⃣ Gost
 
-Gost 将指定的 TCP/UDP/GRPC 端口转发到境外目标 IP。端口可手动列出，也可设置范围。它是单向转发器，另一端不需要配对配置。二进制文件从 go-gost/gost Releases 下载。
+Gost 将指定的 TCP/UDP 端口转发到境外目标 IP。端口可手动列出，也可设置最多 1024 个端口的范围。它是单向转发器，不会加密两台服务器之间的流量，另一端不需要配对配置。二进制文件从 go-gost/gost Releases 下载。
+
+---
+
+### 7️⃣ 扩展协议选项 — 17 种类型
+
+手动隧道表单或 **Tunnels Manager → From panel nodes** 均可在 **Protocol** 列表中选择或搜索以下 17 种类型之一：**SIT、IPIP、GRE、GRETAP、IP6GRE、IP6GRETAP、IPIP6、IP6IP6、VXLAN、Geneve、L2TPv3、WireGuard、Obfs、TCP、EoIP、Stream TCP、Stream TLS**。TCP 流类型仅支持 TCP 转发；二层类型在此表单中不支持端口转发。MTU、速度、加密和高级选项会按类型显示。
+
+请确保两台服务器之间可访问所选隧道端口和节点服务的 TCP 连接（端口从 20000–60000 范围选择）。端口转发或额外 IPsec 加密需要 `nft`。A,S 不会自动安装防火墙软件或修改规则。A,S 卡片提供控制与日志，隧道服务负责检查状态并恢复连接。
 
 ---
 
@@ -1208,6 +1258,8 @@ TLS 指纹用于固定主控证书。节点通常会在几秒内显示在面板�
 - BBR 拥塞控制
 - fq 队列规则
 - 持久化 sysctl 网络设置
+
+优化器只应用自己的 sysctl 文件，不会重新加载其他应用的设置，也不会更改主机防火墙、路由过滤或 ICMP 策略。
 
 ## 🔧 脚本管理
 
@@ -1276,3 +1328,4 @@ ip -s link show gre<tunnel_name>
 
 **支持项目：** 0xAb27580238c98290e291fF11C78061469A69406f  
 USDT · BNB
+
