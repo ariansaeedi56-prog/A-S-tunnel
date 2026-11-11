@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.2"
+VERSION="4.2.3"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -1321,6 +1321,7 @@ neotunnel_run_profile(){
     [[ "$kind" =~ ^(sit|ipip|gre|gretap|ip6gre|ip6gretap|ipip6|ip6ip6|vxlan|geneve|l2tpv3|wireguard|obfs|tcp|eoip|stream-tcp|stream-tls)$ ]] || {
       echo "[-] Tunnel kind is missing or unsupported." > "$TTY_OUT"; return 1;
     }
+    [[ -z "${NT_TTL:-}" || "$kind" =~ ^(sit|ipip|gre|gretap|ip6gre|ip6gretap|ipip6|ip6ip6|vxlan|geneve|eoip)$ ]] || NT_TTL=""
     if [[ "${NT_MODE:-linked}" == "remote" ]]; then
       remote="${NT_REMOTE_IP:-}"
       [[ -n "$remote" ]] || { echo "[-] Set the remote IP for this tunnel profile." > "$TTY_OUT"; return 1; }
@@ -1372,7 +1373,7 @@ neotunnel_stop_profile(){
 }
 
 api_neotunnel(){
-  local body action log rc node_name node_name_now node_ip peer_name peer_ip peer_entry key nt_name kind port mtu ttl vni tunnel_id pool4 pool6 sni encrypt profile keepalive padding lanes conns forward_ports forward_proto mode
+  local body action log rc node_name node_name_now node_ip peer_name peer_ip peer_entry peer_by_ip peer_base peer_suffix key nt_name kind port mtu ttl vni tunnel_id pool4 pool6 sni encrypt profile keepalive padding lanes conns forward_ports forward_proto mode
   body="$(cat)"
   action="$(jq -r '.action // empty' <<<"$body" 2>/dev/null || true)"
   case "$action" in
@@ -1391,10 +1392,29 @@ api_neotunnel(){
         log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" node --address "$node_ip" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_node_address_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
       fi
       peer_entry="$(jq -c --arg n "$peer_name" '.peers[]? | select(.name == $n)' "$NEOTUNNEL_STATE" 2>/dev/null | head -n1 || true)"
-      if [[ -n "$peer_entry" ]]; then
-        [[ "$(jq -r '.address // empty' <<<"$peer_entry")" == "$peer_ip" ]] || { echo '{"ok":false,"error":"neotunnel_peer_address_conflict"}'; return 0; }
-      else
-        log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" peer add "$peer_name" --address "$peer_ip" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_peer_add_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
+      if [[ -n "$peer_entry" && "$(jq -r '.address // empty' <<<"$peer_entry")" != "$peer_ip" ]]; then
+        peer_by_ip="$(jq -c --arg ip "$peer_ip" '.peers[]? | select(.address == $ip)' "$NEOTUNNEL_STATE" 2>/dev/null | head -n1 || true)"
+        if [[ -n "$peer_by_ip" ]]; then
+          peer_name="$(jq -r '.name' <<<"$peer_by_ip")"
+          peer_entry="$peer_by_ip"
+        else
+          peer_base="$peer_name"
+          peer_suffix="$(printf '%s' "$peer_ip" | sha256sum | cut -c1-8)"
+          peer_name="${peer_base:0:23}-${peer_suffix}"
+          peer_entry="$(jq -c --arg n "$peer_name" '.peers[]? | select(.name == $n)' "$NEOTUNNEL_STATE" 2>/dev/null | head -n1 || true)"
+          if [[ -n "$peer_entry" && "$(jq -r '.address // empty' <<<"$peer_entry")" != "$peer_ip" ]]; then
+            echo '{"ok":false,"error":"neotunnel_peer_name_collision"}'; return 0
+          fi
+        fi
+      fi
+      if [[ -z "$peer_entry" ]]; then
+        peer_by_ip="$(jq -c --arg ip "$peer_ip" '.peers[]? | select(.address == $ip)' "$NEOTUNNEL_STATE" 2>/dev/null | head -n1 || true)"
+        if [[ -n "$peer_by_ip" ]]; then
+          peer_name="$(jq -r '.name' <<<"$peer_by_ip")"
+          peer_entry="$peer_by_ip"
+        else
+          log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" peer add "$peer_name" --address "$peer_ip" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_peer_add_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
+        fi
       fi
       log="$(NO_COLOR=1 "$NEOTUNNEL_BIN" peer connect "$peer_name" 2>&1)" || { printf '{"ok":false,"error":"neotunnel_setup_key_failed","log":%s}\n' "$(json_str "$log")"; return 0; }
       key="$(grep -oE 'NT1\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+' <<<"$log" | tail -n1 || true)"
@@ -1424,6 +1444,7 @@ api_neotunnel(){
       case "$kind" in vxlan|geneve|wireguard|obfs|tcp|stream-tcp|stream-tls) [[ -n "$port" ]] || { echo '{"ok":false,"error":"port_required"}'; return 0; } ;; esac
       case "$kind" in sit|ipip|gre|gretap|vxlan|geneve|l2tpv3|wireguard|obfs|tcp|eoip|stream-tcp|stream-tls) ;; *) [[ -z "$port" ]] || { echo '{"ok":false,"error":"port_unsupported"}'; return 0; } ;; esac
       [[ -z "$mtu" || ( "$mtu" =~ ^[0-9]{3,4}$ && 576 -le 10#$mtu && 10#$mtu -le 9000 ) ]] || { echo '{"ok":false,"error":"bad_mtu"}'; return 0; }
+      [[ -z "$ttl" || "$kind" =~ ^(sit|ipip|gre|gretap|ip6gre|ip6gretap|ipip6|ip6ip6|vxlan|geneve|eoip)$ ]] || ttl=""
       if [[ -n "$ttl" ]]; then
         [[ "$ttl" =~ ^[0-9]{1,3}$ ]] && (( 10#$ttl >= 1 && 10#$ttl <= 255 )) || { echo '{"ok":false,"error":"bad_ttl"}'; return 0; }
       fi
@@ -3199,6 +3220,7 @@ NEOTUNNEL_POOL_KINDS = ("sit", "ipip", "gre", "ip6gre", "ipip6", "ip6ip6", "wire
 NEOTUNNEL_POOL4_KINDS = ("ipip", "gre", "ip6gre", "ipip6", "wireguard", "obfs", "tcp")
 NEOTUNNEL_POOL6_KINDS = ("sit", "gre", "ip6gre", "ip6ip6", "wireguard", "obfs", "tcp")
 NEOTUNNEL_PMTU_KINDS = ("sit", "ipip", "gre", "gretap", "eoip")
+NEOTUNNEL_TTL_KINDS = ("sit", "ipip", "gre", "gretap", "ip6gre", "ip6gretap", "ipip6", "ip6ip6", "vxlan", "geneve", "eoip")
 NEOTUNNEL_LANE_KINDS = ("gre", "gretap", "ip6gre", "ip6gretap")
 NEOTUNNEL_IPV4_UNDERLAY_KINDS = ("sit", "ipip", "gre", "gretap")
 NEOTUNNEL_IPV6_UNDERLAY_KINDS = ("ip6gre", "ip6gretap", "ipip6", "ip6ip6")
@@ -3346,9 +3368,10 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         if mtu not in (None, "") and _port(mtu, lo=576, hi=9000) is None:
             raise ValueError("bad_mtu")
         ttl = p.get("ttl")
-        ttl = _port(ttl, lo=1, hi=255) if ttl not in (None, "") else None
+        ttl = None if ttl not in (None, "") and kind not in NEOTUNNEL_TTL_KINDS else (_port(ttl, lo=1, hi=255) if ttl not in (None, "") else None)
         if p.get("ttl") not in (None, "") and ttl is None:
-            raise ValueError("bad_ttl")
+            if kind in NEOTUNNEL_TTL_KINDS:
+                raise ValueError("bad_ttl")
         vni = p.get("vni")
         vni = _port(vni, lo=1, hi=16777215) if vni not in (None, "") else None
         if p.get("vni") not in (None, "") and vni is None:
@@ -3545,7 +3568,10 @@ def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfield
     # A,S names can exceed the tunnel engine's interface-safe 10-character ID.
     # Keep a separate short engine ID and retain the A,S profile as the UI name.
     nt_name = sfields["NT_TUNNEL_NAME"]
-    peer_name = "as-" + re.sub(r"[^a-z0-9-]", "", client.lower())[-8:]
+    peer_id = re.sub(r"[^a-z0-9-]", "", str(client).lower())[-24:]
+    if not peer_id:
+        peer_id = re.sub(r"[^a-z0-9-]", "", str(cname).lower())[-24:]
+    peer_name = "as-" + (peer_id or "node")
     for nid in (server, client):
         listing = run_on_node(nid, "list", timeout=45)
         if isinstance(listing, list) and any(str(x.get("prof")) == name for x in listing if isinstance(x, dict)):
@@ -3565,6 +3591,7 @@ def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfield
         node_ip=sip, peer_name=peer_name, peer_ip=cip))
     if not step_ok:
         return jsonify({"ok": False, "saved": False, "steps": steps, "error": "neotunnel_prepare_failed"})
+    peer_name = str(prepared.get("peer_name") or peer_name)
 
     step_ok, _ = record("client", client, cname, "iran", _neotunnel_action(client, "apply", key=prepared.get("key", "")))
     if not step_ok:
@@ -5148,6 +5175,8 @@ const NT_POOL_KINDS = new Set(['sit','ipip','gre','ip6gre','ipip6','ip6ip6','wir
 const NT_POOL4_KINDS = new Set(['ipip','gre','ip6gre','ipip6','wireguard','obfs','tcp']);
 const NT_POOL6_KINDS = new Set(['sit','gre','ip6gre','ip6ip6','wireguard','obfs','tcp']);
 const NT_PMTU_KINDS = new Set(['sit','ipip','gre','gretap','eoip']);
+const NT_TTL_KINDS = new Set(['sit','ipip','gre','gretap','ip6gre','ip6gretap','ipip6','ip6ip6','vxlan','geneve','eoip']);
+const NT_FOU_KINDS = new Set(['sit','ipip','gre','gretap']);
 const NT_STREAM_KINDS = new Set(['stream-tcp','stream-tls']);
 const NT_LANE_KINDS = new Set(['gre','gretap','ip6gre','ip6gretap']);
 const NT_MANAGED_ONLY = new Set(['obfs','tcp','stream-tcp','stream-tls']);
@@ -5168,7 +5197,8 @@ function ntManualFields(kind) {
   if (NT_MANAGED_ONLY.has(kind)) return [];
   const f = [T('NT_REMOTE_IP','Remote IP address',{full:true})];
   if (NT_PORT_KINDS.has(kind)) f.push(ntPortField(kind, 'NT_'));
-  f.push(T('NT_MTU','MTU (576-9000)'), T('NT_TTL','Outer TTL (1-255; blank = default)'));
+  f.push(T('NT_MTU','MTU (576-9000)'));
+  if (NT_TTL_KINDS.has(kind)) f.push(T('NT_TTL','Outer TTL (1-255; blank = default)'));
   if (kind === 'wireguard') { f.push(T('NT_PEER_KEY','WireGuard peer public key',{full:true}), T('NT_KEEPALIVE','WireGuard keepalive seconds (-1 disables)',{ph:'25'})); }
   if (NT_PMTU_KINDS.has(kind)) {
     f.push(SEL('NT_MTU_PROBE','Measure path MTU (IPv4 underlay)',['false','true'],{v:'false'}), SEL('NT_NO_PMTUD','Allow outer fragmentation (IPv4 underlay)',['false','true'],{v:'false'}));
@@ -5186,10 +5216,15 @@ function ntManualFields(kind) {
 }
 function ntLinkFields(kind, family = '4') {
   const f = [];
-  if (NT_PORT_KINDS.has(kind)) f.push(ntPortField(kind, ''));
-  if (!NT_STREAM_KINDS.has(kind)) f.push(T('mtu','MTU (576-9000)'), T('ttl','Outer TTL (1-255; blank = default)'));
+  if (NT_PORT_KINDS.has(kind) && !(family === '6' && NT_FOU_KINDS.has(kind))) f.push(ntPortField(kind, ''));
+  if (!NT_STREAM_KINDS.has(kind)) f.push(T('mtu','MTU (576-9000)'));
+  if (NT_TTL_KINDS.has(kind)) f.push(T('ttl','Outer TTL (1-255; blank = default)'));
   f.push(SEL('profile','Speed profile',['balanced','lean','max'],{v:'balanced'}));
-  if (!['wireguard','obfs','stream-tls'].includes(kind)) f.push(SEL('encrypt','Additional tunnel encryption',NT_ENCRYPT,{v:'none'}));
+  if (!['wireguard','obfs','stream-tls'].includes(kind)) {
+    const cipherKinds = kind === 'tcp' || kind === 'stream-tcp';
+    const choices = cipherKinds ? NT_ENCRYPT.filter(x => x !== 'auto') : NT_ENCRYPT;
+    f.push(SEL('encrypt', cipherKinds ? 'TCP stream cipher' : 'IPsec encryption', choices, {v:'none'}));
+  }
   if (NT_POOL4_KINDS.has(kind)) f.push(T('pool4','IPv4 address pool CIDR (optional)',{ph:'10.77.0.0/16'}));
   if (NT_POOL6_KINDS.has(kind)) f.push(T('pool6','IPv6 address pool CIDR (optional)',{ph:'fd20::/48'}));
   if (NT_PMTU_KINDS.has(kind) && family === '4') {
