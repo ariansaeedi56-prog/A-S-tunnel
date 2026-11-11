@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.12"
+VERSION="4.2.13"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -99,14 +99,35 @@ detect_arch(){
 
 # $1 = owner/repo   $2 = regex (POSIX ERE) to match against asset filename
 gh_latest_asset_url(){
-  local repo pattern
+  local repo pattern out tag
   repo="$1"
   pattern="$2"
   have jq || apt_try_install jq
-  curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: A,S-tunnel" \
+  out="$(curl -fsSL -H "Accept: application/vnd.github+json" -H "User-Agent: A,S-tunnel" \
     "https://api.github.com/repos/${repo}/releases/latest" 2>/dev/null \
-    | jq -r --arg p "$pattern" '.assets[]? | select(.name|test($p)) | .browser_download_url' \
-    | head -n1
+    | jq -r --arg p "$pattern" '.assets[]? | select(.name|test($p)) | .browser_download_url' 2>/dev/null \
+    | head -n1 || true)"
+  if [[ -n "$out" && "$out" != "null" ]]; then
+    echo "$out"
+    return 0
+  fi
+  # Fallback: scrape redirect to get latest tag without API rate limits
+  tag="$(curl -fsSLI -o /dev/null -w '%{url_effective}' "https://github.com/${repo}/releases/latest" 2>/dev/null | awk -F'/' '{print $NF}' || true)"
+  if [[ -n "$tag" && "$tag" != "latest" ]]; then
+    out="$(curl -fsSL "https://github.com/${repo}/releases/expanded_assets/${tag}" 2>/dev/null \
+      | grep -Eo '/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/releases/download/[^"]+' \
+      | while IFS= read -r line; do
+          fn="$(basename "$line")"
+          if [[ "$fn" =~ $pattern ]]; then
+            echo "https://github.com$line"
+            break
+          fi
+        done || true)"
+    if [[ -n "$out" ]]; then
+      echo "$out"
+      return 0
+    fi
+  fi
 }
 
 install_backhaul(){
@@ -114,9 +135,14 @@ install_backhaul(){
   echo "[*] Installing Backhaul..." > "$TTY_OUT"
   local arch; arch="$(detect_arch)"
   local url; url="$(gh_latest_asset_url "Musixal/Backhaul" "linux_${arch}\\.tar\\.gz$")"
-  [[ -n "$url" ]] || { echo "[-] Could not find a Backhaul release asset for linux_${arch}." > "$TTY_OUT"; return 1; }
+  if [[ -z "$url" ]]; then
+    url="https://github.com/Musixal/Backhaul/releases/download/v0.7.2/backhaul_linux_${arch}.tar.gz"
+  fi
   local tmp; tmp="$(mktemp -d)"
-  fetch_url_to "$url" "$tmp/bh.tar.gz" || { rm -rf "$tmp"; return 1; }
+  if ! fetch_url_to "$url" "$tmp/bh.tar.gz"; then
+    url="https://github.com/Musixal/Backhaul/releases/download/v0.7.2/backhaul_linux_${arch}.tar.gz"
+    fetch_url_to "$url" "$tmp/bh.tar.gz" || { rm -rf "$tmp"; echo "[-] Could not download Backhaul." > "$TTY_OUT"; return 1; }
+  fi
   tar -xzf "$tmp/bh.tar.gz" -C "$tmp" 2>/dev/null || true
   find "$tmp" -maxdepth 2 -type f -iname "backhaul*" ! -name "*.toml" ! -name "*.md" -exec cp {} "$BIN_DIR/backhaul" \; 2>/dev/null || true
   chmod +x "$BIN_DIR/backhaul" 2>/dev/null || true
@@ -188,9 +214,14 @@ install_frp(){
   fi
   local arch; arch="$(detect_arch)"
   local url; url="$(gh_latest_asset_url "fatedier/frp" "linux_${arch}\\.tar\\.gz$")"
-  [[ -n "$url" ]] || { echo "[-] Could not find an FRP release asset for linux_${arch}." > "$TTY_OUT"; return 1; }
+  if [[ -z "$url" ]]; then
+    url="https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_linux_${arch}.tar.gz"
+  fi
   local tmp; tmp="$(mktemp -d)"
-  fetch_url_to "$url" "$tmp/frp.tar.gz" || { rm -rf "$tmp"; return 1; }
+  if ! fetch_url_to "$url" "$tmp/frp.tar.gz"; then
+    url="https://github.com/fatedier/frp/releases/download/v0.72.0/frp_0.72.0_linux_${arch}.tar.gz"
+    fetch_url_to "$url" "$tmp/frp.tar.gz" || { rm -rf "$tmp"; echo "[-] Could not download FRP." > "$TTY_OUT"; return 1; }
+  fi
   tar -xzf "$tmp/frp.tar.gz" -C "$tmp" --strip-components=1 2>/dev/null || true
   [[ -f "$tmp/frps" && -f "$tmp/frpc" ]] || { echo "[-] FRP archive layout unexpected." > "$TTY_OUT"; rm -rf "$tmp"; return 1; }
   cp "$tmp/frps" "$BIN_DIR/frps"; cp "$tmp/frpc" "$BIN_DIR/frpc"
@@ -205,9 +236,14 @@ install_gost(){
   echo "[*] Installing Gost..." > "$TTY_OUT"
   local arch; arch="$(detect_arch)"
   local url; url="$(gh_latest_asset_url "go-gost/gost" "linux_${arch}\\.tar\\.gz$")"
-  [[ -n "$url" ]] || { echo "[-] Could not find a Gost release asset for linux_${arch}." > "$TTY_OUT"; return 1; }
+  if [[ -z "$url" ]]; then
+    url="https://github.com/go-gost/gost/releases/download/v3.3.3/gost_3.3.3_linux_${arch}.tar.gz"
+  fi
   local tmp; tmp="$(mktemp -d)"
-  fetch_url_to "$url" "$tmp/gost.tar.gz" || { rm -rf "$tmp"; return 1; }
+  if ! fetch_url_to "$url" "$tmp/gost.tar.gz"; then
+    url="https://github.com/go-gost/gost/releases/download/v3.3.3/gost_3.3.3_linux_${arch}.tar.gz"
+    fetch_url_to "$url" "$tmp/gost.tar.gz" || { rm -rf "$tmp"; echo "[-] Could not download Gost." > "$TTY_OUT"; return 1; }
+  fi
   tar -xzf "$tmp/gost.tar.gz" -C "$tmp" 2>/dev/null || true
   find "$tmp" -maxdepth 2 -type f -iname "gost" -exec cp {} "$BIN_DIR/gost" \; 2>/dev/null || true
   chmod +x "$BIN_DIR/gost" 2>/dev/null || true
@@ -238,9 +274,15 @@ ensure(){
   have unzip   || apt_try_install unzip
 
   if [[ ! -f "$PY" ]]; then
-    echo "[*] Python core not found. Downloading: $PY_URL" > "$TTY_OUT"
-    fetch_url_to "$PY_URL" "$PY"
-    chmod +x "$PY" || true
+    local script_dir; script_dir="$(dirname "$(readlink -f "$0" 2>/dev/null || echo "$0")")"
+    if [[ -f "$script_dir/A,S.py" ]]; then
+      cp -f "$script_dir/A,S.py" "$PY"
+      chmod +x "$PY" || true
+    else
+      echo "[*] Python core not found. Downloading: $PY_URL" > "$TTY_OUT"
+      fetch_url_to "$PY_URL" "$PY" || true
+      chmod +x "$PY" || true
+    fi
   fi
   [[ -f "$PY" ]] || { echo "Missing python file: $PY"; exit 1; }
 }
@@ -613,7 +655,7 @@ edit_profile_frp(){
   prof="$1"
   f="$2"
   role="$3"
-  fr="1"; [[ "$role" == "iran" ]] && fr="2"
+  fr="2"; [[ "$role" == "iran" ]] && fr="1"
   echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$fr")"
   if [[ "$fr" == "1" ]]; then
@@ -622,7 +664,7 @@ edit_profile_frp(){
     write_env_file "$f" "METHOD=frp" "ROLE=$role" "FRP_ROLE=server" "TOKEN=$TOKEN" \
       "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   else
-    read -r -p "Server IP: " SERVER_IP < /dev/tty
+    read -r -p "Iran server IP: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 7000): " BIND_PORT < /dev/tty
     read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
     write_env_file "$f" "METHOD=frp" "ROLE=$role" "FRP_ROLE=client" "TOKEN=$TOKEN" \
@@ -938,7 +980,7 @@ frp_validate_profile(){
   local prof
   prof="$1"; load_profile "$prof"
   [[ "$FRP_ROLE" == server || "$FRP_ROLE" == client ]] || { echo "[-] FRP: role must be server or client." > "$TTY_OUT"; return 1; }
-  [[ ( "$ROLE" == eu && "$FRP_ROLE" == server ) || ( "$ROLE" == iran && "$FRP_ROLE" == client ) ]] || { echo "[-] FRP: abroad must be server and Iran must be client." > "$TTY_OUT"; return 1; }
+  [[ ( "$ROLE" == iran && "$FRP_ROLE" == server ) || ( "$ROLE" == eu && "$FRP_ROLE" == client ) ]] || { echo "[-] FRP: Iran must be server and abroad must be client." > "$TTY_OUT"; return 1; }
   [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{8,128}$ ]] || { echo "[-] FRP: token must be 8-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
   tunnel_valid_port "$BIND_PORT" || { echo "[-] FRP: control port must be 1-65535." > "$TTY_OUT"; return 1; }
   BIND_PORT="$(tunnel_normalize_port "$BIND_PORT")"
@@ -1075,7 +1117,8 @@ EOF
     local p
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
-      local_target_host="$(tunnel_local_target_host "$p" tcp "${LOCAL_ADDR:-auto}")" || { echo "[-] FRP: invalid local target address." > "$TTY_OUT"; return 1; }
+      local_target_host="$(tunnel_local_target_host "$p" tcp "${LOCAL_ADDR:-auto}" 2>/dev/null)" || local_target_host="127.0.0.1"
+      [[ -n "$local_target_host" ]] || local_target_host="127.0.0.1" 
       cat >> "$cfg" <<EOF
 
 [[proxies]]
@@ -1094,8 +1137,8 @@ write_assecure_config(){
   local prof cfg cert key ca p seen_ports local_target_host
   prof="$1"; cfg="$CONF/${prof}.toml"
   load_profile "$prof"
-  if [[ -z "${AS_ROLE:-}" ]]; then [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
-  [[ ( "$ROLE" == "eu" && "$AS_ROLE" == "server" ) || ( "$ROLE" == "iran" && "$AS_ROLE" == "client" ) ]] || { echo "[-] A,S Secure: abroad must be server and Iran must be client." > "$TTY_OUT"; return 1; }
+  if [[ -z "${AS_ROLE:-}" ]]; then [[ "$ROLE" == "iran" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
+  [[ ( "$ROLE" == "iran" && "$AS_ROLE" == "server" ) || ( "$ROLE" == "eu" && "$AS_ROLE" == "client" ) ]] || { echo "[-] A,S Secure: Iran must be server and abroad must be client." > "$TTY_OUT"; return 1; }
   [[ "$AS_TRANSPORT" == "quic" || "$AS_TRANSPORT" == "wss" || "$AS_TRANSPORT" == "tcp" ]] || { echo "[-] A,S Secure: invalid transport." > "$TTY_OUT"; return 1; }
   [[ "$TOKEN" =~ ^[A-Za-z0-9_-]{32,128}$ ]] || { echo "[-] A,S Secure: token must be 32-128 letters, digits, _ or -." > "$TTY_OUT"; return 1; }
   AS_TCP_PORTS="$(tunnel_normalize_ports "${AS_TCP_PORTS:-}")" || { echo "[-] A,S Secure: TCP ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
@@ -1153,10 +1196,10 @@ write_assecure_config(){
 run_assecure_slot(){
   local prof bin
   prof="$1"; load_profile "$prof"
-  if [[ -z "$AS_ROLE" ]]; then [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
+  if [[ -z "$AS_ROLE" ]]; then [[ "$ROLE" == "iran" ]] && AS_ROLE="server" || AS_ROLE="client"; fi
   write_assecure_config "$prof" || return 1
   load_profile "$prof"
-  [[ -z "$AS_ROLE" ]] && { [[ "$ROLE" == "eu" ]] && AS_ROLE="server" || AS_ROLE="client"; }
+  [[ -z "$AS_ROLE" ]] && { [[ "$ROLE" == "iran" ]] && AS_ROLE="server" || AS_ROLE="client"; }
   install_frp || return 1
   [[ "$AS_ROLE" == "server" ]] && bin="frps" || bin="frpc"
   launch_in_screen "$prof" "'$BIN_DIR/$bin' -c '$CONF/${prof}.toml'" || return 1
@@ -1244,6 +1287,12 @@ paqet_net_info(){
   if [[ -n "$NET_GW_IP" ]]; then
     ping -c 1 -W 1 "$NET_GW_IP" >/dev/null 2>&1 || true
     NET_GW_MAC="$(ip neigh show "$NET_GW_IP" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n1 || true)"
+    if [[ -z "$NET_GW_MAC" && -r /proc/net/arp ]]; then
+      NET_GW_MAC="$(awk -v ip="$NET_GW_IP" '$1 == ip {print $4; exit}' /proc/net/arp 2>/dev/null || true)"
+    fi
+    if [[ -z "$NET_GW_MAC" && -n "$NET_IFACE" ]]; then
+      NET_GW_MAC="$(ip neigh show dev "$NET_IFACE" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n1 || true)"
+    fi
   fi
   NET_IFACE="${NET_IFACE:-eth0}"
 }
@@ -1259,9 +1308,14 @@ install_paqet(){
   have iptables || apt_try_install iptables
   if ! ldconfig -p 2>/dev/null | grep -q 'libpcap'; then apt_try_install libpcap-dev; fi
   url="$(gh_latest_asset_url "hanselime/paqet" "paqet-linux-${archname}-.*\\.tar\\.gz$")"
-  [[ -n "$url" ]] || { echo "[-] Could not find a Paqet release asset for linux-${archname}." > "$TTY_OUT"; return 1; }
+  if [[ -z "$url" ]]; then
+    url="https://github.com/hanselime/paqet/releases/download/v1.0.0-alpha.21/paqet-linux-${archname}-v1.0.0-alpha.21.tar.gz"
+  fi
   tmp="$(mktemp -d)"
-  fetch_url_to "$url" "$tmp/paqet.tar.gz" || { rm -rf "$tmp"; return 1; }
+  if ! fetch_url_to "$url" "$tmp/paqet.tar.gz"; then
+    url="https://github.com/hanselime/paqet/releases/download/v1.0.0-alpha.21/paqet-linux-${archname}-v1.0.0-alpha.21.tar.gz"
+    fetch_url_to "$url" "$tmp/paqet.tar.gz" || { rm -rf "$tmp"; echo "[-] Could not download Paqet." > "$TTY_OUT"; return 1; }
+  fi
   tar -xzf "$tmp/paqet.tar.gz" -C "$tmp" 2>/dev/null || true
   bin="$(find "$tmp" -type f -name 'paqet*' ! -name '*.tar.gz' ! -name '*.yaml' ! -name '*.yml' ! -name '*.md' 2>/dev/null | head -n1 || true)"
   if [[ -z "$bin" ]]; then
@@ -1310,13 +1364,13 @@ write_paqet_config(){
       if [[ -n "$FORWARD_PORTS$FORWARD_UDP_PORTS" ]]; then
         echo "forward:"
         for p in $(csv_ports_to_array "$FORWARD_PORTS"); do
-          local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}")" || return 1
+          local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}" 2>/dev/null)" || local_target="127.0.0.1:${p}"
           echo "  - listen: \"0.0.0.0:${p}\""
           echo "    target: \"${local_target}\""
           echo "    protocol: \"tcp\""
         done
         for p in $(csv_ports_to_array "$FORWARD_UDP_PORTS"); do
-          local_target="$(tunnel_local_target_addr "$p" udp "${LOCAL_ADDR:-auto}")" || return 1
+          local_target="$(tunnel_local_target_addr "$p" udp "${LOCAL_ADDR:-auto}" 2>/dev/null)" || local_target="127.0.0.1:${p}"
           echo "  - listen: \"0.0.0.0:${p}\""
           echo "    target: \"${local_target}\""
           echo "    protocol: \"udp\""
@@ -1686,17 +1740,8 @@ api_neotunnel(){
 
 # Prints "port proto" for every port this Paqet profile needs raw-socket iptables rules for.
 paqet_rule_ports(){
-  local p tcp_ports udp_ports
   load_profile "$1"
-  if [[ "$PQ_ROLE" == "server" ]]; then
-    paqet_valid_port "$SERVER_PORT" && echo "$((10#$SERVER_PORT)) tcp"
-  else
-    tcp_ports="$(tunnel_normalize_ports "${FORWARD_PORTS:-}" 2>/dev/null || true)"
-    udp_ports="$(tunnel_normalize_ports "${FORWARD_UDP_PORTS:-}" 2>/dev/null || true)"
-    for p in $(csv_ports_to_array "$tcp_ports"); do echo "$p tcp"; done
-    for p in $(csv_ports_to_array "$udp_ports"); do echo "$p udp"; done
-    if paqet_valid_port "${SOCKS5_PORT:-}"; then echo "$((10#$SOCKS5_PORT)) tcp"; fi
-  fi
+  paqet_valid_port "$SERVER_PORT" && echo "$((10#$SERVER_PORT)) tcp"
 }
 
 paqet_iptables_rule(){
@@ -2079,12 +2124,15 @@ run_slot_asnative(){
   local prof cmd
   prof="$1"
   asnative_validate_profile "$prof" || return 1
+  [[ -f "$PY" ]] || ensure
+  local pool_val="${AS_POOL:-${PAHLAVI_POOL:-0}}"
+  local pool_env="AS_POOL=\"${pool_val}\" PAHLAVI_POOL=\"${pool_val}\""
   if [[ "$ROLE" == "eu" ]]; then
-    cmd="printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | PAHLAVI_POOL=\"${PAHLAVI_POOL:-0}\" python3 '$PY'"
+    cmd="printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | ${pool_env} python3 '$PY'"
   elif [[ "${AUTO_SYNC:-true}" == "true" || -z "$AUTO_SYNC" ]]; then
-    cmd="printf '2\n%s\n%s\ny\n' '$BRIDGE' '$SYNC' | PAHLAVI_POOL=\"${PAHLAVI_POOL:-0}\" python3 '$PY'"
+    cmd="printf '2\n%s\n%s\ny\n' '$BRIDGE' '$SYNC' | ${pool_env} python3 '$PY'"
   else
-    cmd="printf '2\n%s\n%s\nn\n%s\n' '$BRIDGE' '$SYNC' '$PORTS' | PAHLAVI_POOL=\"${PAHLAVI_POOL:-0}\" python3 '$PY'"
+    cmd="printf '2\n%s\n%s\nn\n%s\n' '$BRIDGE' '$SYNC' '$PORTS' | ${pool_env} python3 '$PY'"
   fi
   launch_in_screen "$prof" "$cmd" || return 1
   echo "[+] Started: $(session_name "$prof") (Reverse)" > "$TTY_OUT"
@@ -2167,7 +2215,7 @@ run_gost_slot(){
   args=""; n=0
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
-    args+=" -L=${PROTO}://:${p}/${host}:${p}"
+    args+=" -L \"${PROTO}://:${p}/${host}:${p}\""
     n=$((n+1))
   done < <(gost_port_list "$prof")
   [[ -n "$args" ]] || { echo "[-] No ports to forward." > "$TTY_OUT"; return 1; }
@@ -2198,6 +2246,7 @@ run_gre_slot(){
   local prof ifname
   prof="$1"
   gre_validate_profile "$prof" || return 1
+  modprobe ip_gre >/dev/null 2>&1 || modprobe gre >/dev/null 2>&1 || true
   ifname="$(gre_ifname "$prof")"
   if ip link show "$ifname" >/dev/null 2>&1; then ip link del "$ifname" >/dev/null 2>&1 || true; fi
   if ! ip tunnel add "$ifname" mode gre remote "$PEER_IP" local "$LOCAL_IP" ttl 255; then
@@ -3339,11 +3388,13 @@ def refresh_linked_backhaul_target(nodes, current, prof):
     port = next((p for p in ports if re.fullmatch(r"[0-9]{1,5}", p) and 1 <= int(p) <= 65535), "")
     if not port:
         return None, {"error": "backhaul_target_probe_failed", "detail": "No valid forwarded port was available to probe."}
-    probe = run_on_node(client[0], "probe_local_target", {"port": port, "proto": "tcp"}, timeout=30)
-    target = probe.get("host") if isinstance(probe, dict) and probe.get("ok") else None
-    if target not in ("127.0.0.1", "::1"):
-        detail = (probe.get("detail") or probe.get("error") or "Peer endpoint probe failed.") if isinstance(probe, dict) else "Invalid probe response."
-        return None, {"error": "backhaul_target_probe_failed", "detail": str(detail)[:300]}
+    target = "127.0.0.1"
+    try:
+        probe = run_on_node(client[0], "probe_local_target", {"port": port, "proto": "tcp"}, timeout=10)
+        if isinstance(probe, dict) and probe.get("ok") and probe.get("host") in ("127.0.0.1", "::1"):
+            target = probe.get("host")
+    except Exception:
+        target = "127.0.0.1"
     if old_server == target and old_client == target:
         return None, None
 
@@ -4013,13 +4064,14 @@ def api_link():
     if method == "backhaul" and str(params.get("local_addr") or "auto").strip().lower() == "auto":
         ports = str((sfields or {}).get("FORWARD_PORTS") or "").split(",")
         probe_port = ports[0] if ports and ports[0].isdigit() else ""
-        if not probe_port:
-            return jsonify({"error": "backhaul_target_probe_failed", "detail": "No forwarded port was available to probe."}), 400
-        probe = run_on_node(client, "probe_local_target", {"port": probe_port, "proto": "tcp"}, timeout=30)
-        target_host = probe.get("host") if isinstance(probe, dict) and probe.get("ok") else None
-        if target_host not in ("127.0.0.1", "::1"):
-            detail = str((probe or {}).get("detail") or (probe or {}).get("error") or "Peer endpoint probe failed.") if isinstance(probe, dict) else "Invalid probe response."
-            return jsonify({"error": "backhaul_target_probe_failed", "detail": detail[:300]}), 503
+        target_host = "127.0.0.1"
+        if probe_port:
+            try:
+                probe = run_on_node(client, "probe_local_target", {"port": probe_port, "proto": "tcp"}, timeout=10)
+                if isinstance(probe, dict) and probe.get("ok") and probe.get("host") in ("127.0.0.1", "::1"):
+                    target_host = probe.get("host")
+            except Exception:
+                target_host = "127.0.0.1"
         sfields["LOCAL_ADDR"] = cfields["LOCAL_ADDR"] = target_host
 
     link_id = secrets.token_hex(8)
@@ -4036,7 +4088,7 @@ def api_link():
     if method == "neotunnel":
         return _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfields, cfields)
 
-    server_role, client_role = (("iran", "eu") if method in ("asnative", "backhaul", "rathole") else ("eu", "iran"))
+    server_role, client_role = (("iran", "eu") if method in ("asnative", "backhaul", "rathole", "frp", "assecure") else ("eu", "iran"))
 
     steps = []
 
@@ -5867,14 +5919,14 @@ const FIELDS = {
       T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true})]},
   frp: {
-    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)')],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Abroad server IP'), T('BIND_PORT', 'Control port (of the server)'),
-      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})]},
+    eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
+      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Allowed ports (CSV)', {full: true})]},
   assecure: {
-    eu: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('BIND_PORT', 'Control port (TCP; QUIC also uses UDP)', {ph: '24000'}),
-      T('AS_TCP_PORTS', 'Allowed TCP ports (CSV)', {full: true}), T('AS_UDP_PORTS', 'Allowed UDP ports (CSV)', {full: true}), T('AS_CERT_B64', 'Server certificate (base64)', {full: true}), T('AS_KEY_B64', 'Server private key (base64)', {full: true})],
-    iran: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('SERVER_IP', 'Abroad server address'), T('BIND_PORT', 'Server control port'), T('AS_SERVER_NAME', 'TLS server name'),
-      T('AS_CA_B64', 'Pinned server CA certificate (base64)', {full: true}), T('AS_TCP_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('AS_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})]},
+    eu: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('SERVER_IP', 'Iran server address'), T('BIND_PORT', 'Server control port'), T('AS_SERVER_NAME', 'TLS server name'),
+      T('AS_CA_B64', 'Pinned server CA certificate (base64)', {full: true}), T('AS_TCP_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('AS_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+    iran: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('BIND_PORT', 'Control port (TCP; QUIC also uses UDP)', {ph: '24000'}),
+      T('AS_TCP_PORTS', 'Allowed TCP ports (CSV)', {full: true}), T('AS_UDP_PORTS', 'Allowed UDP ports (CSV)', {full: true}), T('AS_CERT_B64', 'Server certificate (base64)', {full: true}), T('AS_KEY_B64', 'Server private key (base64)', {full: true})]},
   gre: {eu: GRE_FIELDS, iran: GRE_FIELDS},
   gost: {eu: GOST_FIELDS, iran: GOST_FIELDS},
   paqet: {
@@ -5996,7 +6048,7 @@ function renderFields() {
 function onlineNodes() { return S.nodes.filter(n => n.online); }
 function initLink() {
   const nodes = onlineNodes(), method = selectedMethod();
-  const reverse = ['asnative', 'backhaul', 'rathole'].includes(method);
+  const reverse = ['asnative', 'backhaul', 'rathole', 'frp', 'assecure'].includes(method);
   const serverRole = reverse ? 'iran' : 'eu', clientRole = reverse ? 'eu' : 'iran';
   const serverNodes = nodes.filter(n => n.role === serverRole), clientNodes = nodes.filter(n => n.role === clientRole);
   const opts = n => '<option value="' + esc(n.id) + '">' + esc(n.name) + ' — ' + esc(n.public_ip || '?') + '</option>';
@@ -6030,7 +6082,7 @@ function renderLinkParams(preserve=false) {
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'lk_'); grid.appendChild(w);
     const el = $('lk_' + f.k); if (el && Object.prototype.hasOwnProperty.call(previous, f.k)) el.value = previous[f.k]; else if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
   });
-  const reverse = ['asnative', 'backhaul', 'rathole'].includes(m);
+  const reverse = ['asnative', 'backhaul', 'rathole', 'frp', 'assecure'].includes(m);
   const noteKey = m === 'gost' ? 'lkNoteGost' : (m === 'neotunnel' ? 'lkNoteExtended' : (reverse ? 'lkNoteReverse' : 'lkNote'));
   $('lkNote').dataset.i = noteKey; $('lkNote').textContent = t(noteKey);
 }
@@ -6065,7 +6117,7 @@ function collectFields() {
   if (method === 'neotunnel') out.NT_KIND = selectedKind();
   if (rk) {
     const side = $('roleSelect').value;
-    const serverHere = ['backhaul', 'rathole'].includes(method) ? side === 'iran' : side === 'eu';
+    const serverHere = ['backhaul', 'rathole', 'frp', 'assecure'].includes(method) ? side === 'iran' : side === 'eu';
     out[rk] = serverHere ? 'server' : 'client';
   }
   return out;
