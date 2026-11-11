@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.4"
+VERSION="4.2.5"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -3567,33 +3567,64 @@ def _neotunnel_action(nid, action, **params):
 def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfields, cfields):
     if not (_is_ip_address(sip) and _is_ip_address(cip)):
         return jsonify({"ok": False, "saved": False, "error": "neotunnel_requires_ip", "steps": []}), 400
-    # A,S names can exceed the tunnel engine's interface-safe 10-character ID.
-    # Keep a separate short engine ID and retain the A,S profile as the UI name.
+    # Keep the A,S profile name separate from the engine's 10-character ID.
     nt_name = sfields["NT_TUNNEL_NAME"]
     peer_id = re.sub(r"[^a-z0-9-]", "", str(client).lower())[-24:]
     if not peer_id:
         peer_id = re.sub(r"[^a-z0-9-]", "", str(cname).lower())[-24:]
     peer_name = "as-" + (peer_id or "node")
-    for nid in (server, client):
+
+    # Do not mutate either server until both are reachable and their profile
+    # lists have been read successfully. A failed list used to be treated like
+    # an empty list, which hid offline/stale-agent errors until later steps.
+    for side, nid, label in (("server", server, sname), ("client", client, cname)):
         listing = run_on_node(nid, "list", timeout=45)
-        if isinstance(listing, list) and any(str(x.get("prof")) == name for x in listing if isinstance(x, dict)):
+        if not isinstance(listing, list):
+            error = listing.get("error", "node_unavailable") if isinstance(listing, dict) else "bad_node_list"
+            detail = listing.get("log") or listing.get("detail") or "" if isinstance(listing, dict) else ""
+            return jsonify({"ok": False, "saved": False, "error": error,
+                            "steps": [{"side": side, "role": "eu" if side == "server" else "iran",
+                                       "node": label, "node_id": nid, "saved": False,
+                                       "running": False, "error": (str(detail or error)[-1000:])}]}), 409
+        if any(str(x.get("prof")) == name for x in listing if isinstance(x, dict)):
             return jsonify({"ok": False, "saved": False, "error": "neotunnel_profile_exists", "steps": []}), 409
 
     steps = []
     def record(side, nid, label, role, result):
         result = result if isinstance(result, dict) else {"error": "bad_result"}
         ok = result.get("ok") is True
+        saved = result.get("saved") is True if "saved" in result else ok
+        running = result.get("running") is True if "running" in result else ok
         detail = result.get("log") or result.get("detail") or result.get("stderr") or result.get("raw") or ""
         if result.get("error") == "empty_response":
             detail = detail or result.get("hint") or "No stderr output was returned."
             detail = "empty_response (exit %s)%s%s" % (
                 result.get("exit_code", "unknown"), ": " if detail else "", str(detail))
-        else:
-            detail = detail or result.get("error") or ""
+        elif result.get("error"):
+            detail = detail or result.get("error")
+        if ok and not running:
+            detail = result.get("status_detail") or result.get("error") or "saved, but the tunnel is not running yet"
         step = {"side": side, "role": role, "node": label, "node_id": nid,
-                "saved": ok, "running": ok, "error": "" if ok else str(detail)[-1000:]}
+                "ok": ok, "saved": saved, "running": running,
+                "error": "" if running else str(detail)[-1000:]}
         steps.append(step)
         return ok, result
+
+    def rollback_pair():
+        # Deleting the owner profile also removes its engine tunnel and pushes
+        # that deletion to the paired host. Then remove any remaining local
+        # profile copies, treating not_found as already clean.
+        owner_del = run_on_node(server, "delete", {"prof": name}, timeout=180)
+        engine_clean = isinstance(owner_del, dict) and owner_del.get("ok") is True
+        if not engine_clean and not (isinstance(owner_del, dict) and owner_del.get("error") == "node_offline"):
+            removed = _neotunnel_action(server, "remove", tunnel_name=nt_name)
+            engine_clean = isinstance(removed, dict) and removed.get("ok") is True
+            if isinstance(removed, dict) and "not found" in str(removed.get("log", "")).lower():
+                engine_clean = True
+        client_del = run_on_node(client, "delete", {"prof": name}, timeout=120)
+        client_clean = isinstance(client_del, dict) and (client_del.get("ok") is True or client_del.get("error") == "not_found")
+        return {"owner": owner_del, "client": client_del, "engine_removed": engine_clean,
+                "ok": engine_clean and client_clean}
 
     step_ok, prepared = record("server", server, sname, "eu", _neotunnel_action(
         server, "prepare", node_name="as-" + re.sub(r"[^a-z0-9-]", "", server.lower())[-8:],
@@ -3614,8 +3645,8 @@ def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfield
         "encrypt": sfields["NT_ENCRYPT"], "profile": sfields["NT_PROFILE"], "keepalive": sfields["NT_KEEPALIVE"],
         "padding": sfields["NT_PADDING"], "lanes": sfields["NT_LANES"], "conns": sfields["NT_CONNS"],
         "mtu_probe": sfields["NT_MTU_PROBE"] == "true", "no_pmtud": sfields["NT_NO_PMTUD"] == "true",
-        "ignore_df": sfields["NT_IGNORE_DF"] == "true", "reverse": sfields["NT_REVERSE"] == "true", "forward_ports": sfields["NT_FORWARD_PORTS"],
-        "forward_proto": sfields["NT_FORWARD_PROTO"]
+        "ignore_df": sfields["NT_IGNORE_DF"] == "true", "reverse": sfields["NT_REVERSE"] == "true",
+        "forward_ports": sfields["NT_FORWARD_PORTS"], "forward_proto": sfields["NT_FORWARD_PROTO"]
     }
     step_ok, _ = record("server", server, sname, "eu", _neotunnel_action(server, "add_link", **options))
     if not step_ok:
@@ -3623,10 +3654,22 @@ def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfield
 
     owner_fields = dict(sfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True)
     managed_fields = dict(cfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True)
-    for side, nid, label, role, fields in (("server", server, sname, "eu", owner_fields),
-                                           ("client", client, cname, "iran", managed_fields)):
-        record(side, nid, label, role, run_on_node(nid, "save", {
-            "prof": name, "body": {"method": "neotunnel", "role": role, "fields": fields}}, timeout=180))
+    owner_ok, owner_result = record("server", server, sname, "eu", run_on_node(server, "save", {
+        "prof": name, "body": {"method": "neotunnel", "role": "eu", "fields": owner_fields}}, timeout=180))
+    if not owner_ok or not (isinstance(owner_result, dict) and owner_result.get("saved", owner_ok)):
+        cleanup = rollback_pair()
+        return jsonify({"ok": False, "saved": False, "steps": steps,
+                        "error": "neotunnel_owner_profile_save_failed", "rolled_back": cleanup["ok"],
+                        "cleanup": cleanup})
+
+    client_ok, client_result = record("client", client, cname, "iran", run_on_node(client, "save", {
+        "prof": name, "body": {"method": "neotunnel", "role": "iran", "fields": managed_fields}}, timeout=180))
+    if not client_ok or not (isinstance(client_result, dict) and client_result.get("saved", client_ok)):
+        cleanup = rollback_pair()
+        return jsonify({"ok": False, "saved": False, "steps": steps,
+                        "error": "neotunnel_client_profile_save_failed", "rolled_back": cleanup["ok"],
+                        "cleanup": cleanup})
+
     return jsonify({"ok": all(x["running"] for x in steps), "saved": all(x["saved"] for x in steps),
                     "steps": steps, "name": name, "server_ip": sip, "client_ip": cip,
                     "neotunnel_name": nt_name})
@@ -4339,6 +4382,7 @@ td .nm{font-weight:700}
 .tcard-status.up{color:var(--green);border-color:color-mix(in srgb,var(--green) 28%,transparent);background:color-mix(in srgb,var(--green) 7%,transparent)}
 .tcard-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.tcard-meta{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}
 .tcard-proto{font-size:11px;color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent) 32%,transparent);border-radius:999px;padding:2px 8px}
+.tun-link-badge{font-size:10px;color:var(--green);border:1px solid color-mix(in srgb,var(--green) 32%,transparent);border-radius:999px;padding:2px 7px;background:color-mix(in srgb,var(--green) 7%,transparent)}
 .tcard-arrow{color:var(--faint);font-size:20px;line-height:1;transition:color .12s}.tcard-actions{display:flex;gap:7px;padding:0 15px 13px 69px}
 .tun-action{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid rgba(255,255,255,.1);border-radius:9px;background:rgba(255,255,255,.025);color:var(--dim);font:inherit;font-size:11px;cursor:pointer}
 .tun-action:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent) 48%,transparent);color:var(--txt)}.tun-action:disabled{opacity:.38;cursor:not-allowed}
@@ -4722,7 +4766,7 @@ en:{
  pingTitle:'Latency to Master', pingDesc:'Live round-trip time between each node and this master (updates every few seconds)',
  cur:'Now', avg:'Avg', min:'Min', max:'Max', trend:'Trend', livePing:'Live Ping', pgFrom:'From node', pgTo:'Target', pgCustom:'Custom host / IP',
  pgStart:'Start live ping', pgStop:'Stop', clear:'Clear', loss:'Loss', custom:'Custom…',
- tunTitle:'Tunnels Manager', addTunnel:'Add tunnel', tunDesc:'Tunnels on the selected node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
+ tunTitle:'Tunnels Manager', tunAllNodes:'All nodes', linkedPair:'Linked pair', addTunnel:'Add tunnel', tunDesc:'All connected nodes. Linked node tunnels appear once; manual profiles remain per node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
  tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings',
  mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', protocolSearchHint:'Search protocols…', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
  sched:'Scheduled restart', schedNote:'(regardless of status)', hours:'hours', save2:'Save', live:'Live', newTunnel:'New tunnel',
@@ -4743,7 +4787,7 @@ en:{
  e_ports_conflict:'The control port must differ from the forwarded ports (and bridge ≠ sync).', e_bad_address:'Check the server / client address.', e_same_node:'Pick two different nodes.',
   e_server_failed:'Could not configure the server node.', e_node_not_found:'Node not found.', e_bad_method:'Unknown protocol.',
  e_neotunnel_requires_ip:'Public IP addresses (IPv4 or IPv6) are required for both servers.', e_neotunnel_profile_exists:'This A,S tunnel name already exists on one of the nodes. Delete it first, then retry.',
-  e_neotunnel_prepare_failed:'Could not prepare the tunnel peer on the server.', e_neotunnel_pair_failed:'The second server could not connect to its peer.', e_neotunnel_add_failed:'Could not add the tunnel. The failing server step below includes its command output.',
+  e_neotunnel_prepare_failed:'Could not prepare the tunnel peer on the server.', e_neotunnel_pair_failed:'The second server could not connect to its peer.', e_neotunnel_add_failed:'Could not add the tunnel. The failing server step below includes its command output.', e_neotunnel_owner_profile_save_failed:'Could not register the owner profile; partial setup was rolled back.', e_neotunnel_client_profile_save_failed:'Could not register the peer profile; partial setup was rolled back.',
   e_bad_neotunnel_kind:'Choose one of the supported tunnel kinds.', e_bad_mtu:'MTU must be between 576 and 9000.', e_bad_encrypt:'Unsupported encryption option.', e_bad_profile:'Choose lean, balanced or max.',
   e_bad_forward_proto:'Forward protocol must be TCP, UDP or both.', e_stream_tcp_only:'Connection tunnels carry TCP only; choose TCP for their port forwarding.', e_padding_only_obfs:'Padding is only available for Obfs.', e_lanes_require_gre:'Multiple lanes are only supported by the GRE family.', e_conns_require_stream:'Session count is only available for stream tunnels.', e_reverse_requires_stream:'Reverse direction is only available for stream tunnels.',
   e_neotunnel_tunnel_exists:'This tunnel ID already exists on the server. Choose another A,S tunnel name.', e_neotunnel_peer_not_paired:'The tunnel peer has not connected yet. Check that its service port is reachable, then retry.',
@@ -4778,7 +4822,7 @@ fa:{
  pingTitle:'تأخیر تا مستر', pingDesc:'زمان رفت‌وبرگشت زنده بین هر نود و این مستر (هر چند ثانیه به‌روز می‌شود)',
  cur:'اکنون', avg:'میانگین', min:'کمینه', max:'بیشینه', trend:'روند', livePing:'پینگ زنده', pgFrom:'از نود', pgTo:'مقصد', pgCustom:'هاست / آی‌پی دلخواه',
  pgStart:'شروع پینگ زنده', pgStop:'توقف', clear:'پاک کردن', loss:'از دست رفته', custom:'دلخواه…',
- tunTitle:'مدیریت تانل‌ها', addTunnel:'افزودن تانل', tunDesc:'تانل‌های نود انتخاب‌شده را جست‌وجو و بر اساس وضعیت فیلتر کنید؛ برای تنظیم روی کارت بزنید.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
+ tunTitle:'مدیریت تانل‌ها', tunAllNodes:'همهٔ نودها', linkedPair:'جفت‌شده', addTunnel:'افزودن تانل', tunDesc:'تانل‌های همهٔ نودهای وصل‌شده اینجا هستند؛ تانل‌های جفت‌شده یک‌بار و پروفایل‌های دستی جداگانه برای هر نود نمایش داده می‌شوند.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
  tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات',
  mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', protocolSearchHint:'جست‌وجوی پروتکل…', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
  sched:'ریستارت زمان‌بندی‌شده', schedNote:'(بدون توجه به وضعیت)', hours:'ساعت', save2:'ذخیره', live:'زنده', newTunnel:'تانل جدید',
@@ -4799,7 +4843,7 @@ fa:{
  e_ports_conflict:'پورت کنترل باید با پورت‌های فوروارد فرق داشته باشد (و bridge با sync).', e_bad_address:'آدرس سرور / کلاینت را بررسی کنید.', e_same_node:'دو نود متفاوت انتخاب کنید.',
   e_server_failed:'نود سرور تنظیم نشد.', e_node_not_found:'نود پیدا نشد.', e_bad_method:'پروتکل ناشناخته.',
   e_neotunnel_requires_ip:'هر دو سرور باید آی‌پی عمومی IPv4 یا IPv6 داشته باشند.', e_neotunnel_profile_exists:'این نام تانل A,S روی یکی از نودها وجود دارد. اول آن را حذف و دوباره تلاش کنید.',
-  e_neotunnel_prepare_failed:'آماده‌سازی همتای تانل روی سرور انجام نشد.', e_neotunnel_pair_failed:'سرور دوم نتوانست به همتا وصل شود.', e_neotunnel_add_failed:'ساخت تانل ناموفق بود؛ خروجی فرمان در مرحلهٔ سرور خطادار نمایش داده شده است.',
+  e_neotunnel_prepare_failed:'آماده‌سازی همتای تانل روی سرور انجام نشد.', e_neotunnel_pair_failed:'سرور دوم نتوانست به همتا وصل شود.', e_neotunnel_add_failed:'ساخت تانل ناموفق بود؛ خروجی فرمان در مرحلهٔ سرور خطادار نمایش داده شده است.', e_neotunnel_owner_profile_save_failed:'ثبت پروفایل سمت مالک انجام نشد؛ تنظیم ناقص پاک‌سازی شد.', e_neotunnel_client_profile_save_failed:'ثبت پروفایل سمت همتا انجام نشد؛ تنظیم ناقص پاک‌سازی شد.',
   e_bad_neotunnel_kind:'یکی از انواع پشتیبانی‌شدهٔ تانل را انتخاب کنید.', e_bad_mtu:'MTU باید بین ۵۷۶ تا ۹۰۰۰ باشد.', e_bad_encrypt:'گزینهٔ رمزنگاری پشتیبانی نمی‌شود.', e_bad_profile:'یکی از حالت‌های lean، balanced یا max را انتخاب کنید.',
   e_bad_forward_proto:'پروتکل فوروارد باید TCP، UDP یا هر دو باشد.', e_stream_tcp_only:'تانل‌های connection فقط TCP دارند؛ برای فوروارد آن‌ها TCP را انتخاب کنید.', e_padding_only_obfs:'Padding فقط برای Obfs فعال است.', e_lanes_require_gre:'چند مسیر هم‌زمان فقط در خانوادهٔ GRE پشتیبانی می‌شود.', e_conns_require_stream:'تعداد نشست فقط برای stream tunnel پشتیبانی می‌شود.', e_reverse_requires_stream:'جهت معکوس فقط برای stream tunnel فعال است.',
     e_neotunnel_tunnel_exists:'این شناسه روی سرور وجود دارد؛ نام دیگری برای تانل A,S انتخاب کنید.', e_neotunnel_peer_not_paired:'همتای تانل هنوز وصل نشده است. دسترسی به پورت سرویس را بررسی و دوباره تلاش کنید.',
@@ -4875,7 +4919,8 @@ async function api(path, opts = {}) {
   data._status = r.status;
   return data;
 }
-const napi = (p, o) => api('/api/n/' + encodeURIComponent(S.sel) + p, o);
+const nodeApi = (nid, p, o) => api('/api/n/' + encodeURIComponent(nid || S.sel) + p, o);
+const napi = (p, o) => nodeApi(S.sel, p, o);
 
 /* ============================ login ============================ */
 function showGate(msg) {
@@ -5176,12 +5221,29 @@ window.addEventListener('resize', () => { if (S.tab === 'ping') drawChart(); });
 /* ---- tunnels tab ---- */
 const methodLabel = (m, k) => m === 'asnative' ? 'Reverse' : m === 'assecure' ? 'A,S Secure' : m === 'neotunnel' ? (k ? ({'ip6gre':'IP6GRE','ip6gretap':'IP6GRETAP','ipip6':'IPIP6','ip6ip6':'IP6IP6','l2tpv3':'L2TPv3','stream-tcp':'Stream TCP','stream-tls':'Stream TLS'}[k] || k.toUpperCase()) : 'Tunnel') : m;
 const methodGlyph = (m, k) => k === 'wireguard' || m === 'assecure' ? '⬡' : k === 'gre' || m === 'gre' ? '⇄' : k === 'vxlan' || k === 'geneve' ? '◈' : k && k.startsWith('stream-') ? '⇢' : m === 'asnative' ? '↗' : m === 'backhaul' ? '⤢' : m === 'rathole' ? '⌁' : m === 'gost' ? '⇢' : m === 'frp' ? '↗' : m === 'paqet' ? '◉' : '◇';
+function collectTunnelCards(nodes) {
+  const grouped = new Map();
+  for (const node of (Array.isArray(nodes) ? nodes : [])) {
+    for (const tunnel of (Array.isArray(node.tunnels) ? node.tunnels : [])) {
+      const isLinked = tunnel.method === 'neotunnel' && (tunnel.nt_mode === 'linked' || (tunnel.nt_role === 'managed' && tunnel.owner_node));
+      const groupKey = isLinked
+        ? `linked:${tunnel.owner_node || 'paired'}:${tunnel.tunnel_name || tunnel.prof}`
+        : `node:${node.id}:${tunnel.prof}`;
+      const owner = isLinked ? (nodes.find(n => n.id === tunnel.owner_node) || node) : node;
+      const item = Object.assign({}, tunnel, {node_id: owner.id, node_name: owner.name, node_role: owner.role,
+        node_online: !!owner.online, linked: isLinked});
+      const old = grouped.get(groupKey);
+      if (!old || (isLinked && tunnel.nt_role !== 'managed' && old.nt_role === 'managed')) grouped.set(groupKey, item);
+    }
+  }
+  return Array.from(grouped.values());
+}
 function setTunnelQuery(value) { S.tunQuery = String(value || '').trim().toLowerCase(); S.tunKey = ''; renderTunnels(); }
 function setTunnelStatus(value) { S.tunStatus = ['all','up','down'].includes(value) ? value : 'all'; S.tunKey = ''; renderTunnels(); }
 function renderTunnels() {
-  const n = cur(); if (!n) return;
-  $('tunNode').textContent = n.name;
-  const list = Array.isArray(n.tunnels) ? n.tunnels : [];
+  const nodes = Array.isArray(S.nodes) ? S.nodes : [];
+  const list = collectTunnelCards(nodes);
+  $('tunNode').textContent = t('tunAllNodes') + ' · ' + nodes.length;
   const upCount = list.reduce((sum, x) => sum + (x.running ? 1 : 0), 0), downCount = list.length - upCount;
   const kindCount = new Set(list.map(x => methodLabel(x.method, x.kind))).size;
   $('tunSummary').innerHTML = `<div class="tun-stat"><div class="k">${t('tunTotal')}</div><div class="v">${list.length}</div></div>
@@ -5192,34 +5254,69 @@ function renderTunnels() {
   const matching = list.filter(x => {
     if (status === 'up' && !x.running || status === 'down' && x.running) return false;
     if (!q) return true;
-    return [x.prof, methodLabel(x.method, x.kind), x.role, x.method, x.kind].some(v => String(v || '').toLowerCase().includes(q));
+    return [x.prof, methodLabel(x.method, x.kind), x.role, x.method, x.kind, x.node_name, x.node_role]
+      .some(v => String(v || '').toLowerCase().includes(q));
   });
   $('tunSearch').value = S.tunQuery;
   $('tunFilters').innerHTML = [['all','filterAll',list.length],['up','filterRunning',upCount],['down','filterStopped',downCount]]
     .map(([v,label,count]) => `<button type="button" class="tun-filter ${status === v ? 'on' : ''}" onclick="setTunnelStatus('${v}')" aria-pressed="${status === v}">${t(label)} <b>${count}</b></button>`).join('');
   $('tunFilters').setAttribute('aria-label', t('tunDesc'));
-  const key = JSON.stringify(list) + n.online + LANG + n.id + status + q;
+  const key = JSON.stringify(list) + nodes.map(n => `${n.id}:${n.online}`).join('|') + LANG + status + q;
   if (S.tunKey === key) return; S.tunKey = key;
   $('tunGrid').innerHTML = matching.length ? matching.map(x => `<article class="tcard ${x.running ? 'on' : ''}">
-    <button type="button" class="tcard-main" onclick="openSlotByName('${esc(x.prof)}')" aria-label="${esc(t('openTunnel'))}: ${esc(x.prof)}">
+    <button type="button" class="tcard-main" onclick="openSlotByName('${esc(x.prof)}','${esc(x.node_id)}')" aria-label="${esc(t('openTunnel'))}: ${esc(x.prof)}">
       <span class="tcard-glyph" aria-hidden="true">${methodGlyph(x.method, x.kind)}</span>
       <span class="tcard-copy"><span class="tcard-name-row"><span class="tcard-name">${esc(x.prof)}</span><span class="tcard-status ${x.running ? 'up' : ''}"><i></i>${t(x.running ? 'running' : 'stopped')}</span></span>
-      <span class="tcard-meta"><span class="tcard-proto">${esc(methodLabel(x.method, x.kind))}</span><span class="rb ${esc(x.role)}">${sideLabel(x.role)}</span></span></span>
+      <span class="tcard-meta"><span class="tcard-proto">${esc(methodLabel(x.method, x.kind))}</span><span class="rb ${esc(x.node_role)}">${esc(x.node_name)} · ${sideLabel(x.node_role)}</span>${x.linked ? `<span class="tun-link-badge">${t('linkedPair')}</span>` : ''}</span></span>
       <span class="tcard-arrow" aria-hidden="true">›</span></button>
     <div class="tcard-actions">
-      <button type="button" class="tun-action start" onclick="quick('${esc(x.prof)}','start')" aria-label="${t('start')} ${esc(x.prof)}" ${!n.online || x.running ? 'disabled' : ''}>▶ ${t('start')}</button>
-      <button type="button" class="tun-action restart" onclick="quick('${esc(x.prof)}','restart')" aria-label="${t('restart')} ${esc(x.prof)}" ${!n.online ? 'disabled' : ''}>⟳ ${t('restart')}</button>
-      <button type="button" class="tun-action stop" onclick="quick('${esc(x.prof)}','stop')" aria-label="${t('stop')} ${esc(x.prof)}" ${!n.online || !x.running ? 'disabled' : ''}>■ ${t('stop')}</button>
+      <button type="button" class="tun-action start" onclick="quick('${esc(x.prof)}','start','${esc(x.node_id)}')" aria-label="${t('start')} ${esc(x.prof)}" ${!x.node_online || x.running ? 'disabled' : ''}>▶ ${t('start')}</button>
+      <button type="button" class="tun-action restart" onclick="quick('${esc(x.prof)}','restart','${esc(x.node_id)}')" aria-label="${t('restart')} ${esc(x.prof)}" ${!x.node_online ? 'disabled' : ''}>⟳ ${t('restart')}</button>
+      <button type="button" class="tun-action stop" onclick="quick('${esc(x.prof)}','stop','${esc(x.node_id)}')" aria-label="${t('stop')} ${esc(x.prof)}" ${!x.node_online || !x.running ? 'disabled' : ''}>■ ${t('stop')}</button>
     </div></article>`).join('')
     : `<div class="tun-empty">${list.length ? t('noTunnelMatches') : t('noTunnels')}</div>`;
 }
-async function quick(prof, action) {
-  toast('…'); const r = await napi('/slots/' + encodeURIComponent(prof) + '/' + action, {method: 'POST'});
+async function quick(prof, action, nid) {
+  toast('…'); const r = await nodeApi(nid, '/slots/' + encodeURIComponent(prof) + '/' + action, {method: 'POST'});
   toast(r.ok ? '✔ ' + action : errText(r), r.ok ? 'ok' : 'err'); await reloadTunnels();
 }
+let TUN_REFRESH_SEQ = 0;
 async function reloadTunnels() {
-  const sel = S.sel;
-  try { const r = await napi('/slots'); if (sel === S.sel && Array.isArray(r)) { cur().tunnels = r; S.tunKey = ''; renderTunnels(); } } catch (e) {}
+  const refreshSeq = ++TUN_REFRESH_SEQ;
+  const targets = (Array.isArray(S.nodes) ? S.nodes : []).map(n => n.id);
+  const responses = await Promise.allSettled(targets.map(nid => nodeApi(nid, '/slots')));
+  const updates = new Map();
+  responses.forEach((response, index) => {
+    if (response.status === 'fulfilled' && Array.isArray(response.value)) updates.set(targets[index], response.value);
+  });
+  // Older agents omit link metadata from list. Enrich only duplicate
+  // NeoTunnel profile names, which are the only rows that can be paired.
+  const profileCount = new Map();
+  updates.forEach(list => list.forEach(x => {
+    if (x.method === 'neotunnel' && !x.nt_role && !x.nt_mode) profileCount.set(x.prof, (profileCount.get(x.prof) || 0) + 1);
+  }));
+  const candidates = [];
+  updates.forEach((list, nid) => list.forEach(x => {
+    if (x.method === 'neotunnel' && !x.nt_role && !x.nt_mode && profileCount.get(x.prof) > 1) candidates.push({nid, x});
+  }));
+  const stale = new Map();
+  await Promise.allSettled(candidates.map(async ({nid, x}) => {
+    const details = await nodeApi(nid, '/slots/' + encodeURIComponent(x.prof));
+    const fields = details && details.fields;
+    if (fields) Object.assign(x, {kind: fields.NT_KIND || x.kind, nt_role: fields.NT_ROLE || '',
+      nt_mode: fields.NT_MODE || '', owner_node: fields.NT_OWNER_NODE || '', tunnel_name: fields.NT_TUNNEL_NAME || ''});
+    else if (details && details.error === 'not_found') {
+      if (!stale.has(nid)) stale.set(nid, new Set());
+      stale.get(nid).add(x.prof);
+    }
+  }));
+  if (refreshSeq !== TUN_REFRESH_SEQ) return;
+  updates.forEach((list, nid) => {
+    const missing = stale.get(nid);
+    const node = S.nodes.find(n => n.id === nid);
+    if (node) node.tunnels = missing ? list.filter(x => !missing.has(x.prof)) : list;
+  });
+  if (S.tab === 'tunnels') { S.tunKey = ''; renderTunnels(); }
 }
 
 /* ============================ tunnel modal ============================ */
@@ -5375,24 +5472,25 @@ const randPort = () => 20000 + Math.floor(Math.random() * 40000);
 function genInto(id) { $(id).value = randHex(16); }
 
 function openNew(mode) { openSlot(null, mode || 'manual'); }
-function openSlotByName(prof) { openSlot((cur().tunnels || []).find(x => x.prof === prof) || null); }
+function openSlotByName(prof, nid) { const node = S.nodes.find(n => n.id === (nid || S.sel)); openSlot((node?.tunnels || []).find(x => x.prof === prof) || null, 'manual', nid || S.sel); }
 function setRole(role) { $('roleSelect').value = role === 'iran' ? 'iran' : 'eu'; paintSide(); }
-function paintSide() { $('sideTxt').textContent = sideLabel($('roleSelect').value); $('sideNode').textContent = '· ' + (cur() ? cur().name : ''); }
-function openSlot(existing, mode) {
-  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual')};
+function paintSide() { const node = S.nodes.find(n => n.id === (CURRENT?.nid || S.sel)); $('sideTxt').textContent = sideLabel($('roleSelect').value); $('sideNode').textContent = '· ' + (node ? node.name : ''); }
+function openSlot(existing, mode, nodeId) {
+  const targetNode = existing ? (nodeId || existing.node_id || S.sel) : S.sel;
+  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual'), nid: targetNode};
   $('mTitle').textContent = existing ? existing.prof : t('newTunnel');
   $('modeSeg').classList.toggle('hidden', !!existing);
   paintStatus(existing ? !!existing.running : false, !!existing);
   setMsg('', ''); $('lkSteps').innerHTML = ''; mTab('config');
   const nm = $('nameInput'); nm.value = existing ? existing.prof : ''; nm.disabled = !!existing;
   selectProtocol(existing ? existing.method : 'assecure', existing ? 'wireguard' : '');
-  setRole(existing ? existing.role : (cur().role || 'eu'));
+  setRole(existing ? existing.role : ((S.nodes.find(n => n.id === targetNode) || {}).role || 'eu'));
   $('rcToggle').checked = false; $('rcHours').value = '';
   setMode(CURRENT.mode);
-  const target = S.sel;
+  const target = targetNode;
   if (existing) {
-    napi('/slots/' + encodeURIComponent(existing.prof)).then(d => {
-      if (target !== S.sel || !CURRENT || CURRENT.prof !== existing.prof) return;
+    nodeApi(target, '/slots/' + encodeURIComponent(existing.prof)).then(d => {
+      if (!CURRENT || CURRENT.nid !== target || CURRENT.prof !== existing.prof) return;
       if (d.role) { setRole(d.role); if (d.method === 'neotunnel' && d.fields?.NT_KIND) selectProtocol('neotunnel', d.fields.NT_KIND); renderFields(); }
       if (d.fields) fillFields(d.fields);
       if (d.restart_hours) { $('rcToggle').checked = true; $('rcHours').value = d.restart_hours; }
@@ -5516,7 +5614,7 @@ function paintStatus(running, known) { $('mSub').textContent = known === false ?
 async function refreshSlotState() {
   await reloadTunnels();
   if (!CURRENT || !CURRENT.prof) return null;
-  const d = await napi('/slots/' + encodeURIComponent(CURRENT.prof));
+  const d = await nodeApi(CURRENT.nid, '/slots/' + encodeURIComponent(CURRENT.prof));
   if (d && !d.error) { paintStatus(!!d.running); return d; } return null;
 }
 async function saveSlot() {
@@ -5524,12 +5622,13 @@ async function saveSlot() {
   if (CURRENT.isNew) {
     const nm = cleanName($('nameInput').value);
     if (!nm) { setMsg(t('enterName'), 'err'); return; }
-    if ((cur().tunnels || []).some(x => x.prof === nm) && !confirm(t('overwrite', {n: nm}))) return;
+    const targetNode = S.nodes.find(n => n.id === CURRENT.nid);
+    if (((targetNode && targetNode.tunnels) || []).some(x => x.prof === nm) && !confirm(t('overwrite', {n: nm}))) return;
     CURRENT.prof = nm; CURRENT.isNew = false; $('nameInput').value = nm; $('nameInput').disabled = true; $('mTitle').textContent = nm;
   }
   setBusy(true, t('saveStart')); setMsg('…', '');
   try {
-    const res = await napi('/slots/' + encodeURIComponent(CURRENT.prof), {method: 'POST', body: {method, role, fields}});
+    const res = await nodeApi(CURRENT.nid, '/slots/' + encodeURIComponent(CURRENT.prof), {method: 'POST', body: {method, role, fields}});
     await refreshSlotState();
     const tm = new Date().toLocaleTimeString();
     if (res.ok) { setMsg(t('savedRunning') + '  (' + tm + ')', 'ok'); toast(t('savedOk'), 'ok'); }
@@ -5542,7 +5641,7 @@ async function doAction(action) {
   if (!CURRENT || !CURRENT.prof) return;
   setBusy(true); setMsg(action + '…', '');
   try {
-    const res = await napi('/slots/' + encodeURIComponent(CURRENT.prof) + '/' + action, {method: 'POST'});
+    const res = await nodeApi(CURRENT.nid, '/slots/' + encodeURIComponent(CURRENT.prof) + '/' + action, {method: 'POST'});
     await refreshSlotState();
     if (res.ok) { setMsg('✔ ' + action, 'ok'); toast('✔ ' + action, 'ok'); } else { setMsg('✖ ' + action + '\n' + errText(res), 'err'); toast(action + ' ✖', 'err'); }
   } catch (e) { if (e.message !== 'unauthorized') setMsg('✖ ' + e.message, 'err'); }
@@ -5550,13 +5649,13 @@ async function doAction(action) {
 }
 async function deleteSlot() {
   if (!CURRENT || !CURRENT.prof || !confirm(t('deleteConfirm', {n: CURRENT.prof}))) return;
-  const res = await napi('/slots/' + encodeURIComponent(CURRENT.prof), {method: 'DELETE'});
+  const res = await nodeApi(CURRENT.nid, '/slots/' + encodeURIComponent(CURRENT.prof), {method: 'DELETE'});
   if (res.ok) { toast('✔', 'ok'); closeModal(); reloadTunnels(); } else toast(errText(res), 'err');
 }
 async function saveRestartCron() {
   if (!CURRENT || !CURRENT.prof) { setMsg(t('enterName'), 'err'); return; }
   const enabled = $('rcToggle').checked, hours = $('rcHours').value || '6';
-  const res = await napi('/slots/' + encodeURIComponent(CURRENT.prof) + '/restartcron', {method: 'POST', body: {enabled, hours}});
+  const res = await nodeApi(CURRENT.nid, '/slots/' + encodeURIComponent(CURRENT.prof) + '/restartcron', {method: 'POST', body: {enabled, hours}});
   if (res.ok) { setMsg('✔ ' + (enabled ? hours + 'h' : 'off'), 'ok'); toast(t('savedOk'), 'ok'); } else { setMsg(errText(res), 'err'); toast(t('failed'), 'err'); }
 }
 function mTab(name) {
@@ -5568,10 +5667,10 @@ function startLive() { stopLive(); if ($('liveToggle').checked) LIVE_TIMER = set
 function stopLive() { if (LIVE_TIMER) { clearInterval(LIVE_TIMER); LIVE_TIMER = null; } }
 async function refreshLog(force) {
   if (!CURRENT || !CURRENT.prof) { $('logsBox').textContent = ''; return; }
-  const box = $('logsBox'), prof = CURRENT.prof;
+  const box = $('logsBox'), prof = CURRENT.prof, nid = CURRENT.nid;
   try {
-    const res = await napi('/slots/' + encodeURIComponent(prof) + '/logs?lines=' + $('logLines').value);
-    if (!CURRENT || CURRENT.prof !== prof) return;
+    const res = await nodeApi(nid, '/slots/' + encodeURIComponent(prof) + '/logs?lines=' + $('logLines').value);
+    if (!CURRENT || CURRENT.nid !== nid || CURRENT.prof !== prof) return;
     const near = box.scrollHeight - box.scrollTop - box.clientHeight < 60;
     box.textContent = res.logs || errText(res) || '…';
     if (force || near) box.scrollTop = box.scrollHeight;
@@ -6265,18 +6364,21 @@ valid_prof(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; }
 
 api_list(){
   echo "["
-  local first=1 prof m running role sessions s f k v nt_name nt_kind extra
-  # Calling screen -ls once per profile made the panel list crawl as tunnels
-  # accumulated. Take one snapshot and use it for every screen-managed tunnel.
+  local first=1 prof m running role sessions s f k v nt_name nt_kind nt_role nt_mode nt_owner extra
+  # One screen snapshot keeps refreshes fast; expose safe link metadata so the
+  # master can render a paired tunnel once while preserving manual profiles.
   sessions="$(screen -ls 2>/dev/null || true)"
   while IFS= read -r prof; do
     [[ -n "$prof" ]] || continue
-    m="asnative"; role="iran"; nt_name=""; nt_kind=""; f="$CONF/${prof}.env"
+    m="asnative"; role="iran"; nt_name=""; nt_kind=""; nt_role=""; nt_mode=""; nt_owner=""; f="$CONF/${prof}.env"
     [[ -f "$f" ]] || continue
-    # Read the two display fields with Bash builtins instead of spawning grep
-    # and cut twice for every tunnel in the panel's list refresh.
     while IFS='=' read -r k v; do
-      case "$k" in METHOD) m="${v:-asnative}" ;; ROLE) role="${v:-iran}" ;; NT_TUNNEL_NAME) nt_name="$v" ;; NT_KIND) nt_kind="$v" ;; esac
+      case "$k" in
+        METHOD) m="${v:-asnative}" ;; ROLE) role="${v:-iran}" ;;
+        NT_TUNNEL_NAME) nt_name="$v" ;; NT_KIND) nt_kind="$v" ;;
+        NT_ROLE) nt_role="$v" ;; NT_MODE) nt_mode="$v" ;;
+        NT_OWNER_NODE) nt_owner="$v" ;;
+      esac
     done < "$f"
     running=false
     if [[ "$m" == "gre" ]]; then
@@ -6285,12 +6387,14 @@ api_list(){
       [[ -n "$nt_name" ]] && neotunnel_tunnel_running "$nt_name" && running=true
     else
       s="$(session_name "$prof")"
-      grep -Eq "\\.${s}[[:space:]]" <<<"$sessions" && running=true
+      grep -Eq "\.${s}[[:space:]]" <<<"$sessions" && running=true
     fi
     [[ $first -eq 1 ]] || echo ","
     first=0
     extra=""
-    [[ "$m" == "neotunnel" && -n "$nt_kind" ]] && extra=",$(api_json_field kind "$nt_kind")"
+    if [[ "$m" == "neotunnel" ]]; then
+      extra=",$(api_json_field kind "$nt_kind"),$(api_json_field nt_role "$nt_role"),$(api_json_field nt_mode "$nt_mode"),$(api_json_field owner_node "$nt_owner"),$(api_json_field tunnel_name "$nt_name")"
+    fi
     printf '{%s,%s,%s,"running":%s%s}' "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
       "$(api_json_field method "$m")" "$running" "$extra"
   done < <(list_profiles)
