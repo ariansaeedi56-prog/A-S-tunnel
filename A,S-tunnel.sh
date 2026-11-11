@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.1"
+VERSION="4.2.2"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -37,7 +37,7 @@ LOG_DIR="/var/log/A,S"
 
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
-PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_LANES NT_CONNS NT_REVERSE NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY"
+PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY"
 
 NEOTUNNEL_BIN="/usr/local/bin/neotunnel"
 NEOTUNNEL_STATE="/etc/neotunnel/state.json"
@@ -1334,12 +1334,18 @@ neotunnel_run_profile(){
       local -a cmd=("$NEOTUNNEL_BIN" tunnel add "$name" --kind "$kind" --remote "$remote")
       [[ -n "${NT_PORT:-}" ]] && cmd+=(--port "$NT_PORT")
       [[ -n "${NT_MTU:-}" ]] && cmd+=(--mtu "$NT_MTU")
+      [[ -n "${NT_TTL:-}" ]] && cmd+=(--ttl "$NT_TTL")
+      [[ -n "${NT_VNI:-}" ]] && cmd+=(--vni "$NT_VNI")
+      [[ -n "${NT_TUNNEL_ID:-}" ]] && cmd+=(--tunnel-id "$NT_TUNNEL_ID")
+      [[ -n "${NT_POOL4:-}" ]] && cmd+=(--pool4 "$NT_POOL4")
+      [[ -n "${NT_POOL6:-}" ]] && cmd+=(--pool6 "$NT_POOL6")
       [[ -n "${NT_PEER_KEY:-}" ]] && cmd+=(--peer-key "$NT_PEER_KEY")
       [[ -n "${NT_ENCRYPT:-}" ]] && cmd+=(--encrypt "$NT_ENCRYPT")
       [[ -n "${NT_PROFILE:-}" ]] && cmd+=(--profile "$NT_PROFILE")
       [[ -n "${NT_KEEPALIVE:-}" ]] && cmd+=(--keepalive "$NT_KEEPALIVE")
       [[ "${NT_MTU_PROBE:-false}" == "true" ]] && cmd+=(--mtu-probe)
-      [[ "${NT_NO_PMTUD:-false}" == "true" ]] && cmd+=(--no-pmtud)
+      [[ "${NT_NO_PMTUD:-false}" == "true" || "${NT_IGNORE_DF:-false}" == "true" ]] && cmd+=(--no-pmtud)
+      [[ "${NT_IGNORE_DF:-false}" == "true" ]] && cmd+=(--ignore-df)
       output="$(NO_COLOR=1 "${cmd[@]}" 2>&1)" || { echo "$output" > "$TTY_OUT"; return 1; }
       if [[ -n "${NT_FORWARD_PORTS:-}" ]]; then
         local proto; proto="${NT_FORWARD_PROTO:-both}"
@@ -1366,7 +1372,7 @@ neotunnel_stop_profile(){
 }
 
 api_neotunnel(){
-  local body action log rc node_name node_name_now node_ip peer_name peer_ip peer_entry key nt_name kind port mtu encrypt profile keepalive padding lanes conns forward_ports forward_proto mode
+  local body action log rc node_name node_name_now node_ip peer_name peer_ip peer_entry key nt_name kind port mtu ttl vni tunnel_id pool4 pool6 sni encrypt profile keepalive padding lanes conns forward_ports forward_proto mode
   body="$(cat)"
   action="$(jq -r '.action // empty' <<<"$body" 2>/dev/null || true)"
   case "$action" in
@@ -1404,29 +1410,60 @@ api_neotunnel(){
       ;;
     add_link)
       nt_name="$(jq -r '.tunnel_name // empty' <<<"$body")"; peer_name="$(jq -r '.peer_name // empty' <<<"$body")"; kind="$(jq -r '.kind // empty' <<<"$body")"
-      port="$(jq -r '.port // empty' <<<"$body")"; mtu="$(jq -r '.mtu // empty' <<<"$body")"; encrypt="$(jq -r '.encrypt // empty' <<<"$body")"; profile="$(jq -r '.profile // empty' <<<"$body")"
+      port="$(jq -r '.port // empty' <<<"$body")"; mtu="$(jq -r '.mtu // empty' <<<"$body")"; ttl="$(jq -r '.ttl // empty' <<<"$body")"
+      vni="$(jq -r '.vni // empty' <<<"$body")"; tunnel_id="$(jq -r '.tunnel_id // empty' <<<"$body")"; pool4="$(jq -r '.pool4 // empty' <<<"$body")"; pool6="$(jq -r '.pool6 // empty' <<<"$body")"
+      encrypt="$(jq -r '.encrypt // empty' <<<"$body")"; profile="$(jq -r '.profile // empty' <<<"$body")"; sni="$(jq -r '.sni // empty' <<<"$body")"
       keepalive="$(jq -r '.keepalive // empty' <<<"$body")"; padding="$(jq -r '.padding // empty' <<<"$body")"; lanes="$(jq -r '.lanes // empty' <<<"$body")"; conns="$(jq -r '.conns // empty' <<<"$body")"
       forward_ports="$(jq -r '.forward_ports // empty' <<<"$body")"; forward_proto="$(jq -r '.forward_proto // both' <<<"$body")"
       [[ "$nt_name" =~ ^[a-z0-9][a-z0-9-]{0,9}$ && "$peer_name" =~ ^[a-z0-9][a-z0-9-]{0,31}$ ]] || { echo '{"ok":false,"error":"bad_neotunnel_name"}'; return 0; }
       [[ "$kind" =~ ^(sit|ipip|gre|gretap|ip6gre|ip6gretap|ipip6|ip6ip6|vxlan|geneve|l2tpv3|wireguard|obfs|tcp|eoip|stream-tcp|stream-tls)$ ]] || { echo '{"ok":false,"error":"bad_neotunnel_kind"}'; return 0; }
-      [[ "$port" =~ ^[0-9]{1,5}$ ]] && (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo '{"ok":false,"error":"bad_port"}'; return 0; }
+      if [[ -n "$port" ]]; then
+        [[ "$port" =~ ^[0-9]{1,5}$ ]] || { echo '{"ok":false,"error":"bad_port"}'; return 0; }
+        (( 10#$port >= 1 && 10#$port <= 65535 )) || { echo '{"ok":false,"error":"bad_port"}'; return 0; }
+      fi
+      case "$kind" in vxlan|geneve|wireguard|obfs|tcp|stream-tcp|stream-tls) [[ -n "$port" ]] || { echo '{"ok":false,"error":"port_required"}'; return 0; } ;; esac
+      case "$kind" in sit|ipip|gre|gretap|vxlan|geneve|l2tpv3|wireguard|obfs|tcp|eoip|stream-tcp|stream-tls) ;; *) [[ -z "$port" ]] || { echo '{"ok":false,"error":"port_unsupported"}'; return 0; } ;; esac
       [[ -z "$mtu" || ( "$mtu" =~ ^[0-9]{3,4}$ && 576 -le 10#$mtu && 10#$mtu -le 9000 ) ]] || { echo '{"ok":false,"error":"bad_mtu"}'; return 0; }
+      if [[ -n "$ttl" ]]; then
+        [[ "$ttl" =~ ^[0-9]{1,3}$ ]] && (( 10#$ttl >= 1 && 10#$ttl <= 255 )) || { echo '{"ok":false,"error":"bad_ttl"}'; return 0; }
+      fi
+      if [[ -n "$vni" ]]; then
+        [[ "$vni" =~ ^[0-9]{1,8}$ ]] && (( 10#$vni >= 1 && 10#$vni <= 16777215 )) || { echo '{"ok":false,"error":"bad_vni"}'; return 0; }
+      fi
+      [[ -z "$vni" || "$kind" == "vxlan" || "$kind" == "geneve" ]] || { echo '{"ok":false,"error":"vni_requires_overlay"}'; return 0; }
+      if [[ -n "$tunnel_id" ]]; then
+        [[ "$tunnel_id" =~ ^[0-9]{1,5}$ ]] && (( 10#$tunnel_id <= 65535 )) || { echo '{"ok":false,"error":"bad_tunnel_id"}'; return 0; }
+      fi
+      [[ -z "$tunnel_id" || "$kind" == "eoip" ]] || { echo '{"ok":false,"error":"tunnel_id_requires_eoip"}'; return 0; }
+      [[ -z "$pool4" || "$pool4" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}/[0-9]{1,2}$ ]] || { echo '{"ok":false,"error":"bad_pool4"}'; return 0; }
+      [[ -z "$pool6" || "$pool6" =~ ^[0-9A-Fa-f:]+/[0-9]{1,3}$ ]] || { echo '{"ok":false,"error":"bad_pool6"}'; return 0; }
+      [[ -z "$pool4$pool6" || "$kind" == "sit" || "$kind" == "ipip" || "$kind" == "gre" || "$kind" == "ip6gre" || "$kind" == "ipip6" || "$kind" == "ip6ip6" || "$kind" == "wireguard" || "$kind" == "obfs" || "$kind" == "tcp" ]] || { echo '{"ok":false,"error":"pool_requires_layer3"}'; return 0; }
+      [[ -z "$pool4" || "$kind" == "ipip" || "$kind" == "gre" || "$kind" == "ip6gre" || "$kind" == "ipip6" || "$kind" == "wireguard" || "$kind" == "obfs" || "$kind" == "tcp" ]] || { echo '{"ok":false,"error":"pool4_unsupported"}'; return 0; }
+      [[ -z "$pool6" || "$kind" == "sit" || "$kind" == "gre" || "$kind" == "ip6gre" || "$kind" == "ip6ip6" || "$kind" == "wireguard" || "$kind" == "obfs" || "$kind" == "tcp" ]] || { echo '{"ok":false,"error":"pool6_unsupported"}'; return 0; }
+      [[ -z "$sni" || "$kind" == "stream-tls" ]] || { echo '{"ok":false,"error":"sni_requires_tls_stream"}'; return 0; }
       [[ -z "$encrypt" || "$encrypt" =~ ^(aes-gcm-128|aes-gcm-256|chacha20-poly1305|auto)$ ]] || { echo '{"ok":false,"error":"bad_encrypt"}'; return 0; }
       [[ -z "$profile" || "$profile" =~ ^(lean|balanced|max)$ ]] || { echo '{"ok":false,"error":"bad_profile"}'; return 0; }
-      [[ -z "$keepalive" || "$keepalive" =~ ^(-1|[0-9]{1,5})$ ]] || { echo '{"ok":false,"error":"bad_keepalive"}'; return 0; }
-      [[ "$keepalive" == "-1" || -z "$keepalive" || 10#$keepalive -le 65535 ]] || { echo '{"ok":false,"error":"bad_keepalive"}'; return 0; }
-      [[ -z "$padding" || ( "$padding" =~ ^[0-9]{1,3}$ && 10#$padding -le 255 ) ]] || { echo '{"ok":false,"error":"bad_padding"}'; return 0; }
-      [[ -z "$lanes" || ( "$lanes" =~ ^[1-8]$ ) ]] || { echo '{"ok":false,"error":"bad_lanes"}'; return 0; }
-      [[ -z "$conns" || ( "$conns" =~ ^([1-9]|1[0-6])$ ) ]] || { echo '{"ok":false,"error":"bad_conns"}'; return 0; }
+      if [[ -n "$keepalive" ]]; then
+        [[ "$keepalive" =~ ^(-1|[0-9]{1,4})$ ]] || { echo '{"ok":false,"error":"bad_keepalive"}'; return 0; }
+        [[ "$keepalive" == "-1" ]] || (( 10#$keepalive <= 3600 )) || { echo '{"ok":false,"error":"bad_keepalive"}'; return 0; }
+      fi
+      if [[ -n "$padding" ]]; then
+        [[ "$padding" =~ ^[0-9]{1,3}$ ]] && (( 10#$padding <= 255 )) || { echo '{"ok":false,"error":"bad_padding"}'; return 0; }
+      fi
+      [[ -z "$lanes" || "$lanes" =~ ^[1-8]$ ]] || { echo '{"ok":false,"error":"bad_lanes"}'; return 0; }
+      [[ -z "$conns" || "$conns" =~ ^([1-9]|1[0-6])$ ]] || { echo '{"ok":false,"error":"bad_conns"}'; return 0; }
       [[ "$forward_proto" == "tcp" || "$forward_proto" == "udp" || "$forward_proto" == "both" ]] || { echo '{"ok":false,"error":"bad_forward_proto"}'; return 0; }
       if [[ -n "$keepalive" && "$kind" != "wireguard" && "$kind" != "obfs" ]]; then echo '{"ok":false,"error":"keepalive_only_encrypted_udp"}'; return 0; fi
-      if [[ -n "$padding" && "$padding" != "0" && "$kind" != "obfs" ]]; then echo '{"ok":false,"error":"padding_only_obfs"}'; return 0; fi
-      if [[ -n "$lanes" && "$lanes" -gt 1 && "$kind" != "gre" && "$kind" != "gretap" && "$kind" != "ip6gre" && "$kind" != "ip6gretap" ]]; then echo '{"ok":false,"error":"lanes_require_gre"}'; return 0; fi
+      if [[ -n "$padding" && "$kind" != "obfs" ]]; then echo '{"ok":false,"error":"padding_only_obfs"}'; return 0; fi
+      if [[ -n "$lanes" && "$kind" != "gre" && "$kind" != "gretap" && "$kind" != "ip6gre" && "$kind" != "ip6gretap" ]]; then echo '{"ok":false,"error":"lanes_require_gre"}'; return 0; fi
       if [[ -n "$conns" && "$kind" != "stream-tcp" && "$kind" != "stream-tls" ]]; then echo '{"ok":false,"error":"conns_require_stream"}'; return 0; fi
+      if [[ -n "$sni" && "$kind" != "stream-tls" ]]; then echo '{"ok":false,"error":"sni_requires_stream_tls"}'; return 0; fi
       if [[ "$(jq -r '.reverse // false' <<<"$body")" == "true" && "$kind" != "stream-tcp" && "$kind" != "stream-tls" ]]; then echo '{"ok":false,"error":"reverse_requires_stream"}'; return 0; fi
       if [[ ( "$(jq -r '.mtu_probe // false' <<<"$body")" == "true" || "$(jq -r '.no_pmtud // false' <<<"$body")" == "true" ) && "$kind" != "sit" && "$kind" != "ipip" && "$kind" != "gre" && "$kind" != "gretap" && "$kind" != "eoip" ]]; then echo '{"ok":false,"error":"mtu_flags_unsupported"}'; return 0; fi
+      if [[ "$(jq -r '.ignore_df // false' <<<"$body")" == "true" && ( "$kind" != "gre" && "$kind" != "gretap" || "$(jq -r '.no_pmtud // false' <<<"$body")" != "true" ) ]]; then echo '{"ok":false,"error":"ignore_df_requires_gre_and_no_pmtud"}'; return 0; fi
       if [[ -n "$forward_ports" && ( "$kind" == "gretap" || "$kind" == "ip6gretap" || "$kind" == "vxlan" || "$kind" == "geneve" || "$kind" == "l2tpv3" || "$kind" == "eoip" ) ]]; then echo '{"ok":false,"error":"forward_requires_layer3"}'; return 0; fi
       if [[ -n "$forward_ports" && ( "$kind" == "stream-tcp" || "$kind" == "stream-tls" ) && "$forward_proto" != "tcp" ]]; then echo '{"ok":false,"error":"stream_tcp_only"}'; return 0; fi
+      if [[ -n "$forward_ports$encrypt" ]] && ! have nft; then echo '{"ok":false,"error":"neotunnel_nftables_required"}'; return 0; fi
       install_neotunnel || { echo '{"ok":false,"error":"neotunnel_install_failed"}'; return 0; }
       local paired=false
       for _nt_try in {1..20}; do
@@ -1436,18 +1473,25 @@ api_neotunnel(){
       if [[ "$paired" != "true" ]]; then
         echo '{"ok":false,"error":"neotunnel_peer_not_paired"}'; return 0
       fi
-      if [[ -n "$forward_ports$encrypt" ]] && ! have nft; then echo '{"ok":false,"error":"neotunnel_nftables_required"}'; return 0; fi
       if neotunnel_state_has_tunnel "$nt_name"; then echo '{"ok":false,"error":"neotunnel_tunnel_exists"}'; return 0; fi
-      local -a cmd=("$NEOTUNNEL_BIN" tunnel add "$nt_name" --kind "$kind" --peer "$peer_name" --port "$port")
+      local -a cmd=("$NEOTUNNEL_BIN" tunnel add "$nt_name" --kind "$kind" --peer "$peer_name")
+      [[ -n "$port" ]] && cmd+=(--port "$port")
       [[ -n "$mtu" ]] && cmd+=(--mtu "$mtu")
+      [[ -n "$ttl" ]] && cmd+=(--ttl "$ttl")
+      [[ -n "$vni" ]] && cmd+=(--vni "$vni")
+      [[ -n "$tunnel_id" ]] && cmd+=(--tunnel-id "$tunnel_id")
+      [[ -n "$pool4" ]] && cmd+=(--pool4 "$pool4")
+      [[ -n "$pool6" ]] && cmd+=(--pool6 "$pool6")
       [[ -n "$encrypt" ]] && cmd+=(--encrypt "$encrypt")
       [[ -n "$profile" && "$profile" != "balanced" ]] && cmd+=(--profile "$profile")
       [[ -n "$keepalive" ]] && cmd+=(--keepalive "$keepalive")
       [[ -n "$padding" ]] && cmd+=(--padding "$padding")
       [[ -n "$lanes" ]] && cmd+=(--lanes "$lanes")
       [[ -n "$conns" ]] && cmd+=(--conns "$conns")
+      [[ -n "$sni" ]] && cmd+=(--sni "$sni")
       [[ "$(jq -r '.mtu_probe // false' <<<"$body")" == "true" ]] && cmd+=(--mtu-probe)
-      [[ "$(jq -r '.no_pmtud // false' <<<"$body")" == "true" ]] && cmd+=(--no-pmtud)
+      [[ "$(jq -r '.no_pmtud // false' <<<"$body")" == "true" || "$(jq -r '.ignore_df // false' <<<"$body")" == "true" ]] && cmd+=(--no-pmtud)
+      [[ "$(jq -r '.ignore_df // false' <<<"$body")" == "true" ]] && cmd+=(--ignore-df)
       [[ "$(jq -r '.reverse // false' <<<"$body")" == "true" ]] && cmd+=(--reverse)
       if ! log="$(NO_COLOR=1 "${cmd[@]}" 2>&1)"; then printf '{"ok":false,"error":"neotunnel_add_failed","log":%s}\n' "$(json_str "$log")"; return 0; fi
       if [[ -n "$forward_ports" ]]; then
@@ -3149,6 +3193,15 @@ def update_all():
 # ----------------------------------------------------- link two panel nodes
 LINK_METHODS = ("asnative", "backhaul", "rathole", "gre", "frp", "gost", "paqet", "assecure", "neotunnel")
 NEOTUNNEL_KINDS = ("sit", "ipip", "gre", "gretap", "ip6gre", "ip6gretap", "ipip6", "ip6ip6", "vxlan", "geneve", "l2tpv3", "wireguard", "obfs", "tcp", "eoip", "stream-tcp", "stream-tls")
+NEOTUNNEL_PORT_KINDS = ("sit", "ipip", "gre", "gretap", "vxlan", "geneve", "l2tpv3", "wireguard", "obfs", "tcp", "eoip", "stream-tcp", "stream-tls")
+NEOTUNNEL_REQUIRED_PORT_KINDS = ("vxlan", "geneve", "wireguard", "obfs", "tcp", "stream-tcp", "stream-tls")
+NEOTUNNEL_POOL_KINDS = ("sit", "ipip", "gre", "ip6gre", "ipip6", "ip6ip6", "wireguard", "obfs", "tcp")
+NEOTUNNEL_POOL4_KINDS = ("ipip", "gre", "ip6gre", "ipip6", "wireguard", "obfs", "tcp")
+NEOTUNNEL_POOL6_KINDS = ("sit", "gre", "ip6gre", "ip6ip6", "wireguard", "obfs", "tcp")
+NEOTUNNEL_PMTU_KINDS = ("sit", "ipip", "gre", "gretap", "eoip")
+NEOTUNNEL_LANE_KINDS = ("gre", "gretap", "ip6gre", "ip6gretap")
+NEOTUNNEL_IPV4_UNDERLAY_KINDS = ("sit", "ipip", "gre", "gretap")
+NEOTUNNEL_IPV6_UNDERLAY_KINDS = ("ip6gre", "ip6gretap", "ipip6", "ip6ip6")
 KCP_MODES = ("fast", "normal", "fast2", "fast3")
 KCP_BLOCKS = ("aes-128-gcm", "aes", "aes-128", "aes-192", "salsa20", "blowfish", "twofish", "cast5", "3des", "tea", "xtea", "xor", "sm4", "none", "null")
 
@@ -3268,27 +3321,70 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
     if method == "neotunnel":
         try:
-            ipaddress.ip_address(sip); ipaddress.ip_address(cip)
+            sip_addr, cip_addr = ipaddress.ip_address(sip), ipaddress.ip_address(cip)
         except ValueError:
             raise ValueError("neotunnel_requires_ip")
+        if sip_addr.version != cip_addr.version:
+            raise ValueError("neotunnel_mixed_underlay_family")
         kind = str(p.get("kind") or "wireguard").strip().lower()
         if kind not in NEOTUNNEL_KINDS:
             raise ValueError("bad_neotunnel_kind")
+        if kind in NEOTUNNEL_IPV4_UNDERLAY_KINDS and sip_addr.version != 4:
+            raise ValueError("neotunnel_kind_requires_ipv4_underlay")
+        if kind in NEOTUNNEL_IPV6_UNDERLAY_KINDS and sip_addr.version != 6:
+            raise ValueError("neotunnel_kind_requires_ipv6_underlay")
         fwd = _ports_csv(p.get("forward_ports"))
         fwd_list = fwd.split(",") if fwd else []
-        port = _configured_port(p.get("port"), avoid=fwd_list)
-        if str(port) in fwd_list:
+        can_port = kind in NEOTUNNEL_PORT_KINDS
+        required_port = kind in NEOTUNNEL_REQUIRED_PORT_KINDS
+        if p.get("port") not in (None, "") and not can_port:
+            raise ValueError("port_unsupported")
+        port = _configured_port(p.get("port"), avoid=fwd_list) if can_port and (required_port or p.get("port") not in (None, "")) else ""
+        if str(port) in fwd_list and port:
             raise ValueError("ports_conflict")
         mtu = p.get("mtu")
         if mtu not in (None, "") and _port(mtu, lo=576, hi=9000) is None:
             raise ValueError("bad_mtu")
+        ttl = p.get("ttl")
+        ttl = _port(ttl, lo=1, hi=255) if ttl not in (None, "") else None
+        if p.get("ttl") not in (None, "") and ttl is None:
+            raise ValueError("bad_ttl")
+        vni = p.get("vni")
+        vni = _port(vni, lo=1, hi=16777215) if vni not in (None, "") else None
+        if p.get("vni") not in (None, "") and vni is None:
+            raise ValueError("bad_vni")
+        if vni is not None and kind not in ("vxlan", "geneve"):
+            raise ValueError("vni_requires_overlay")
+        tunnel_id = p.get("tunnel_id")
+        tunnel_id = _port(tunnel_id, lo=0, hi=65535) if tunnel_id not in (None, "") else None
+        if p.get("tunnel_id") not in (None, "") and tunnel_id is None:
+            raise ValueError("bad_tunnel_id")
+        if tunnel_id is not None and kind != "eoip":
+            raise ValueError("tunnel_id_requires_eoip")
+        if tunnel_id is not None and kind == "eoip" and not port and sip_addr.version == 6 and tunnel_id > 4095:
+            raise ValueError("eoipv6_tunnel_id_max_4095_without_udp")
+        pool4, pool6 = str(p.get("pool4") or "").strip(), str(p.get("pool6") or "").strip()
+        if (pool4 or pool6) and kind not in NEOTUNNEL_POOL_KINDS:
+            raise ValueError("pool_requires_layer3")
+        if pool4 and kind not in NEOTUNNEL_POOL4_KINDS:
+            raise ValueError("pool4_unsupported")
+        if pool6 and kind not in NEOTUNNEL_POOL6_KINDS:
+            raise ValueError("pool6_unsupported")
+        for pool, version in ((pool4, 4), (pool6, 6)):
+            if pool:
+                try:
+                    net = ipaddress.ip_network(pool, strict=False)
+                except ValueError:
+                    raise ValueError("bad_pool" + str(version))
+                if net.version != version:
+                    raise ValueError("bad_pool" + str(version))
         encrypt = str(p.get("encrypt") or "").strip().lower()
         if encrypt not in ("", "none", "aes-gcm-128", "aes-gcm-256", "chacha20-poly1305", "auto"):
             raise ValueError("bad_encrypt")
         profile = str(p.get("profile") or "balanced").strip().lower()
         if profile not in ("lean", "balanced", "max"):
             raise ValueError("bad_profile")
-        proto = str(p.get("forward_proto") or "both").lower()
+        proto = str(p.get("forward_proto") or ("tcp" if kind in ("stream-tcp", "stream-tls") else "both")).lower()
         if proto not in ("tcp", "udp", "both"):
             raise ValueError("bad_forward_proto")
         if kind in ("stream-tcp", "stream-tls") and fwd and proto != "tcp":
@@ -3310,31 +3406,47 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             return number
         if p.get("keepalive") not in (None, "") and kind not in ("wireguard", "obfs"):
             raise ValueError("keepalive_only_encrypted_udp")
-        keepalive = nt_int("keepalive", 25 if kind in ("wireguard", "obfs") else 0, -1, 65535)
+        keepalive = nt_int("keepalive", 25 if kind in ("wireguard", "obfs") else 0, -1, 3600)
         padding = nt_int("padding", 0, 0, 255)
         lanes = nt_int("lanes", 1, 1, 8)
         conns = nt_int("conns", 4, 1, 16)
-        if padding and kind != "obfs":
+        if p.get("padding") not in (None, "") and kind != "obfs":
             raise ValueError("padding_only_obfs")
-        if lanes > 1 and kind not in ("gre", "gretap", "ip6gre", "ip6gretap"):
+        if p.get("lanes") not in (None, "") and kind not in NEOTUNNEL_LANE_KINDS:
             raise ValueError("lanes_require_gre")
-        if conns != 4 and kind not in ("stream-tcp", "stream-tls"):
+        if p.get("conns") not in (None, "") and kind not in ("stream-tcp", "stream-tls"):
             raise ValueError("conns_require_stream")
         reverse = nt_bool(p.get("reverse"))
         if reverse and kind not in ("stream-tcp", "stream-tls"):
             raise ValueError("reverse_requires_stream")
+        sni = str(p.get("sni") or "").strip()
+        if sni and kind != "stream-tls":
+            raise ValueError("sni_requires_stream_tls")
+        if sni:
+            labels = sni.split(".")
+            if len(sni) > 253 or any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-") or not re.fullmatch(r"(?i)[a-z0-9-]+", label) for label in labels):
+                raise ValueError("bad_sni")
         mtu_probe, no_pmtud = nt_bool(p.get("mtu_probe")), nt_bool(p.get("no_pmtud"))
-        if (mtu_probe or no_pmtud) and kind not in ("sit", "ipip", "gre", "gretap", "eoip"):
+        ignore_df = nt_bool(p.get("ignore_df"))
+        if (mtu_probe or no_pmtud or ignore_df) and kind not in NEOTUNNEL_PMTU_KINDS:
             raise ValueError("mtu_flags_unsupported")
+        if (mtu_probe or no_pmtud or ignore_df) and sip_addr.version != 4:
+            raise ValueError("mtu_flags_require_ipv4_underlay")
+        if ignore_df and kind not in ("gre", "gretap"):
+            raise ValueError("ignore_df_requires_gre")
+        if ignore_df:
+            no_pmtud = True
         nt_name = "a" + re.sub(r"[^a-z0-9-]", "", str(link_name).lower())[:5] + secrets.token_hex(2)
         common = {"NT_MODE": "linked", "NT_TUNNEL_NAME": nt_name, "NT_KIND": kind,
                   "NT_PORT": port, "NT_MTU": _port(mtu, None, 576, 9000) if mtu not in (None, "") else "",
+                  "NT_TTL": ttl or "", "NT_VNI": vni or "", "NT_TUNNEL_ID": tunnel_id if tunnel_id is not None else "",
+                  "NT_POOL4": pool4, "NT_POOL6": pool6,
                   "NT_ENCRYPT": "" if encrypt == "none" else encrypt, "NT_PROFILE": "" if profile == "balanced" else profile,
                   "NT_KEEPALIVE": keepalive if kind in ("wireguard", "obfs") else "",
                   "NT_PADDING": padding if kind == "obfs" else "", "NT_LANES": lanes if lanes > 1 else "",
-                  "NT_CONNS": conns if kind in ("stream-tcp", "stream-tls") else "",
+                  "NT_CONNS": conns if kind in ("stream-tcp", "stream-tls") else "", "NT_SNI": sni,
                   "NT_MTU_PROBE": "true" if mtu_probe else "false",
-                  "NT_NO_PMTUD": "true" if no_pmtud else "false",
+                  "NT_NO_PMTUD": "true" if no_pmtud else "false", "NT_IGNORE_DF": "true" if ignore_df else "false",
                   "NT_REVERSE": "true" if reverse else "false", "NT_FORWARD_PORTS": fwd,
                   "NT_FORWARD_PROTO": proto}
         return (dict(common, NT_ROLE="owner", NT_PEER_IP=cip),
@@ -3460,11 +3572,13 @@ def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfield
 
     options = {
         "tunnel_name": nt_name, "peer_name": peer_name, "kind": sfields["NT_KIND"],
-        "port": sfields["NT_PORT"], "mtu": sfields["NT_MTU"], "encrypt": sfields["NT_ENCRYPT"],
-        "profile": sfields["NT_PROFILE"], "keepalive": sfields["NT_KEEPALIVE"],
+        "port": sfields["NT_PORT"], "mtu": sfields["NT_MTU"], "ttl": sfields["NT_TTL"],
+        "vni": sfields["NT_VNI"], "tunnel_id": sfields["NT_TUNNEL_ID"],
+        "pool4": sfields["NT_POOL4"], "pool6": sfields["NT_POOL6"], "sni": sfields["NT_SNI"],
+        "encrypt": sfields["NT_ENCRYPT"], "profile": sfields["NT_PROFILE"], "keepalive": sfields["NT_KEEPALIVE"],
         "padding": sfields["NT_PADDING"], "lanes": sfields["NT_LANES"], "conns": sfields["NT_CONNS"],
         "mtu_probe": sfields["NT_MTU_PROBE"] == "true", "no_pmtud": sfields["NT_NO_PMTUD"] == "true",
-        "reverse": sfields["NT_REVERSE"] == "true", "forward_ports": sfields["NT_FORWARD_PORTS"],
+        "ignore_df": sfields["NT_IGNORE_DF"] == "true", "reverse": sfields["NT_REVERSE"] == "true", "forward_ports": sfields["NT_FORWARD_PORTS"],
         "forward_proto": sfields["NT_FORWARD_PROTO"]
     }
     step_ok, _ = record("server", server, sname, "eu", _neotunnel_action(server, "add_link", **options))
@@ -5028,6 +5142,82 @@ const SEL = (k, l, opts, o = {}) => Object.assign({k, l, t: 'select', opts}, o);
 const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'salsa20', 'blowfish', 'twofish', 'cast5', '3des', 'tea', 'xtea', 'xor', 'sm4', 'none', 'null'];
 const NEOTUNNEL_KINDS = ['sit','ipip','gre','gretap','ip6gre','ip6gretap','ipip6','ip6ip6','vxlan','geneve','l2tpv3','wireguard','obfs','tcp','eoip','stream-tcp','stream-tls'];
 const NT_ENCRYPT = ['none','aes-gcm-128','aes-gcm-256','chacha20-poly1305','auto'];
+const NT_PORT_KINDS = new Set(['sit','ipip','gre','gretap','vxlan','geneve','l2tpv3','wireguard','obfs','tcp','eoip','stream-tcp','stream-tls']);
+const NT_REQUIRED_PORT_KINDS = new Set(['vxlan','geneve','wireguard','obfs','tcp','stream-tcp','stream-tls']);
+const NT_POOL_KINDS = new Set(['sit','ipip','gre','ip6gre','ipip6','ip6ip6','wireguard','obfs','tcp']);
+const NT_POOL4_KINDS = new Set(['ipip','gre','ip6gre','ipip6','wireguard','obfs','tcp']);
+const NT_POOL6_KINDS = new Set(['sit','gre','ip6gre','ip6ip6','wireguard','obfs','tcp']);
+const NT_PMTU_KINDS = new Set(['sit','ipip','gre','gretap','eoip']);
+const NT_STREAM_KINDS = new Set(['stream-tcp','stream-tls']);
+const NT_LANE_KINDS = new Set(['gre','gretap','ip6gre','ip6gretap']);
+const NT_MANAGED_ONLY = new Set(['obfs','tcp','stream-tcp','stream-tls']);
+function ntPortLabel(kind) {
+  if (kind === 'vxlan') return 'UDP port';
+  if (kind === 'geneve') return 'UDP port';
+  if (kind === 'wireguard' || kind === 'obfs') return 'UDP listen port';
+  if (kind === 'tcp' || kind === 'stream-tcp' || kind === 'stream-tls') return 'TCP listen port';
+  if (kind === 'l2tpv3') return 'UDP encapsulation port (blank = native L2TPv3)';
+  if (kind === 'eoip') return 'UDP encapsulation port (blank = raw GRE)';
+  return 'UDP FOU port (blank = native IP protocol)';
+}
+function ntPortField(kind, prefix) {
+  const req = NT_REQUIRED_PORT_KINDS.has(kind), standard = kind === 'vxlan' ? '4789' : (kind === 'geneve' ? '6081' : (kind === 'wireguard' && prefix === 'NT_' ? '51820' : ''));
+  return T(prefix === 'NT_' ? 'NT_PORT' : 'port', ntPortLabel(kind) + (req ? ' (required)' : ' (optional)'), {ph: standard || '20000', v: standard, rand: req && !standard ? 1 : 0});
+}
+function ntManualFields(kind) {
+  if (NT_MANAGED_ONLY.has(kind)) return [];
+  const f = [T('NT_REMOTE_IP','Remote IP address',{full:true})];
+  if (NT_PORT_KINDS.has(kind)) f.push(ntPortField(kind, 'NT_'));
+  f.push(T('NT_MTU','MTU (576-9000)'), T('NT_TTL','Outer TTL (1-255; blank = default)'));
+  if (kind === 'wireguard') { f.push(T('NT_PEER_KEY','WireGuard peer public key',{full:true}), T('NT_KEEPALIVE','WireGuard keepalive seconds (-1 disables)',{ph:'25'})); }
+  if (NT_PMTU_KINDS.has(kind)) {
+    f.push(SEL('NT_MTU_PROBE','Measure path MTU (IPv4 underlay)',['false','true'],{v:'false'}), SEL('NT_NO_PMTUD','Allow outer fragmentation (IPv4 underlay)',['false','true'],{v:'false'}));
+    if (kind === 'gre' || kind === 'gretap') f.push(SEL('NT_IGNORE_DF','Ignore inner DF bit (IPv4 GRE/GRETAP only)',['false','true'],{v:'false'}));
+  }
+  if (kind === 'vxlan' || kind === 'geneve') f.push(T('NT_VNI','VNI (1-16777215)',{ph:'12345'}));
+  if (kind === 'eoip') f.push(T('NT_TUNNEL_ID','EoIP tunnel ID (0-65535; IPv6 raw max 4095)' ,{ph:'42'}));
+  if (NT_POOL4_KINDS.has(kind)) f.push(T('NT_POOL4','IPv4 address pool CIDR (optional)',{ph:'10.77.0.0/16'}));
+  if (NT_POOL6_KINDS.has(kind)) f.push(T('NT_POOL6','IPv6 address pool CIDR (optional)',{ph:'fd20::/48'}));
+  f.push(SEL('NT_PROFILE','Speed profile',['balanced','lean','max'],{v:'balanced'}));
+  if (NT_POOL_KINDS.has(kind)) {
+    f.push(T('NT_FORWARD_PORTS','Forward ports (CSV)',{full:true,ph:'443,8080'}), SEL('NT_FORWARD_PROTO','Forward protocol',['both','tcp','udp'],{v:'both'}));
+  }
+  return f;
+}
+function ntLinkFields(kind, family = '4') {
+  const f = [];
+  if (NT_PORT_KINDS.has(kind)) f.push(ntPortField(kind, ''));
+  if (!NT_STREAM_KINDS.has(kind)) f.push(T('mtu','MTU (576-9000)'), T('ttl','Outer TTL (1-255; blank = default)'));
+  f.push(SEL('profile','Speed profile',['balanced','lean','max'],{v:'balanced'}));
+  if (!['wireguard','obfs','stream-tls'].includes(kind)) f.push(SEL('encrypt','Additional tunnel encryption',NT_ENCRYPT,{v:'none'}));
+  if (NT_POOL4_KINDS.has(kind)) f.push(T('pool4','IPv4 address pool CIDR (optional)',{ph:'10.77.0.0/16'}));
+  if (NT_POOL6_KINDS.has(kind)) f.push(T('pool6','IPv6 address pool CIDR (optional)',{ph:'fd20::/48'}));
+  if (NT_PMTU_KINDS.has(kind) && family === '4') {
+    f.push(SEL('mtu_probe','Measure path MTU',['false','true'],{v:'false'}), SEL('no_pmtud','Allow outer fragmentation',['false','true'],{v:'false'}));
+    if (kind === 'gre' || kind === 'gretap') f.push(SEL('ignore_df','Ignore inner DF bit (also enables fragmentation)',['false','true'],{v:'false'}));
+  }
+  if (NT_LANE_KINDS.has(kind)) f.push(T('lanes','Parallel GRE lanes (1-8)',{ph:'1'}));
+  if (kind === 'vxlan' || kind === 'geneve') f.push(T('vni','VNI (1-16777215)',{ph:'12345'}));
+  if (kind === 'eoip') f.push(T('tunnel_id','EoIP tunnel ID (0-65535; IPv6 raw max 4095)',{ph:'42'}));
+  if (kind === 'wireguard' || kind === 'obfs') f.push(T('keepalive','Keepalive seconds (-1 disables)',{ph:'25'}));
+  if (kind === 'obfs') f.push(T('padding','Obfs padding bytes (0-255)',{ph:'0'}));
+  if (kind === 'stream-tcp' || kind === 'stream-tls') {
+    f.push(T('conns','Parallel stream sessions (1-16)',{ph:'4'}), SEL('reverse','Reverse connection direction',['false','true'],{v:'false'}));
+    if (kind === 'stream-tls') f.push(T('sni','TLS server name (optional)',{ph:'tunnel.example.com'}));
+  }
+  if (NT_POOL_KINDS.has(kind) || kind === 'stream-tcp' || kind === 'stream-tls') {
+    f.push(T('forward_ports',kind.startsWith('stream-') ? 'TCP relay ports (CSV)' : 'Forward ports (CSV)',{full:true,ph:'443,8080'}));
+    if (!kind.startsWith('stream-')) f.push(SEL('forward_proto','Forward protocol',['both','tcp','udp'],{v:'both'}));
+  }
+  return f;
+}
+function linkUnderlayFamily() {
+  const a = ($('lkSIp')?.value || '').trim(), b = ($('lkCIp')?.value || '').trim();
+  if (!a || !b) return '4';
+  const a6 = a.includes(':'), b6 = b.includes(':');
+  return a6 === b6 ? (a6 ? '6' : '4') : 'mixed';
+}
+function linkFieldsFor(method) { return method === 'neotunnel' ? ntLinkFields(selectedKind(), linkUnderlayFamily()) : (LINK_PARAMS[method] || []); }
 function selectedMethod() { const v = $('methodSelect').value || 'assecure'; return v.startsWith('kind:') ? 'neotunnel' : v; }
 function selectedKind() { const v = $('methodSelect').value || ''; return v.startsWith('kind:') ? v.slice(5) : 'wireguard'; }
 function selectProtocol(method, kind) { $('methodSelect').value = method === 'neotunnel' ? 'kind:' + (kind || 'wireguard') : method; filterProtocols(); }
@@ -5069,9 +5259,6 @@ const FIELDS = {
       SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}), SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-256)', {ph: '4', v: '4'}), T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150'}),
       T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
       T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]},
-  neotunnel: {
-    eu: [T('NT_REMOTE_IP','Remote IP',{full:true}),T('NT_PORT','Tunnel port',{ph:'20000'}),T('NT_PEER_KEY','WireGuard peer public key',{full:true}),T('NT_MTU','MTU (576-9000)'),SEL('NT_ENCRYPT','Additional encryption',NT_ENCRYPT,{v:'none'}),SEL('NT_PROFILE','Speed profile',['balanced','lean','max'],{v:'balanced'}),T('NT_KEEPALIVE','Keepalive (seconds)',{ph:'25'}),T('NT_PADDING','Obfs padding (0-255)',{ph:'0'}),T('NT_FORWARD_PORTS','Forward ports (CSV)',{full:true,ph:'443,8080'}),SEL('NT_FORWARD_PROTO','Forward protocol',['both','tcp','udp'],{v:'both'}),SEL('NT_MTU_PROBE','Probe path MTU',['false','true'],{v:'false'}),SEL('NT_NO_PMTUD','Disable PMTU discovery',['false','true'],{v:'false'})],
-    iran: [T('NT_REMOTE_IP','Remote IP',{full:true}),T('NT_PORT','Tunnel port',{ph:'20000'}),T('NT_PEER_KEY','WireGuard peer public key',{full:true}),T('NT_MTU','MTU (576-9000)'),SEL('NT_ENCRYPT','Additional encryption',NT_ENCRYPT,{v:'none'}),SEL('NT_PROFILE','Speed profile',['balanced','lean','max'],{v:'balanced'}),T('NT_KEEPALIVE','Keepalive (seconds)',{ph:'25'}),T('NT_PADDING','Obfs padding (0-255)',{ph:'0'}),T('NT_FORWARD_PORTS','Forward ports (CSV)',{full:true,ph:'443,8080'}),SEL('NT_FORWARD_PROTO','Forward protocol',['both','tcp','udp'],{v:'both'}),SEL('NT_MTU_PROBE','Probe path MTU',['false','true'],{v:'false'}),SEL('NT_NO_PMTUD','Disable PMTU discovery',['false','true'],{v:'false'})]},
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
@@ -5084,7 +5271,6 @@ const LINK_PARAMS = {
   assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true})],
   paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
     T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true})],
-  neotunnel: [T('port','Tunnel port',{rand:1}),T('mtu','MTU (576-9000)'),SEL('encrypt','Additional encryption',NT_ENCRYPT,{v:'none'}),SEL('profile','Speed profile',['balanced','lean','max'],{v:'balanced'}),T('keepalive','Keepalive seconds',{ph:'25'}),T('padding','Obfs padding (0-255)',{ph:'0'}),T('lanes','GRE lanes (1-8)',{ph:'1'}),T('conns','Stream sessions (1-16)',{ph:'4'}),SEL('mtu_probe','Probe path MTU',['false','true'],{v:'false'}),SEL('no_pmtud','Disable PMTU discovery',['false','true'],{v:'false'}),SEL('reverse','Reverse stream direction',['false','true'],{v:'false'}),T('forward_ports','Forward ports on server (CSV)',{full:true,ph:'443,8080'}),SEL('forward_proto','Forward protocol',['both','tcp','udp'],{v:'both'})],
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
@@ -5126,7 +5312,7 @@ function setMode(mode) {
   if (mode === 'manual') renderFields(); else initLink();
 }
 function onMethodChange() { if (!CURRENT) return; if (CURRENT.mode === 'link') initLink(); else renderFields(); }
-function fieldDefsFor() { const m = selectedMethod(), role = $('roleSelect').value; return (FIELDS[m] || {})[role] || []; }
+function fieldDefsFor() { const m = selectedMethod(), role = $('roleSelect').value; return m === 'neotunnel' ? ntManualFields(selectedKind()) : ((FIELDS[m] || {})[role] || []); }
 function inputHtml(f, prefix) {
   const id = prefix + f.k;
   if (f.t === 'select') return '<select class="mono" id="' + id + '">' + f.opts.map(o => '<option value="' + o + '">' + o + '</option>').join('') + '</select>';
@@ -5135,6 +5321,7 @@ function inputHtml(f, prefix) {
 }
 function renderFields() {
   const box = $('fieldsBox'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
+  if (selectedMethod() === 'neotunnel' && NT_MANAGED_ONLY.has(selectedKind())) { box.innerHTML = '<div class="muted" style="padding:12px">This kind needs both nodes paired. Use Link panel nodes. / این نوع به اتصال هر دو سرور نیاز دارد؛ از «اتصال نودهای پنل» استفاده کنید.</div>'; return; }
   fieldDefsFor().forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'f_'); grid.appendChild(w);
@@ -5162,28 +5349,31 @@ function initLink() {
   const clientKey = reverse ? 'lkClientAbroad' : 'lkClientIran';
   $('lkServerText').dataset.i = serverKey; $('lkServerText').textContent = t(serverKey);
   $('lkClientText').dataset.i = clientKey; $('lkClientText').textContent = t(clientKey);
-  lkNodeChanged(); renderLinkParams();
+  lkNodeChanged(false); renderLinkParams();
   const ready = !!sv && !!cl;
   $('lkBtn').disabled = !ready;
   if (!ready) setMsg(t('lkNeed'), 'err');
 }
-function lkNodeChanged() {
+function lkNodeChanged(renderParams=true) {
   const sv = S.nodes.find(n => n.id === $('lkServer').value), cl = S.nodes.find(n => n.id === $('lkClient').value);
   $('lkSIp').value = sv ? (sv.public_ip || '') : ''; $('lkCIp').value = cl ? (cl.public_ip || '') : '';
+  if (renderParams && CURRENT && CURRENT.mode === 'link' && selectedMethod() === 'neotunnel') renderLinkParams(true);
 }
-function renderLinkParams() {
-  const m = selectedMethod(), box = $('lkParams'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
-  (LINK_PARAMS[m] || []).forEach(f => {
+function renderLinkParams(preserve=false) {
+  const m = selectedMethod(), box = $('lkParams'), previous = {};
+  if (preserve) box.querySelectorAll('[id^="lk_"]').forEach(el => { previous[el.id.slice(3)] = el.value; });
+  box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
+  linkFieldsFor(m).forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'lk_'); grid.appendChild(w);
-    const el = $('lk_' + f.k); if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
+    const el = $('lk_' + f.k); if (el && Object.prototype.hasOwnProperty.call(previous, f.k)) el.value = previous[f.k]; else if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
   });
   const reverse = ['asnative', 'backhaul', 'rathole'].includes(m);
   const noteKey = m === 'gost' ? 'lkNoteGost' : (m === 'neotunnel' ? 'lkNoteExtended' : (reverse ? 'lkNoteReverse' : 'lkNote'));
   $('lkNote').dataset.i = noteKey; $('lkNote').textContent = t(noteKey);
 }
 function linkParams() {
-  const method = selectedMethod(), out = {}; (LINK_PARAMS[method] || []).forEach(f => { const el = $('lk_' + f.k); if (el && el.value.trim() !== '') out[f.k] = el.value.trim(); });
+  const method = selectedMethod(), out = {}; linkFieldsFor(method).forEach(f => { const el = $('lk_' + f.k); if (el && el.value.trim() !== '') out[f.k] = el.value.trim(); });
   if (method === 'neotunnel') out.kind = selectedKind();
   return out;
 }
@@ -6060,7 +6250,7 @@ api_save(){
     assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS" ;;
     gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
     paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC" ;;
-    neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_LANES NT_CONNS NT_REVERSE NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
+    neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
   esac
 
