@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.11"
+VERSION="4.2.12"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -784,6 +784,30 @@ tunnel_host_port(){
   [[ "$host" == *:* && "$host" != \[*\] ]] && host="[$host]"
   printf '%s:%s' "$host" "$port"
 }
+tunnel_backhaul_target_host(){
+  local host="$1"
+  [[ "$host" == \[*\] ]] && host="${host:1:${#host}-2}"
+  # Backhaul's current remote-port resolver splits addresses on every colon,
+  # so an IPv6 literal such as [::1]:2080 becomes an empty port. Use the
+  # standard IPv6 loopback alias only after confirming this host maps it in
+  # /etc/hosts; this also avoids IPv4 output-DNAT rules on shared ports.
+  if [[ "$host" == "::1" ]]; then
+    python3 - <<'PYIP6HOST' >/dev/null 2>&1 || return 1
+from pathlib import Path
+for line in Path('/etc/hosts').read_text(errors='replace').splitlines():
+    fields = line.split('#', 1)[0].split()
+    if len(fields) >= 2 and fields[0] == '::1' and 'ip6-localhost' in fields[1:]:
+        raise SystemExit(0)
+raise SystemExit(1)
+PYIP6HOST
+    printf 'ip6-localhost'
+    return 0
+  fi
+  # Backhaul's parser cannot safely consume an IPv6 literal in host:port form.
+  [[ "$host" != *:* ]] || return 1
+  tunnel_valid_host "$host" || return 1
+  printf '%s' "$host"
+}
 tunnel_local_target_host(){
   local port="$1" proto="${2:-tcp}" preferred="${3:-${LOCAL_ADDR:-auto}}" host
   if [[ -n "$preferred" && "$preferred" != "auto" ]]; then
@@ -941,7 +965,7 @@ write_backhaul_config(){
       local_target_host="${LOCAL_ADDR:-127.0.0.1}"
       [[ -n "$local_target_host" && "$local_target_host" != auto ]] || local_target_host=127.0.0.1
       [[ "$local_target_host" == \[*\] ]] && local_target_host="${local_target_host:1:${#local_target_host}-2}"
-      tunnel_valid_host "$local_target_host" || { echo "[-] Backhaul: invalid client local target address." > "$TTY_OUT"; return 1; }
+      local_target_host="$(tunnel_backhaul_target_host "$local_target_host")" || { echo "[-] Backhaul: IPv6 loopback requires an ip6-localhost mapping in /etc/hosts; other IPv6 literals are not supported by this Backhaul resolver." > "$TTY_OUT"; return 1; }
       target="$(tunnel_host_port "$local_target_host" "$p")"
       lines+="  \"${p}=${target}\",\n"
     done < <(csv_ports_to_array "$FORWARD_PORTS")
@@ -6837,6 +6861,9 @@ api_probe(){
   tunnel_valid_port "$port" || { echo '{"error":"bad_port"}'; return 1; }
   [[ "$proto" == tcp || "$proto" == udp ]] || { echo '{"error":"bad_protocol"}'; return 1; }
   host="$(tunnel_local_target_host "$port" "$proto" auto)" || { echo '{"error":"probe_failed"}'; return 1; }
+  if [[ "$host" == "::1" ]]; then
+    tunnel_backhaul_target_host "$host" >/dev/null || { echo '{"error":"backhaul_ipv6_loopback_alias_unavailable","detail":"The peer has no ::1 ip6-localhost entry in /etc/hosts."}'; return 1; }
+  fi
   printf '{"ok":true,"host":%s}\n' "$(json_str "$host")"
 }
 
