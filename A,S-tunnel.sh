@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.7"
+VERSION="4.2.8"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -912,30 +912,35 @@ rathole_validate_profile(){
 }
 
 write_rathole_config(){
-  local prof cfg p remote
+  local prof cfg tmp p remote
   prof="$1"; cfg="$CONF/${prof}.toml"
   rathole_validate_profile "$prof" || return 1
+  # Rathole watches this file for hot reload. Build the complete TOML beside
+  # the destination and rename it in one operation, so the watcher cannot
+  # observe a truncated file or a header without its required services.
+  tmp="$(mktemp "${cfg}.tmp.XXXXXX")" || return 1
   if [[ "$RT_ROLE" == "server" ]]; then
-    { echo "[server]"; echo "bind_addr = \"0.0.0.0:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""; } > "$cfg"
-    while IFS= read -r p; do
-      [[ -n "$p" ]] || continue
-      {
+    {
+      echo "[server]"; echo "bind_addr = \"0.0.0.0:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""
+      while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
         echo ""; echo "[server.services.svc${p}]"; echo 'type = "tcp"'
         printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
-      } >> "$cfg"
-    done < <(csv_ports_to_array "$FORWARD_PORTS")
+      done < <(csv_ports_to_array "$FORWARD_PORTS")
+    } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   else
     remote="$(tunnel_host_port "$SERVER_IP" "$BIND_PORT")"
-    { echo "[client]"; echo "remote_addr = \"${remote}\""; echo "default_token = \"${TOKEN}\""; } > "$cfg"
-    while IFS= read -r p; do
-      [[ -n "$p" ]] || continue
-      {
+    {
+      echo "[client]"; echo "remote_addr = \"${remote}\""; echo "default_token = \"${TOKEN}\""
+      while IFS= read -r p; do
+        [[ -n "$p" ]] || continue
         echo ""; echo "[client.services.svc${p}]"; echo 'type = "tcp"'
         printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "127.0.0.1:%s"\n' "$p"
-      } >> "$cfg"
-    done < <(csv_ports_to_array "$FORWARD_PORTS")
+      done < <(csv_ports_to_array "$FORWARD_PORTS")
+    } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   fi
-  chmod 600 "$cfg"
+  chmod 600 "$tmp" || { rm -f -- "$tmp"; return 1; }
+  mv -f -- "$tmp" "$cfg" || { rm -f -- "$tmp"; return 1; }
 }
 
 write_frp_config(){
