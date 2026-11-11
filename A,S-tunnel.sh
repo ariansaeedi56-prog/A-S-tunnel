@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.9"
+VERSION="4.2.11"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -2760,6 +2760,12 @@ def execute(cmd, args=None):
             return run_api(["list"], timeout=30)
         if cmd == "get":
             return run_api(["get", _prof(a)], timeout=30)
+        if cmd == "probe_local_target":
+            port = str(a.get("port", ""))
+            proto = str(a.get("proto", "tcp"))
+            if not port.isdigit() or not 1 <= int(port) <= 65535 or proto not in ("tcp", "udp"):
+                return {"error": "bad_probe_args"}
+            return run_api(["probe", port, proto], timeout=15)
         if cmd == "save":
             return run_api(["save", _prof(a)], stdin_data=json.dumps(a.get("body") or {}), timeout=300)
         if cmd in ("start", "stop", "restart", "delete"):
@@ -3288,6 +3294,60 @@ def linked_profile_pair_matches(method, left, right):
     return False
 
 
+def refresh_linked_backhaul_target(nodes, current, prof):
+    """Repair legacy Backhaul loopback defaults by probing the peer that dials the service."""
+    rows = list(zip(nodes, current))
+    server = next(((nid, item) for nid, item in rows
+                   if (item.get("fields") or {}).get("BH_ROLE") == "server"), None)
+    client = next(((nid, item) for nid, item in rows
+                   if (item.get("fields") or {}).get("BH_ROLE") == "client"), None)
+    if not server or not client:
+        return None, {"error": "backhaul_pair_roles_missing"}
+    server_fields = server[1].get("fields") or {}
+    client_fields = client[1].get("fields") or {}
+    old_server = str(server_fields.get("LOCAL_ADDR") or "auto").strip().lower()
+    old_client = str(client_fields.get("LOCAL_ADDR") or "auto").strip().lower()
+    # Preserve explicit custom/IPv6 destinations. Legacy UI defaults were
+    # 127.0.0.1, so treat that value as auto during linked start/restart.
+    if old_server not in ("", "auto", "127.0.0.1"):
+        return None, None
+    ports = [p.strip() for p in str(server_fields.get("FORWARD_PORTS") or "").split(",")]
+    port = next((p for p in ports if re.fullmatch(r"[0-9]{1,5}", p) and 1 <= int(p) <= 65535), "")
+    if not port:
+        return None, {"error": "backhaul_target_probe_failed", "detail": "No valid forwarded port was available to probe."}
+    probe = run_on_node(client[0], "probe_local_target", {"port": port, "proto": "tcp"}, timeout=30)
+    target = probe.get("host") if isinstance(probe, dict) and probe.get("ok") else None
+    if target not in ("127.0.0.1", "::1"):
+        detail = (probe.get("detail") or probe.get("error") or "Peer endpoint probe failed.") if isinstance(probe, dict) else "Invalid probe response."
+        return None, {"error": "backhaul_target_probe_failed", "detail": str(detail)[:300]}
+    if old_server == target and old_client == target:
+        return None, None
+
+    steps, saved = [], []
+    for nid, item in rows:
+        fields = dict(item.get("fields") or {})
+        previous = dict(fields)
+        fields["LOCAL_ADDR"] = target
+        role = item.get("role") or ("iran" if nid == server[0] else "eu")
+        result = run_on_node(nid, "save", {"prof": prof, "body": {
+            "method": "backhaul", "role": role, "fields": fields}}, timeout=330)
+        result = result if isinstance(result, dict) else {"error": "bad_result"}
+        okay = result.get("ok") is True and result.get("saved", True) is True
+        steps.append({"node_id": nid, "ok": okay,
+                      "error": "" if okay else str(result.get("log") or result.get("error") or "save failed")[-500:]})
+        if okay:
+            saved.append((nid, item, previous, role))
+        else:
+            break
+    if len(saved) != len(rows):
+        # Keep both profiles paired if one side refused the automatic repair.
+        for nid, item, previous, role in saved:
+            run_on_node(nid, "save", {"prof": prof, "body": {
+                "method": "backhaul", "role": role, "fields": previous}}, timeout=330)
+        return None, {"error": "backhaul_target_update_failed", "steps": steps}
+    return {"updated": True, "target": target, "steps": steps}, None
+
+
 @app.post("/api/linked/<action>")
 def api_linked_action(action):
     if action not in ("start", "stop", "restart", "delete"):
@@ -3303,6 +3363,13 @@ def api_linked_action(action):
         current = [future.result() for future in futures]
     if not linked_profile_pair_matches(method, current[0], current[1]):
         return jsonify({"ok": False, "error": "linked_pair_mismatch"}), 409
+    if method == "backhaul" and action in ("start", "restart"):
+        refreshed, refresh_error = refresh_linked_backhaul_target(nodes, current, prof)
+        if refresh_error:
+            return jsonify({"ok": False, **refresh_error}), 409
+        if refreshed:
+            return jsonify({"ok": all(x["ok"] for x in refreshed["steps"]),
+                            "target_host": refreshed["target"], "steps": refreshed["steps"]})
     owner = str((current[0].get("fields") or {}).get("LINK_OWNER_NODE") or
                 (current[1].get("fields") or {}).get("LINK_OWNER_NODE") or
                 (current[0].get("fields") or {}).get("NT_OWNER_NODE") or
@@ -3705,7 +3772,7 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         tr = p.get("transport") or "tcp"
         if tr not in ("tcp", "ws"):
             raise ValueError("bad_transport")
-        bh_local_addr = "127.0.0.1" if local_addr == "auto" else local_addr
+        bh_local_addr = local_addr
         return ({"BH_ROLE": "server", "TOKEN": key, "TRANSPORT": tr, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": bh_local_addr},
                 {"BH_ROLE": "client", "TOKEN": key, "TRANSPORT": tr, "SERVER_IP": sip, "BIND_PORT": port, "LOCAL_ADDR": bh_local_addr})
     if method == "rathole":
@@ -3918,6 +3985,18 @@ def api_link():
         sfields, cfields = build_link(method, params, sip, cip, name)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+
+    if method == "backhaul" and str(params.get("local_addr") or "auto").strip().lower() == "auto":
+        ports = str((sfields or {}).get("FORWARD_PORTS") or "").split(",")
+        probe_port = ports[0] if ports and ports[0].isdigit() else ""
+        if not probe_port:
+            return jsonify({"error": "backhaul_target_probe_failed", "detail": "No forwarded port was available to probe."}), 400
+        probe = run_on_node(client, "probe_local_target", {"port": probe_port, "proto": "tcp"}, timeout=30)
+        target_host = probe.get("host") if isinstance(probe, dict) and probe.get("ok") else None
+        if target_host not in ("127.0.0.1", "::1"):
+            detail = str((probe or {}).get("detail") or (probe or {}).get("error") or "Peer endpoint probe failed.") if isinstance(probe, dict) else "Invalid probe response."
+            return jsonify({"error": "backhaul_target_probe_failed", "detail": detail[:300]}), 503
+        sfields["LOCAL_ADDR"] = cfields["LOCAL_ADDR"] = target_host
 
     link_id = secrets.token_hex(8)
     link_owner_fields = {"LINK_MODE": "paired", "LINK_ID": link_id,
@@ -5785,7 +5864,7 @@ const FIELDS = {
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
   asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'})],
-  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Client local target host (127.0.0.1 or ::1)', {full: true, v: '127.0.0.1'})],
+  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Client local target host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
   rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
   frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
   gre: [],
@@ -6752,6 +6831,15 @@ json_str(){ printf '%s' "$1" | jq -Rs .; }
 api_json_field(){ printf '"%s":%s' "$1" "$(json_str "$2")"; }
 valid_prof(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; }
 
+api_probe(){
+  local port proto host
+  port="$1"; proto="$2"
+  tunnel_valid_port "$port" || { echo '{"error":"bad_port"}'; return 1; }
+  [[ "$proto" == tcp || "$proto" == udp ]] || { echo '{"error":"bad_protocol"}'; return 1; }
+  host="$(tunnel_local_target_host "$port" "$proto" auto)" || { echo '{"error":"probe_failed"}'; return 1; }
+  printf '{"ok":true,"host":%s}\n' "$(json_str "$host")"
+}
+
 api_list(){
   echo "["
   local first=1 prof m running role sessions s f k v nt_name nt_kind nt_role nt_mode nt_owner link_mode link_id link_owner link_peer link_side extra
@@ -7047,6 +7135,7 @@ if [[ "${1:-}" == "--api" ]]; then
   case "$sub" in
     list)     api_list ;;
     get)      api_get "${1:-}" ;;
+  probe)    api_probe "${1:-}" "${2:-tcp}" ;;
     save)     api_save "${1:-}" ;;
     start)    api_simple run "${1:-}" ;;
     stop)     api_simple stop "${1:-}" ;;
