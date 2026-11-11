@@ -18,7 +18,7 @@ def auto_pool_size(role: str = "ir") -> int:
     """
     # Allow explicit override
     try:
-        env_pool = int(os.environ.get("A,S_POOL", "0"))
+        env_pool = int(os.environ.get("AS_POOL") or os.environ.get("PAHLAVI_POOL") or os.environ.get("A_S_POOL") or os.environ.get("A,S_POOL") or "0")
         if env_pool > 0:
             return env_pool
     except Exception:
