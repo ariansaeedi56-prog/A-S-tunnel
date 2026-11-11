@@ -5,7 +5,7 @@ set -euo pipefail
 
 APP_NAME="A,S"
 TG_ID="@Asnejad"
-VERSION="4.2.6"
+VERSION="4.2.7"
 
 GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
 
@@ -37,7 +37,7 @@ LOG_DIR="/var/log/A,S"
 
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
-PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY"
+PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE"
 
 NEOTUNNEL_BIN="/usr/local/bin/neotunnel"
 NEOTUNNEL_STATE="/etc/neotunnel/state.json"
@@ -2737,6 +2737,7 @@ import secrets
 import ssl
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 import tempfile
@@ -3153,6 +3154,87 @@ def n_slot_delete(nid, prof):
             run_on_node(nid, "delete", {"prof": prof}, timeout=120)
             return respond(res)
     return respond(run_on_node(nid, "delete", {"prof": prof}, timeout=180))
+
+
+def linked_profile_pair_matches(method, left, right):
+    if not isinstance(left, dict) or not isinstance(right, dict):
+        return False
+    if left.get("method") != method or right.get("method") != method:
+        return False
+    lf, rf = left.get("fields") or {}, right.get("fields") or {}
+    if (lf.get("LINK_MODE") == rf.get("LINK_MODE") == "paired" and
+            lf.get("LINK_ID") and lf.get("LINK_ID") == rf.get("LINK_ID")):
+        return True
+    if method == "neotunnel":
+        return (lf.get("NT_MODE") == rf.get("NT_MODE") == "linked" and
+                lf.get("NT_TUNNEL_NAME") and lf.get("NT_TUNNEL_NAME") == rf.get("NT_TUNNEL_NAME") and
+                lf.get("NT_OWNER_NODE") == rf.get("NT_OWNER_NODE"))
+    role_key = {"backhaul": "BH_ROLE", "rathole": "RT_ROLE", "frp": "FRP_ROLE",
+                "assecure": "AS_ROLE", "paqet": "PQ_ROLE"}.get(method)
+    if role_key:
+        if {lf.get(role_key), rf.get(role_key)} != {"server", "client"}:
+            return False
+        keys = {
+            "backhaul": ("TOKEN", "TRANSPORT", "BIND_PORT"),
+            "rathole": ("TOKEN", "BIND_PORT", "FORWARD_PORTS"),
+            "frp": ("TOKEN", "BIND_PORT", "FORWARD_PORTS"),
+            "assecure": ("TOKEN", "AS_TRANSPORT", "BIND_PORT", "AS_TCP_PORTS", "AS_UDP_PORTS"),
+            "paqet": ("SECRET_KEY", "SERVER_PORT", "KCP_MODE", "BLOCK"),
+        }[method]
+        return all(lf.get(k) not in (None, "") and lf.get(k) == rf.get(k) for k in keys)
+    if method == "asnative":
+        return (left.get("role") != right.get("role") and
+                {left.get("role"), right.get("role")} == {"iran", "eu"} and
+                lf.get("BRIDGE") == rf.get("BRIDGE") and lf.get("SYNC") == rf.get("SYNC") and
+                bool(lf.get("IRAN_IP")) != bool(rf.get("IRAN_IP")))
+    if method == "gre":
+        return (lf.get("LOCAL_IP") and lf.get("PEER_IP") and
+                lf.get("LOCAL_IP") == rf.get("PEER_IP") and lf.get("PEER_IP") == rf.get("LOCAL_IP"))
+    return False
+
+
+@app.post("/api/linked/<action>")
+def api_linked_action(action):
+    if action not in ("start", "stop", "restart", "delete"):
+        return jsonify({"ok": False, "error": "bad_action"}), 400
+    b = request.get_json(force=True, silent=True) or {}
+    prof, method = str(b.get("prof") or ""), str(b.get("method") or "")
+    nodes = b.get("nodes") if isinstance(b.get("nodes"), list) else []
+    nodes = list(dict.fromkeys(str(n) for n in nodes if valid_nid(str(n))))
+    if not asnode.NAME_RE.match(prof) or method not in LINK_METHODS or len(nodes) != 2:
+        return jsonify({"ok": False, "error": "bad_linked_tunnel"}), 400
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run_on_node, nid, "get", {"prof": prof}, timeout=45) for nid in nodes]
+        current = [future.result() for future in futures]
+    if not linked_profile_pair_matches(method, current[0], current[1]):
+        return jsonify({"ok": False, "error": "linked_pair_mismatch"}), 409
+    owner = str((current[0].get("fields") or {}).get("LINK_OWNER_NODE") or
+                (current[1].get("fields") or {}).get("LINK_OWNER_NODE") or
+                (current[0].get("fields") or {}).get("NT_OWNER_NODE") or
+                (current[1].get("fields") or {}).get("NT_OWNER_NODE") or b.get("owner") or "")
+    if method == "neotunnel":
+        if owner not in nodes:
+            return jsonify({"ok": False, "error": "linked_owner_missing"}), 409
+        if action == "delete":
+            peer = next(n for n in nodes if n != owner)
+            primary = run_on_node(owner, "delete", {"prof": prof}, timeout=180)
+            if not (isinstance(primary, dict) and primary.get("ok")):
+                return jsonify({"ok": False, "error": "linked_delete_failed", "steps": [primary]})
+            secondary = run_on_node(peer, "delete", {"prof": prof}, timeout=120)
+            okay = isinstance(secondary, dict) and (secondary.get("ok") or secondary.get("error") == "not_found")
+            return jsonify({"ok": okay, "steps": [primary, secondary], "partial": not okay})
+        return respond(run_on_node(owner, action, {"prof": prof}, timeout=330))
+    timeout = 180 if action == "delete" else 330
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        futures = [pool.submit(run_on_node, nid, action if action != "delete" else "delete",
+                               {"prof": prof}, timeout=timeout) for nid in nodes]
+        results = [future.result() for future in futures]
+    steps = []
+    for nid, result in zip(nodes, results):
+        okay = isinstance(result, dict) and (result.get("ok") is True or
+                (action == "delete" and result.get("error") == "not_found"))
+        steps.append({"node_id": nid, "ok": okay, "error": "" if okay else str((result or {}).get("log") or (result or {}).get("error") or "failed")[-500:]})
+    return jsonify({"ok": all(x["ok"] for x in steps), "steps": steps, "partial": any(x["ok"] for x in steps) and not all(x["ok"] for x in steps)})
 
 
 @app.get("/api/n/<nid>/slots/<prof>/logs")
@@ -3681,8 +3763,13 @@ def _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfield
     if not step_ok:
         return jsonify({"ok": False, "saved": False, "steps": steps, "error": "neotunnel_add_failed"})
 
-    owner_fields = dict(sfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True)
-    managed_fields = dict(cfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True)
+    link_id = secrets.token_hex(8)
+    owner_fields = dict(sfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True,
+                        LINK_MODE="paired", LINK_ID=link_id, LINK_OWNER_NODE=server,
+                        LINK_PEER_NODE=client, LINK_SIDE="owner")
+    managed_fields = dict(cfields, NT_PEER=peer_name, NT_OWNER_NODE=server, NT_REGISTER_ONLY=True,
+                          LINK_MODE="paired", LINK_ID=link_id, LINK_OWNER_NODE=server,
+                          LINK_PEER_NODE=client, LINK_SIDE="peer")
     owner_ok, owner_result = record("server", server, sname, "eu", run_on_node(server, "save", {
         "prof": name, "body": {"method": "neotunnel", "role": "eu", "fields": owner_fields}}, timeout=180))
     if not owner_ok or not (isinstance(owner_result, dict) and owner_result.get("saved", owner_ok)):
@@ -3730,6 +3817,17 @@ def api_link():
         sfields, cfields = build_link(method, params, sip, cip, name)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
+
+    link_id = secrets.token_hex(8)
+    link_owner_fields = {"LINK_MODE": "paired", "LINK_ID": link_id,
+                         "LINK_OWNER_NODE": server, "LINK_PEER_NODE": client,
+                         "LINK_SIDE": "owner"}
+    link_peer_fields = {"LINK_MODE": "paired", "LINK_ID": link_id,
+                        "LINK_OWNER_NODE": server, "LINK_PEER_NODE": client,
+                        "LINK_SIDE": "peer"}
+    if sfields is not None:
+        sfields.update(link_owner_fields)
+        cfields.update(link_peer_fields)
 
     if method == "neotunnel":
         return _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfields, cfields)
@@ -4412,10 +4510,10 @@ td .nm{font-weight:700}
 .tcard-status i{width:6px;height:6px;border-radius:50%;background:currentColor}.tcard-meta{display:flex;gap:7px;flex-wrap:wrap;align-items:center;margin-top:7px}
 .tcard-proto{font-size:11px;color:var(--accent2);border:1px solid color-mix(in srgb,var(--accent) 32%,transparent);border-radius:999px;padding:2px 8px}
 .tun-link-badge{font-size:10px;color:var(--green);border:1px solid color-mix(in srgb,var(--green) 32%,transparent);border-radius:999px;padding:2px 7px;background:color-mix(in srgb,var(--green) 7%,transparent)}
-.tcard-arrow{color:var(--faint);font-size:20px;line-height:1;transition:color .12s}.tcard-actions{display:flex;gap:7px;padding:0 15px 13px 69px}
+.tcard-arrow{color:var(--faint);font-size:20px;line-height:1;transition:color .12s}.tcard-actions{display:flex;flex-wrap:wrap;gap:7px;padding:0 15px 13px 69px}
 .tun-action{display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid rgba(255,255,255,.1);border-radius:9px;background:rgba(255,255,255,.025);color:var(--dim);font:inherit;font-size:11px;cursor:pointer}
 .tun-action:hover:not(:disabled){border-color:color-mix(in srgb,var(--accent) 48%,transparent);color:var(--txt)}.tun-action:disabled{opacity:.38;cursor:not-allowed}
-.tun-action.start{color:var(--green)}.tun-action.restart{color:var(--amber)}.tun-action.stop{color:var(--red)}
+.tun-action.start{color:var(--green)}.tun-action.restart{color:var(--amber)}.tun-action.stop{color:var(--red)}.tun-action.delete{color:var(--red);border-color:color-mix(in srgb,var(--red) 35%,transparent)}
 .tun-empty{grid-column:1/-1;padding:34px 18px;text-align:center;color:var(--dim);border:1px dashed rgba(255,255,255,.12);border-radius:16px}
 @media(max-width:650px){.tun-summary{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.tun-stat{padding:11px 12px}.tun-stat .v{font-size:19px}.tun-controls{align-items:stretch}.tun-search{max-width:none}.tun-filters{justify-content:space-between}.tun-filter{padding:7px 9px}}
 .empty{padding:30px;text-align:center;color:var(--dim)}
@@ -4799,7 +4897,7 @@ en:{
  cur:'Now', avg:'Avg', min:'Min', max:'Max', trend:'Trend', livePing:'Live Ping', pgFrom:'From node', pgTo:'Target', pgCustom:'Custom host / IP',
  pgStart:'Start live ping', pgStop:'Stop', clear:'Clear', loss:'Loss', custom:'Custom…',
  tunTitle:'Tunnels Manager', tunAllNodes:'All nodes', linkedPair:'Linked pair', addTunnel:'Add tunnel', tunDesc:'All connected nodes. Linked node tunnels appear once; manual profiles remain per node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
- tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings', linkedReadOnly:'Linked tunnel settings are managed together. This view is read-only; delete and recreate the pair to change its parameters.',
+ tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings', deletePair:'Delete pair', deletePairConfirm:'Delete linked tunnel “{n}” from both nodes?', linkedReadOnly:'Linked tunnel settings are managed together. This view is read-only; delete and recreate the pair to change its parameters.', e_neotunnel_forward_port_conflict:'Port {port} is already forwarded by tunnel {tunnel}. Choose another forwarded port or remove that existing mapping.',
  mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', protocolSearchHint:'Search protocols…', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
  sched:'Scheduled restart', schedNote:'(regardless of status)', hours:'hours', save2:'Save', live:'Live', newTunnel:'New tunnel',
  running:'running', stopped:'stopped', crafted:'Crafted by', keepPrivate:'Keep this URL and your password private',
@@ -4855,7 +4953,7 @@ fa:{
  cur:'اکنون', avg:'میانگین', min:'کمینه', max:'بیشینه', trend:'روند', livePing:'پینگ زنده', pgFrom:'از نود', pgTo:'مقصد', pgCustom:'هاست / آی‌پی دلخواه',
  pgStart:'شروع پینگ زنده', pgStop:'توقف', clear:'پاک کردن', loss:'از دست رفته', custom:'دلخواه…',
  tunTitle:'مدیریت تانل‌ها', tunAllNodes:'همهٔ نودها', linkedPair:'جفت‌شده', addTunnel:'افزودن تانل', tunDesc:'تانل‌های همهٔ نودهای وصل‌شده اینجا هستند؛ تانل‌های جفت‌شده یک‌بار و پروفایل‌های دستی جداگانه برای هر نود نمایش داده می‌شوند.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
- tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات', linkedReadOnly:'تنظیمات تانل جفت‌شده با هم مدیریت می‌شوند. این بخش فقط‌خواندنی است؛ برای تغییر پارامترها، جفت تانل را حذف و دوباره ایجاد کنید.',
+ tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات', deletePair:'حذف جفت', deletePairConfirm:'تانل جفت‌شدهٔ «{n}» از هر دو نود حذف شود؟', linkedReadOnly:'تنظیمات تانل جفت‌شده با هم مدیریت می‌شوند. این بخش فقط‌خواندنی است؛ برای تغییر پارامترها، جفت تانل را حذف و دوباره ایجاد کنید.', e_neotunnel_forward_port_conflict:'پورت {port} از قبل توسط تانل {tunnel} فوروارد شده است. پورت دیگری انتخاب کنید یا فوروارد قبلی را حذف کنید.',
  mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', protocolSearchHint:'جست‌وجوی پروتکل…', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
  sched:'ریستارت زمان‌بندی‌شده', schedNote:'(بدون توجه به وضعیت)', hours:'ساعت', save2:'ذخیره', live:'زنده', newTunnel:'تانل جدید',
  running:'در حال اجرا', stopped:'متوقف', crafted:'ساخته‌شده توسط', keepPrivate:'این آدرس و رمز عبور را محرمانه نگه دارید',
@@ -4935,6 +5033,11 @@ const fmtUp = s => { s = +s || 0; const d = Math.floor(s / 86400), h = Math.floo
 const fmtNum = (v, d = 1) => (v == null || isNaN(v)) ? '—' : (+v).toFixed(d);
 function errText(r) {
   if (!r) return t('failed');
+  if (r.error === 'neotunnel_add_failed' && Array.isArray(r.steps)) {
+    const detail=r.steps.map(x=>x.error || '').join(' ');
+    const conflict=detail.match(/port\s+(\d+)\s+is already forwarded to\s+([a-z0-9_-]+)/i);
+    if (conflict) return t('e_neotunnel_forward_port_conflict',{port:conflict[1],tunnel:conflict[2]});
+  }
   if (r.error === 'node_offline') return t('nodeOfflineErr');
   if (r.error === 'node_timeout') return t('timeoutErr');
   if (r.error && I18N.en['e_' + r.error]) return t('e_' + r.error);
@@ -5253,22 +5356,78 @@ window.addEventListener('resize', () => { if (S.tab === 'ping') drawChart(); });
 /* ---- tunnels tab ---- */
 const methodLabel = (m, k) => m === 'asnative' ? 'Reverse' : m === 'assecure' ? 'A,S Secure' : m === 'neotunnel' ? (k ? ({'ip6gre':'IP6GRE','ip6gretap':'IP6GRETAP','ipip6':'IPIP6','ip6ip6':'IP6IP6','l2tpv3':'L2TPv3','stream-tcp':'Stream TCP','stream-tls':'Stream TLS'}[k] || k.toUpperCase()) : 'Tunnel') : m;
 const methodGlyph = (m, k) => k === 'wireguard' || m === 'assecure' ? '⬡' : k === 'gre' || m === 'gre' ? '⇄' : k === 'vxlan' || k === 'geneve' ? '◈' : k && k.startsWith('stream-') ? '⇢' : m === 'asnative' ? '↗' : m === 'backhaul' ? '⤢' : m === 'rathole' ? '⌁' : m === 'gost' ? '⇢' : m === 'frp' ? '↗' : m === 'paqet' ? '◉' : '◇';
+function legacyLinkDescriptor(method, fields, profileRole) {
+  const f = fields || {};
+  const role = {backhaul:f.BH_ROLE,rathole:f.RT_ROLE,frp:f.FRP_ROLE,assecure:f.AS_ROLE,paqet:f.PQ_ROLE}[method];
+  const signatures = {
+    backhaul:['TOKEN','TRANSPORT','BIND_PORT'], rathole:['TOKEN','BIND_PORT','FORWARD_PORTS'],
+    frp:['TOKEN','BIND_PORT','FORWARD_PORTS'], assecure:['TOKEN','AS_TRANSPORT','BIND_PORT','AS_TCP_PORTS','AS_UDP_PORTS'],
+    paqet:['SECRET_KEY','SERVER_PORT','KCP_MODE','BLOCK']
+  };
+  if (role && signatures[method]) return {role, signature:JSON.stringify(signatures[method].map(k=>f[k] || ''))};
+  if (method === 'asnative') return {role:profileRole, signature:JSON.stringify([f.BRIDGE,f.SYNC,f.AUTO_SYNC,f.PORTS || '']), peer:!!f.IRAN_IP};
+  if (method === 'gre') return {role:profileRole, local:f.LOCAL_IP || '', peer:f.PEER_IP || ''};
+  return null;
+}
+function markLegacyLinkedProfiles(nodes) {
+  const groups = new Map();
+  for (const node of nodes) for (const tunnel of (node.tunnels || [])) {
+    if (tunnel.link_id || (tunnel.method === 'neotunnel' && (tunnel.nt_mode === 'linked' || tunnel.nt_role === 'managed'))) continue;
+    const key = `${tunnel.method}:${tunnel.prof}`;
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push({node,tunnel});
+  }
+  for (const rows of groups.values()) {
+    if (rows.length !== 2) continue;
+    const [a,b] = rows, da = a.tunnel._legacy_pair, db = b.tunnel._legacy_pair;
+    if (!da || !db) continue;
+    let paired = false, owner = null;
+    if (['backhaul','rathole','frp','assecure','paqet'].includes(a.tunnel.method)) {
+      paired = new Set([da.role,db.role]).size === 2 && [da.role,db.role].includes('server') && [da.role,db.role].includes('client') && da.signature && da.signature === db.signature;
+      owner = da.role === 'server' ? a.node.id : db.role === 'server' ? b.node.id : null;
+    } else if (a.tunnel.method === 'asnative') {
+      paired = new Set([da.role,db.role]).size === 2 && [da.role,db.role].includes('iran') && [da.role,db.role].includes('eu') && da.signature === db.signature && da.peer !== db.peer;
+      owner = da.role === 'iran' ? a.node.id : b.node.id;
+    } else if (a.tunnel.method === 'gre') {
+      paired = !!da.local && !!da.peer && da.local === db.peer && da.peer === db.local;
+      owner = da.role === 'eu' ? a.node.id : db.role === 'eu' ? b.node.id : a.node.id;
+    }
+    if (!paired || !owner) continue;
+    const id = `legacy:${a.tunnel.method}:${a.tunnel.prof}`;
+    for (const row of rows) Object.assign(row.tunnel, {link_mode:'paired',link_id:id,link_owner_node:owner,
+      link_peer_node:row.node.id === owner ? (rows.find(x=>x.node.id!==owner)||{}).node?.id || '' : owner,
+      link_side:row.node.id === owner ? 'owner' : 'peer'});
+  }
+}
 function collectTunnelCards(nodes) {
   const grouped = new Map();
   for (const node of (Array.isArray(nodes) ? nodes : [])) {
     for (const tunnel of (Array.isArray(node.tunnels) ? node.tunnels : [])) {
-      const isLinked = tunnel.method === 'neotunnel' && (tunnel.nt_mode === 'linked' || (tunnel.nt_role === 'managed' && tunnel.owner_node));
-      const groupKey = isLinked
-        ? `linked:${tunnel.owner_node || 'paired'}:${tunnel.tunnel_name || tunnel.prof}`
-        : `node:${node.id}:${tunnel.prof}`;
-      const owner = isLinked ? (nodes.find(n => n.id === tunnel.owner_node) || node) : node;
+      const ntLinked = tunnel.method === 'neotunnel' && (tunnel.nt_mode === 'linked' || (tunnel.nt_role === 'managed' && tunnel.owner_node));
+      const isLinked = (tunnel.link_mode === 'paired' && tunnel.link_id) || ntLinked;
+      const ownerId = tunnel.link_owner_node || tunnel.owner_node || '';
+      const linkId = tunnel.link_id || (ntLinked ? `linked:${ownerId || 'paired'}:${tunnel.tunnel_name || tunnel.prof}` : '');
+      const groupKey = isLinked ? `linked:${linkId || ownerId}:${tunnel.prof}` : `node:${node.id}:${tunnel.prof}`;
+      const owner = isLinked ? (nodes.find(n => n.id === ownerId) || node) : node;
       const item = Object.assign({}, tunnel, {node_id: owner.id, node_name: owner.name, node_role: owner.role,
-        node_online: !!owner.online, linked: isLinked});
+        node_online: !!owner.online, linked: !!isLinked, link_id:linkId, link_owner_node:ownerId || owner.id});
       const old = grouped.get(groupKey);
-      if (!old || (isLinked && tunnel.nt_role !== 'managed' && old.nt_role === 'managed')) grouped.set(groupKey, item);
+      if (!old || (isLinked && tunnel.link_side === 'owner' && old.link_side !== 'owner') || (ntLinked && tunnel.nt_role !== 'managed' && old.nt_role === 'managed')) grouped.set(groupKey, item);
     }
   }
-  return Array.from(grouped.values());
+  return Array.from(grouped.values()).map(item => {
+    if (item.linked && !item.link_peer_node) {
+      const peer = nodes.find(n => n.id !== item.node_id && (n.tunnels || []).some(t => t.prof === item.prof && t.method === item.method &&
+        ((item.link_id && t.link_id === item.link_id) || (item.method === 'neotunnel' && t.nt_mode === 'linked' && t.tunnel_name === item.tunnel_name))));
+      item.link_peer_node = peer ? peer.id : '';
+    }
+    return item;
+  });
+}
+function linkedCardForTunnel(existing,targetNode) {
+  if (!existing) return null;
+  return collectTunnelCards(S.nodes || []).find(x => x.prof === existing.prof && x.method === existing.method &&
+    x.linked && (x.node_id === targetNode || x.link_peer_node === targetNode)) || null;
 }
 function setTunnelQuery(value) { S.tunQuery = String(value || '').trim().toLowerCase(); S.tunKey = ''; renderTunnels(); }
 function setTunnelStatus(value) { S.tunStatus = ['all','up','down'].includes(value) ? value : 'all'; S.tunKey = ''; renderTunnels(); }
@@ -5302,15 +5461,43 @@ function renderTunnels() {
       <span class="tcard-meta"><span class="tcard-proto">${esc(methodLabel(x.method, x.kind))}</span><span class="rb ${esc(x.node_role)}">${esc(x.node_name)} · ${sideLabel(x.node_role)}</span>${x.linked ? `<span class="tun-link-badge">${t('linkedPair')}</span>` : ''}</span></span>
       <span class="tcard-arrow" aria-hidden="true">›</span></button>
     <div class="tcard-actions">
-      <button type="button" class="tun-action start" onclick="quick('${esc(x.prof)}','start','${esc(x.node_id)}')" aria-label="${t('start')} ${esc(x.prof)}" ${!x.node_online || x.running ? 'disabled' : ''}>▶ ${t('start')}</button>
-      <button type="button" class="tun-action restart" onclick="quick('${esc(x.prof)}','restart','${esc(x.node_id)}')" aria-label="${t('restart')} ${esc(x.prof)}" ${!x.node_online ? 'disabled' : ''}>⟳ ${t('restart')}</button>
-      <button type="button" class="tun-action stop" onclick="quick('${esc(x.prof)}','stop','${esc(x.node_id)}')" aria-label="${t('stop')} ${esc(x.prof)}" ${!x.node_online || !x.running ? 'disabled' : ''}>■ ${t('stop')}</button>
+      <button type="button" class="tun-action start" onclick="quick('${esc(x.prof)}','start','${esc(x.node_id)}',${x.linked},'${esc(x.link_id)}','${esc(x.link_owner_node)}','${esc(x.link_peer_node)}','${esc(x.method)}')" aria-label="${t('start')} ${esc(x.prof)}" ${!x.node_online || x.running ? 'disabled' : ''}>▶ ${t('start')}</button>
+      <button type="button" class="tun-action restart" onclick="quick('${esc(x.prof)}','restart','${esc(x.node_id)}',${x.linked},'${esc(x.link_id)}','${esc(x.link_owner_node)}','${esc(x.link_peer_node)}','${esc(x.method)}')" aria-label="${t('restart')} ${esc(x.prof)}" ${!x.node_online ? 'disabled' : ''}>⟳ ${t('restart')}</button>
+      <button type="button" class="tun-action stop" onclick="quick('${esc(x.prof)}','stop','${esc(x.node_id)}',${x.linked},'${esc(x.link_id)}','${esc(x.link_owner_node)}','${esc(x.link_peer_node)}','${esc(x.method)}')" aria-label="${t('stop')} ${esc(x.prof)}" ${!x.node_online || !x.running ? 'disabled' : ''}>■ ${t('stop')}</button>
+      <button type="button" class="tun-action delete" onclick="quickDelete('${esc(x.prof)}','${esc(x.node_id)}',${x.linked},'${esc(x.link_id)}','${esc(x.link_owner_node)}','${esc(x.link_peer_node)}','${esc(x.method)}',this)" aria-label="${t('delete')} ${esc(x.prof)}" title="${t(x.linked ? 'deletePair' : 'delete')}">🗑 ${t('delete')}</button>
     </div></article>`).join('')
     : `<div class="tun-empty">${list.length ? t('noTunnelMatches') : t('noTunnels')}</div>`;
 }
-async function quick(prof, action, nid) {
-  toast('…'); const r = await nodeApi(nid, '/slots/' + encodeURIComponent(prof) + '/' + action, {method: 'POST'});
+function linkedBody(info) {
+  const owner = info.link_owner_node || info.owner_node || info.node_id || '';
+  const peer = info.link_peer_node || '';
+  return {prof:info.prof, method:info.method, nodes:[owner,peer], owner, link_id:info.link_id || ''};
+}
+function tunnelRequest(info, action) {
+  if (info.linked) return api('/api/linked/' + action, {method:'POST', body:linkedBody(info)});
+  return nodeApi(info.node_id, '/slots/' + encodeURIComponent(info.prof) + '/' + action,
+    {method:action === 'delete' ? 'DELETE' : 'POST'});
+}
+async function quick(prof, action, nid, linked=false, linkId='', owner='', peer='', method='') {
+  toast('…'); const info={prof,node_id:nid,linked,link_id:linkId,link_owner_node:owner,link_peer_node:peer,method};
+  const r=await tunnelRequest(info,action);
   toast(r.ok ? '✔ ' + action : errText(r), r.ok ? 'ok' : 'err'); await reloadTunnels();
+}
+async function quickDelete(prof,nid,linked,linkId,owner,peer,method,button) {
+  const key=linked?'deletePairConfirm':'deleteConfirm';
+  if (!confirm(t(key,{n:prof}))) return;
+  if (button) { button.disabled=true; button.textContent='⏳'; }
+  try {
+    const r=await tunnelRequest({prof,node_id:nid,linked,link_id:linkId,link_owner_node:owner,link_peer_node:peer,method},'delete');
+    if (r.ok) {
+      const affected = new Set(linked ? [owner,peer].filter(Boolean) : [nid]);
+      for (const node of S.nodes || []) if (affected.has(node.id))
+        node.tunnels = (node.tunnels || []).filter(x => x.prof !== prof);
+      S.tunKey=''; renderTunnels(); toast('✔', 'ok');
+    }
+    else toast(errText(r), 'err');
+  } catch (e) { toast(String(e.message || e), 'err'); }
+  finally { if (button) button.disabled=false; }
 }
 let TUN_REFRESH_SEQ = 0;
 async function reloadTunnels() {
@@ -5321,22 +5508,29 @@ async function reloadTunnels() {
   responses.forEach((response, index) => {
     if (response.status === 'fulfilled' && Array.isArray(response.value)) updates.set(targets[index], response.value);
   });
-  // Older agents omit link metadata from list. Enrich only duplicate
-  // NeoTunnel profile names, which are the only rows that can be paired.
+  // Older nodes do not have generic link IDs. Fetch details only for duplicated
+  // name/protocol pairs, then merge them only when their settings prove a link.
   const profileCount = new Map();
   updates.forEach(list => list.forEach(x => {
-    if (x.method === 'neotunnel' && !x.nt_role && !x.nt_mode) profileCount.set(x.prof, (profileCount.get(x.prof) || 0) + 1);
+    const key = `${x.method}:${x.prof}`;
+    if (!x.link_id) profileCount.set(key, (profileCount.get(key) || 0) + 1);
   }));
   const candidates = [];
   updates.forEach((list, nid) => list.forEach(x => {
-    if (x.method === 'neotunnel' && !x.nt_role && !x.nt_mode && profileCount.get(x.prof) > 1) candidates.push({nid, x});
+    if (!x.link_id && profileCount.get(`${x.method}:${x.prof}`) > 1) candidates.push({nid, x});
   }));
   const stale = new Map();
   await Promise.allSettled(candidates.map(async ({nid, x}) => {
     const details = await nodeApi(nid, '/slots/' + encodeURIComponent(x.prof));
     const fields = details && details.fields;
-    if (fields) Object.assign(x, {kind: fields.NT_KIND || x.kind, nt_role: fields.NT_ROLE || '',
-      nt_mode: fields.NT_MODE || '', owner_node: fields.NT_OWNER_NODE || '', tunnel_name: fields.NT_TUNNEL_NAME || ''});
+    if (fields) {
+      Object.assign(x, {kind: fields.NT_KIND || x.kind, nt_role: fields.NT_ROLE || x.nt_role || '',
+        nt_mode: fields.NT_MODE || x.nt_mode || '', owner_node: fields.NT_OWNER_NODE || x.owner_node || '', tunnel_name: fields.NT_TUNNEL_NAME || x.tunnel_name || '',
+        link_mode: fields.LINK_MODE || x.link_mode || '', link_id: fields.LINK_ID || x.link_id || '',
+        link_owner_node: fields.LINK_OWNER_NODE || x.link_owner_node || '', link_peer_node: fields.LINK_PEER_NODE || x.link_peer_node || '',
+        link_side: fields.LINK_SIDE || x.link_side || ''});
+      if (!x.link_id && !x.link_mode) x._legacy_pair = legacyLinkDescriptor(x.method, fields, x.role);
+    }
     else if (details && details.error === 'not_found') {
       if (!stale.has(nid)) stale.set(nid, new Set());
       stale.get(nid).add(x.prof);
@@ -5348,6 +5542,7 @@ async function reloadTunnels() {
     const node = S.nodes.find(n => n.id === nid);
     if (node) node.tunnels = missing ? list.filter(x => !missing.has(x.prof)) : list;
   });
+  markLegacyLinkedProfiles(S.nodes);
   if (S.tab === 'tunnels') { S.tunKey = ''; renderTunnels(); }
 }
 
@@ -5506,17 +5701,20 @@ function genInto(id) { $(id).value = randHex(16); }
 function openNew(mode) { openSlot(null, mode || 'manual'); }
 function openSlotByName(prof, nid) { const node = S.nodes.find(n => n.id === (nid || S.sel)); openSlot((node?.tunnels || []).find(x => x.prof === prof) || null, 'manual', nid || S.sel); }
 function setRole(role) { $('roleSelect').value = role === 'iran' ? 'iran' : 'eu'; paintSide(); }
-function profileSideRows(nodes, prof, method) {
+function profileSideRows(nodes, prof, method, linkId) {
   if (!prof || !method) return [];
-  return (Array.isArray(nodes) ? nodes : []).flatMap(node => {
+  const rows = (Array.isArray(nodes) ? nodes : []).flatMap(node => {
     const tunnel = (node.tunnels || []).find(x => x.prof === prof && x.method === method);
     return tunnel ? [{node, tunnel}] : [];
   });
+  if (!linkId) return rows;
+  const exact = rows.filter(x => x.tunnel.link_id === linkId);
+  return exact.length ? exact : rows;
 }
 function paintSide() {
   const node = S.nodes.find(n => n.id === (CURRENT?.nid || S.sel));
   const select = $('sideSelect');
-  const rows = CURRENT?.prof ? profileSideRows(S.nodes, CURRENT.prof, CURRENT.method || '') : [];
+  const rows = CURRENT?.prof && CURRENT.linked ? profileSideRows(S.nodes, CURRENT.prof, CURRENT.method || '', CURRENT.link_id) : [];
   const choices = rows.length ? rows : (node ? [{node, tunnel: null}] : []);
   select.innerHTML = choices.map(({node: n, tunnel}) => {
     const role = (tunnel && tunnel.role) || n.role || 'eu';
@@ -5530,12 +5728,14 @@ function onSideChange() {
   if (!CURRENT || CURRENT.isNew) return;
   const nid = $('sideSelect').value;
   if (!nid || nid === CURRENT.nid) return;
-  const row = profileSideRows(S.nodes, CURRENT.prof, CURRENT.method || '').find(x => x.node.id === nid);
+  const row = profileSideRows(S.nodes, CURRENT.prof, CURRENT.method || '', CURRENT.link_id).find(x => x.node.id === nid);
   if (row) openSlot(row.tunnel, 'manual', nid);
 }
 function openSlot(existing, mode, nodeId) {
   const targetNode = existing ? (nodeId || existing.node_id || S.sel) : S.sel;
-  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual'), nid: targetNode, method: existing ? existing.method : '', linked: !!(existing && existing.method === 'neotunnel' && (existing.nt_mode === 'linked' || (existing.nt_role === 'managed' && existing.owner_node)))};
+  const linkCard = existing ? linkedCardForTunnel(existing,targetNode) : null;
+  const linkInfo = linkCard || existing || {};
+  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual'), nid: targetNode, method: existing ? existing.method : '', linked: !!(existing && (linkInfo.linked || (existing.method === 'neotunnel' && (existing.nt_mode === 'linked' || (existing.nt_role === 'managed' && existing.owner_node))))), link_id: existing ? (linkInfo.link_id || (existing.method === 'neotunnel' && existing.nt_mode === 'linked' ? 'linked:' + (existing.owner_node || '') + ':' + (existing.tunnel_name || existing.prof) : '')) : '', link_owner_node: existing ? (linkInfo.link_owner_node || linkInfo.owner_node || existing.link_owner_node || existing.owner_node || '') : '', link_peer_node: existing ? (linkInfo.link_peer_node || existing.link_peer_node || '') : ''};
   $('mTitle').textContent = existing ? existing.prof : t('newTunnel');
   $('modeSeg').classList.toggle('hidden', !!existing);
   paintStatus(existing ? !!existing.running : false, !!existing);
@@ -5551,7 +5751,7 @@ function openSlot(existing, mode, nodeId) {
     nodeApi(target, '/slots/' + encodeURIComponent(existing.prof)).then(d => {
       if (!CURRENT || CURRENT.nid !== target || CURRENT.prof !== existing.prof) return;
       CURRENT.method = d.method || CURRENT.method;
-      if (d.fields) CURRENT.linked = d.method === 'neotunnel' && (d.fields.NT_MODE === 'linked' || (d.fields.NT_ROLE === 'managed' && d.fields.NT_OWNER_NODE));
+      if (d.fields) { CURRENT.linked = CURRENT.linked || (d.fields.LINK_MODE === 'paired' && d.fields.LINK_ID) || (d.method === 'neotunnel' && (d.fields.NT_MODE === 'linked' || (d.fields.NT_ROLE === 'managed' && d.fields.NT_OWNER_NODE))); CURRENT.link_id = d.fields.LINK_ID || CURRENT.link_id; CURRENT.link_owner_node = d.fields.LINK_OWNER_NODE || d.fields.NT_OWNER_NODE || CURRENT.link_owner_node; CURRENT.link_peer_node = d.fields.LINK_PEER_NODE || CURRENT.link_peer_node; }
       if (d.role) { setRole(d.role); if (d.method === 'neotunnel' && d.fields?.NT_KIND) selectProtocol('neotunnel', d.fields.NT_KIND); renderFields(); }
       if (d.fields) fillFields(d.fields);
       updateLinkedProfileUI();
@@ -5715,16 +5915,30 @@ async function doAction(action) {
   if (!CURRENT || !CURRENT.prof) return;
   setBusy(true); setMsg(action + '…', '');
   try {
-    const res = await nodeApi(CURRENT.nid, '/slots/' + encodeURIComponent(CURRENT.prof) + '/' + action, {method: 'POST'});
+    const info={prof:CURRENT.prof,node_id:CURRENT.nid,method:CURRENT.method,linked:CURRENT.linked,link_id:CURRENT.link_id,link_owner_node:CURRENT.link_owner_node,link_peer_node:CURRENT.link_peer_node};
+    const res = await tunnelRequest(info,action);
     await refreshSlotState();
     if (res.ok) { setMsg('✔ ' + action, 'ok'); toast('✔ ' + action, 'ok'); } else { setMsg('✖ ' + action + '\n' + errText(res), 'err'); toast(action + ' ✖', 'err'); }
   } catch (e) { if (e.message !== 'unauthorized') setMsg('✖ ' + e.message, 'err'); }
   finally { setBusy(false); }
 }
 async function deleteSlot() {
-  if (!CURRENT || !CURRENT.prof || !confirm(t('deleteConfirm', {n: CURRENT.prof}))) return;
-  const res = await nodeApi(CURRENT.nid, '/slots/' + encodeURIComponent(CURRENT.prof), {method: 'DELETE'});
-  if (res.ok) { toast('✔', 'ok'); closeModal(); reloadTunnels(); } else toast(errText(res), 'err');
+  if (!CURRENT || !CURRENT.prof || !confirm(t(CURRENT.linked ? 'deletePairConfirm' : 'deleteConfirm', {n: CURRENT.prof}))) return;
+  const info={prof:CURRENT.prof,node_id:CURRENT.nid,method:CURRENT.method,linked:CURRENT.linked,link_id:CURRENT.link_id,link_owner_node:CURRENT.link_owner_node,link_peer_node:CURRENT.link_peer_node};
+  const affected = CURRENT.linked ? [CURRENT.link_owner_node,CURRENT.link_peer_node].filter(Boolean) : [CURRENT.nid];
+  const prof = CURRENT.prof;
+  const button=document.querySelector('#slotModal [onclick="deleteSlot()"]');
+  if (button) { button.disabled=true; button.dataset.old=button.textContent; button.textContent='⏳'; }
+  try {
+    const res=await tunnelRequest(info,'delete');
+    if (res.ok) {
+      for (const node of S.nodes || []) if (affected.includes(node.id))
+        node.tunnels = (node.tunnels || []).filter(x => x.prof !== prof);
+      S.tunKey=''; closeModal(); renderTunnels(); toast('✔', 'ok');
+    }
+    else { setMsg(errText(res),'err'); toast(errText(res),'err'); }
+  } catch (e) { if (e.message !== 'unauthorized') setMsg('✖ '+e.message,'err'); }
+  finally { if (button && CURRENT) { button.disabled=false; if (button.dataset.old) button.textContent=button.dataset.old; delete button.dataset.old; } }
 }
 async function saveRestartCron() {
   if (!CURRENT || !CURRENT.prof) { setMsg(t('enterName'), 'err'); return; }
@@ -6439,13 +6653,13 @@ valid_prof(){ [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]]; }
 
 api_list(){
   echo "["
-  local first=1 prof m running role sessions s f k v nt_name nt_kind nt_role nt_mode nt_owner extra
+  local first=1 prof m running role sessions s f k v nt_name nt_kind nt_role nt_mode nt_owner link_mode link_id link_owner link_peer link_side extra
   # One screen snapshot keeps refreshes fast; expose safe link metadata so the
   # master can render a paired tunnel once while preserving manual profiles.
   sessions="$(screen -ls 2>/dev/null || true)"
   while IFS= read -r prof; do
     [[ -n "$prof" ]] || continue
-    m="asnative"; role="iran"; nt_name=""; nt_kind=""; nt_role=""; nt_mode=""; nt_owner=""; f="$CONF/${prof}.env"
+    m="asnative"; role="iran"; nt_name=""; nt_kind=""; nt_role=""; nt_mode=""; nt_owner=""; link_mode=""; link_id=""; link_owner=""; link_peer=""; link_side=""; f="$CONF/${prof}.env"
     [[ -f "$f" ]] || continue
     while IFS='=' read -r k v; do
       case "$k" in
@@ -6453,6 +6667,8 @@ api_list(){
         NT_TUNNEL_NAME) nt_name="$v" ;; NT_KIND) nt_kind="$v" ;;
         NT_ROLE) nt_role="$v" ;; NT_MODE) nt_mode="$v" ;;
         NT_OWNER_NODE) nt_owner="$v" ;;
+        LINK_MODE) link_mode="$v" ;; LINK_ID) link_id="$v" ;;
+        LINK_OWNER_NODE) link_owner="$v" ;; LINK_PEER_NODE) link_peer="$v" ;; LINK_SIDE) link_side="$v" ;;
       esac
     done < "$f"
     running=false
@@ -6466,9 +6682,9 @@ api_list(){
     fi
     [[ $first -eq 1 ]] || echo ","
     first=0
-    extra=""
+    extra=",$(api_json_field link_mode "$link_mode"),$(api_json_field link_id "$link_id"),$(api_json_field link_owner_node "$link_owner"),$(api_json_field link_peer_node "$link_peer"),$(api_json_field link_side "$link_side")"
     if [[ "$m" == "neotunnel" ]]; then
-      extra=",$(api_json_field kind "$nt_kind"),$(api_json_field nt_role "$nt_role"),$(api_json_field nt_mode "$nt_mode"),$(api_json_field owner_node "$nt_owner"),$(api_json_field tunnel_name "$nt_name")"
+      extra+= ",$(api_json_field kind "$nt_kind"),$(api_json_field nt_role "$nt_role"),$(api_json_field nt_mode "$nt_mode"),$(api_json_field owner_node "$nt_owner"),$(api_json_field tunnel_name "$nt_name")"
     fi
     printf '{%s,%s,%s,"running":%s%s}' "$(api_json_field prof "$prof")" "$(api_json_field role "$role")" \
       "$(api_json_field method "$m")" "$running" "$extra"
@@ -6530,6 +6746,7 @@ api_save(){
     neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
   esac
+  allowed="$allowed LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE"
 
   {
     echo "METHOD=$method"
