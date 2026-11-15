@@ -48,10 +48,10 @@ case "${UPDATE_PACKAGE_LISTS,,}" in
 esac
 
 # Minimal deps: run manager + core safely
-BASE_DEPS=(curl ca-certificates python3 iproute2 screen)
+BASE_DEPS=(curl ca-certificates python3 iproute2 screen jq)
 
 # Full deps: features you added (cron/iptables/nft/haproxy/socat/ss)
-FULL_DEPS=(cron iptables nftables haproxy socat)
+FULL_DEPS=(cron iptables nftables haproxy socat python3-flask)
 
 info "Installing dependencies ($MODE)..."
 if [[ "$MODE" == "full" ]]; then
