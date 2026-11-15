@@ -11,10 +11,9 @@ except ImportError:
 # --------- Tunables ----------
 DIAL_TIMEOUT = 5
 KEEPALIVE_SECS = 20
-SOCKBUF = 8 * 1024 * 1024
-BUF_COPY = 256 * 1024
+BUF_COPY = 64 * 1024  # 64 KB memory-efficient copy buffer (saves 75% RAM per stream)
 POOL_WAIT = 5
-SYNC_INTERVAL = 3
+SYNC_INTERVAL = 4
 
 # --------- Auto pool sizing ----------
 def auto_pool_size(role: str = "ir") -> int:
@@ -92,11 +91,16 @@ def tune_tcp(sock: socket.socket):
         sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
     except Exception:
         pass
-    try:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, SOCKBUF)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, SOCKBUF)
-    except Exception:
-        pass
+    # Allow Linux kernel TCP auto-tuning by default to keep RAM usage minimal;
+    # only set static buffer sizes if explicitly requested via AS_SOCKBUF.
+    env_buf = os.environ.get("AS_SOCKBUF")
+    if env_buf and env_buf.isdigit() and int(env_buf) > 0:
+        try:
+            b = int(env_buf)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, b)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, b)
+        except Exception:
+            pass
     # keepalive
     try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -206,7 +210,7 @@ def eu_mode(iran_ip, bridge_port, sync_port, pool_size):
                 time.sleep(SYNC_INTERVAL)
 
     def reverse_link_worker():
-        delay = 0.2
+        delay = 0.5
         while True:
             try:
                 conn = dial_tcp(iran_ip, bridge_port)
@@ -217,10 +221,10 @@ def eu_mode(iran_ip, bridge_port, sync_port, pool_size):
                 (target_port,) = struct.unpack("!H", hdr)
                 local = dial_tcp("127.0.0.1", target_port)
                 bridge(conn, local)
-                delay = 0.2
+                delay = 0.5
             except Exception:
                 time.sleep(delay)
-                delay = min(delay * 2, 5.0)
+                delay = min(delay * 1.5, 6.0)
 
     threading.Thread(target=port_sync_loop, daemon=True).start()
     for _ in range(pool_size):
