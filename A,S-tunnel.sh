@@ -7,7 +7,7 @@ APP_NAME="A,S"
 TG_ID="@Asnejad"
 VERSION="4.2.13"
 
-GITHUB_REPO="github.com/ariansaeedi56-prog/A,S-tunnel"
+GITHUB_REPO="github.com/ariansaeedi56-prog/A-S-tunnel"
 
 # MUST match GitHub file name exactly:
 SCRIPT_FILENAME="A,S-tunnel.sh"
@@ -2125,8 +2125,8 @@ run_slot_asnative(){
   prof="$1"
   asnative_validate_profile "$prof" || return 1
   [[ -f "$PY" ]] || ensure
-  local pool_val="${AS_POOL:-${PAHLAVI_POOL:-0}}"
-  local pool_env="AS_POOL=\"${pool_val}\" PAHLAVI_POOL=\"${pool_val}\""
+  local pool_val="${AS_POOL:-${A_S_POOL:-0}}"
+  local pool_env="AS_POOL=\"${pool_val}\" A_S_POOL=\"${pool_val}\""
   if [[ "$ROLE" == "eu" ]]; then
     cmd="printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | ${pool_env} python3 '$PY'"
   elif [[ "${AUTO_SYNC:-true}" == "true" || -z "$AUTO_SYNC" ]]; then
@@ -4184,7 +4184,7 @@ def agent_register():
                                        "token_hash": hashlib.sha256(token.encode()).hexdigest()})
         NODES[nid]["remote_ip"] = request.remote_addr or ""
     save_registry()
-    return jsonify({"node_id": nid, "node_token": token, "name": name})
+    return jsonify({"ok": True, "node_id": nid, "node_token": token, "name": name})
 
 
 @app.post("/api/agent/heartbeat")
@@ -4572,11 +4572,15 @@ write_webpanel_html(){
   --mono:ui-monospace,SFMono-Regular,"JetBrains Mono",Menlo,Consolas,monospace;
 }
 *{box-sizing:border-box}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:color-mix(in srgb,var(--accent) 30%,transparent);border-radius:4px}
+::-webkit-scrollbar-thumb:hover{background:color-mix(in srgb,var(--accent) 55%,transparent)}
 html,body{margin:0;min-height:100%}
 body{
   background-color:var(--bg);
   color:var(--txt);
-  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Tahoma,Arial,sans-serif;
+  font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Vazirmatn","Shabnam",Tahoma,Arial,sans-serif;
   font-size:14px;
   line-height:1.45;
   background-image:
