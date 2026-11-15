@@ -2603,7 +2603,15 @@ def mem_info():
     return max(0, total - avail), total
 
 
+_metrics_cache = {"t": 0.0, "v": None}
+_metrics_lock = threading.Lock()
+
+
 def metrics():
+    now = time.time()
+    with _metrics_lock:
+        if _metrics_cache["v"] is not None and now - _metrics_cache["t"] < 3.0:
+            return _metrics_cache["v"]
     try:
         used, total = mem_info()
     except Exception:
@@ -2617,9 +2625,13 @@ def metrics():
         load = [round(x, 2) for x in os.getloadavg()]
     except Exception:
         load = [0, 0, 0]
-    return {"cpu": cpu_percent(), "ram_used": used, "ram_total": total,
+    res = {"cpu": cpu_percent(), "ram_used": used, "ram_total": total,
             "ram_pct": round(used * 100.0 / total, 1) if total else 0.0,
             "uptime": up, "load": load}
+    with _metrics_lock:
+        _metrics_cache["t"] = now
+        _metrics_cache["v"] = res
+    return res
 
 
 # ------------------------------------------------------------ identity bits
@@ -2649,7 +2661,7 @@ def _refresh_ip():
                     return
             except Exception:
                 continue
-        _ip_cache["t"] = time.time() - 540  # nothing worked: retry in ~1 minute
+        _ip_cache["t"] = time.time() - 3300  # retry in ~5 minutes on failure
     finally:
         _ip_cache["busy"] = False
 
@@ -2659,20 +2671,30 @@ def public_ip():
     now = time.time()
     if not _ip_cache["v"]:
         _ip_cache["v"] = local_ip()
-        _ip_cache["t"] = now - 590
-    if now - _ip_cache["t"] > 600 and not _ip_cache["busy"]:
+        _ip_cache["t"] = now - 3500
+    if now - _ip_cache["t"] > 3600 and not _ip_cache["busy"]:
         _ip_cache["busy"] = True
         threading.Thread(target=_refresh_ip, daemon=True).start()
     return _ip_cache["v"]
 
 
+_version_cache = {"t": 0.0, "v": None}
+
+
 def script_version(path=None):
+    now = time.time()
+    if path is None and _version_cache["v"] is not None and (now - _version_cache["t"] < 300):
+        return _version_cache["v"]
     try:
         with open(path or INSTALL_PATH, encoding="utf-8", errors="replace") as f:
             for _ in range(40):
                 m = re.match(r'^VERSION="([^"]+)"', f.readline())
                 if m:
-                    return m.group(1)
+                    ver = m.group(1)
+                    if path is None:
+                        _version_cache["v"] = ver
+                        _version_cache["t"] = now
+                    return ver
     except OSError:
         pass
     return "?"
@@ -2817,6 +2839,79 @@ def iperf_client(host, port, duration, parallel, reverse):
             "retransmits": s.get("retransmits", 0)}
 
 
+def list_tunnels():
+    """Ultra-fast native profile list without spawning heavy bash subshells."""
+    conf_dir = os.environ.get("CONF_DIR", "/etc/A,S_manager/profiles")
+    if not os.path.isdir(conf_dir):
+        return run_api(["list"], timeout=30)
+    try:
+        sessions = ""
+        try:
+            screen_dirs = ["/run/screen/S-root", "/var/run/screen/S-root"]
+            found = False
+            for sdir in screen_dirs:
+                if os.path.isdir(sdir):
+                    sessions = " ".join(os.listdir(sdir))
+                    found = True
+                    break
+            if not found:
+                p = subprocess.run(["screen", "-ls"], capture_output=True, text=True, timeout=2)
+                sessions = p.stdout or ""
+        except Exception:
+            sessions = ""
+
+        files = sorted([f for f in os.listdir(conf_dir) if f.endswith(".env")])
+        if not files:
+            return []
+
+        tunnels = []
+        for fname in files:
+            prof = fname[:-4]
+            fpath = os.path.join(conf_dir, fname)
+            env = load_env(fpath)
+            method = env.get("METHOD", "asnative")
+            role = env.get("ROLE", "iran")
+            running = False
+            if method == "gre":
+                ifname = f"gre_{prof}"[:15]
+                running = os.path.isdir(f"/sys/class/net/{ifname}")
+            elif method == "neotunnel":
+                nt_name = env.get("NT_TUNNEL_NAME", "")
+                if nt_name:
+                    state_file = "/etc/neotunnel/state.json"
+                    try:
+                        if os.path.isfile(state_file):
+                            with open(state_file, encoding="utf-8") as sf:
+                                sdata = json.load(sf)
+                            running = any(t.get("name") == nt_name and t.get("status") in ("running", "active", "up")
+                                          for t in sdata.get("tunnels", []))
+                    except Exception:
+                        pass
+            else:
+                s_name = f"A,S_{prof}"
+                running = f".{s_name}" in sessions or f"{s_name}" in sessions
+
+            tunnels.append({
+                "prof": prof,
+                "role": role,
+                "method": method,
+                "running": running,
+                "link_mode": env.get("LINK_MODE", ""),
+                "link_id": env.get("LINK_ID", ""),
+                "link_owner_node": env.get("LINK_OWNER_NODE", ""),
+                "link_peer_node": env.get("LINK_PEER_NODE", ""),
+                "link_side": env.get("LINK_SIDE", ""),
+                "kind": env.get("NT_KIND", ""),
+                "nt_role": env.get("NT_ROLE", ""),
+                "nt_mode": env.get("NT_MODE", ""),
+                "owner_node": env.get("NT_OWNER_NODE", ""),
+                "tunnel_name": env.get("NT_TUNNEL_NAME", "")
+            })
+        return tunnels
+    except Exception:
+        return run_api(["list"], timeout=30)
+
+
 # ---------------------------------------------------------------- commands
 def _prof(a):
     p = str(a.get("prof", ""))
@@ -2830,7 +2925,7 @@ def execute(cmd, args=None):
     a = args or {}
     try:
         if cmd == "list":
-            return run_api(["list"], timeout=30)
+            return list_tunnels()
         if cmd == "get":
             return run_api(["get", _prof(a)], timeout=30)
         if cmd == "probe_local_target":
@@ -2906,6 +3001,7 @@ import logging
 import os
 import re
 import secrets
+import socket
 import ssl
 import subprocess
 import sys
@@ -2937,7 +3033,7 @@ SECRET_KEY = ENV.get("SECRET_KEY") or hashlib.sha256((PASSWORD_HASH or "x").enco
 STATE_DIR = os.environ.get("STATE_DIR", "/etc/A,S_manager/master")
 NODES_FILE = os.path.join(STATE_DIR, "nodes.json")
 JOIN_FILE = os.path.join(STATE_DIR, "join.key")
-ONLINE_SECS = 15
+ONLINE_SECS = 25
 POLL_HOLD = 20
 TOKEN_MAX_AGE = 30 * 24 * 3600
 
@@ -3139,16 +3235,15 @@ def me():
 # ------------------------------------------------------------ node views
 _local_cache = {"t": 0.0, "v": []}
 _local_lock = threading.Lock()
+_local_view_cache = {"t": 0.0, "v": None}
+_local_view_lock = threading.Lock()
 
 
 def local_tunnels(force=False):
     with _local_lock:
-        # The browser polls /api/nodes every 3 seconds. Keep a longer cache so
-        # each poll does not spawn another shell process just to enumerate
-        # tunnel sessions; explicit tunnel actions still force a refresh.
-        if not force and time.time() - _local_cache["t"] < 6:
+        if not force and time.time() - _local_cache["t"] < 8:
             return _local_cache["v"]
-    res = asnode.run_api(["list"], timeout=30)
+    res = asnode.list_tunnels()
     v = res if isinstance(res, list) else []
     with _local_lock:
         _local_cache.update(t=time.time(), v=v)
@@ -3165,15 +3260,24 @@ def local_role():
     return r if r in ("eu", "iran") else MASTER_ROLE
 
 
-def local_view():
-    tun = local_tunnels()
+def local_view(force=False):
+    now = time.time()
+    with _local_view_lock:
+        if not force and _local_view_cache["v"] is not None and (now - _local_view_cache["t"] < 4.0):
+            return _local_view_cache["v"]
+    tun = local_tunnels(force=force)
     total, running = tunnel_counts(tun)
-    return {"id": "local", "is_local": True, "name": SETTINGS.get("local_name") or os.uname().nodename,
+    hname = socket.gethostname()
+    res = {"id": "local", "is_local": True, "name": SETTINGS.get("local_name") or hname,
             "role": local_role(), "online": True, "last_seen": 0, "remote_ip": "",
-            "public_ip": asnode.public_ip(), "hostname": os.uname().nodename,
+            "public_ip": asnode.public_ip(), "hostname": hname,
             "version": asnode.script_version(), "metrics": asnode.metrics(),
             "tunnels": tun, "tunnels_total": total, "tunnels_running": running,
             "rtt_ms": 0.0, "rtt_hist": []}
+    with _local_view_lock:
+        _local_view_cache["t"] = now
+        _local_view_cache["v"] = res
+    return res
 
 
 def node_view(n):
@@ -4328,6 +4432,7 @@ class Master:
     def __init__(self, cfg):
         self.cfg = cfg
         self.seen_fp = ""
+        self._local = threading.local()
 
     def _conn(self, timeout):
         u = urlparse(self.cfg["master_url"])
@@ -4349,26 +4454,46 @@ class Master:
         self.seen_fp = got
         return c
 
-    def request(self, method, path, body=None, auth=True, timeout=15, raw=False):
-        c = self._conn(timeout)
-        try:
-            headers = {"Content-Type": "application/json", "User-Agent": "A,S-agent"}
-            if auth:
-                headers["X-Node-Id"] = self.cfg["node_id"]
-                headers["X-Node-Token"] = self.cfg["node_token"]
-            data = json.dumps(body).encode() if body is not None else None
-            c.request(method, path, body=data, headers=headers)
-            r = c.getresponse()
-            payload = r.read()
-            if raw:
-                return r.status, payload, {k.lower(): v for k, v in r.getheaders()}
+    def _get_conn(self, timeout):
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
+        conn = self._conn(timeout)
+        self._local.conn = conn
+        return conn
+
+    def _close_conn(self):
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
             try:
-                j = json.loads(payload.decode("utf-8") or "{}")
-            except ValueError:
-                j = {"error": "bad_json"}
-            return r.status, j
-        finally:
-            c.close()
+                conn.close()
+            except Exception:
+                pass
+            self._local.conn = None
+
+    def request(self, method, path, body=None, auth=True, timeout=15, raw=False):
+        for attempt in range(2):
+            try:
+                c = self._get_conn(timeout)
+                headers = {"Content-Type": "application/json", "User-Agent": "A,S-agent", "Connection": "keep-alive"}
+                if auth:
+                    headers["X-Node-Id"] = self.cfg["node_id"]
+                    headers["X-Node-Token"] = self.cfg["node_token"]
+                data = json.dumps(body).encode() if body is not None else None
+                c.request(method, path, body=data, headers=headers)
+                r = c.getresponse()
+                payload = r.read()
+                if raw:
+                    return r.status, payload, {k.lower(): v for k, v in r.getheaders()}
+                try:
+                    j = json.loads(payload.decode("utf-8") or "{}")
+                except ValueError:
+                    j = {"error": "bad_json"}
+                return r.status, j
+            except (http.client.HTTPException, socket.error, OSError):
+                self._close_conn()
+                if attempt == 1:
+                    raise
 
 
 # --------------------------------------------------------------- register
@@ -4463,8 +4588,8 @@ def heartbeat_loop(m, stop):
     while not stop.is_set():
         try:
             now = time.time()
-            if now - tun["t"] > 5:
-                lst = asnode.run_api(["list"], timeout=30)
+            if now - tun["t"] > 10:
+                lst = asnode.list_tunnels()
                 tun = {"t": now, "v": lst if isinstance(lst, list) else tun["v"]}
             body = {"metrics": asnode.metrics(), "tunnels": tun["v"], "rtt_ms": last_rtt,
                     "hello": {"hostname": socket.gethostname(), "public_ip": asnode.public_ip(),
@@ -4482,7 +4607,7 @@ def heartbeat_loop(m, stop):
             last_rtt = None
             fails += 1
             log("heartbeat failed:", e)
-        stop.wait(3 if fails == 0 else min(30, 3 + fails * 2))
+        stop.wait(8 if fails == 0 else min(30, 8 + fails * 2))
 
 
 def poll_loop(m, stop):
@@ -5344,8 +5469,18 @@ async function boot(fast = false) {
   } catch (e) { return; }
   $('sessionCheck').classList.add('hidden'); $('gate').classList.add('hidden'); $('app').classList.remove('hidden');
   renderAll(true); loadNodeInfo();
+  startPolling();
+}
+function startPolling() {
   clearInterval(S.timer);
-  S.timer = setInterval(() => { if (!document.hidden) refreshNodes().catch(() => {}); }, 3000);
+  const getInterval = () => (document.hidden ? 30000 : 5000);
+  const tick = () => { refreshNodes().catch(() => {}); };
+  S.timer = setInterval(tick, 5000);
+  document.addEventListener('visibilitychange', () => {
+    clearInterval(S.timer);
+    if (!document.hidden) { tick(); }
+    S.timer = setInterval(tick, getInterval());
+  });
 }
 async function refreshNodes() {
   const d = await api('/api/nodes');
