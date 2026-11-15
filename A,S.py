@@ -1,7 +1,12 @@
 #!/usr/bin/env python3
-import os, sys, time, socket, struct, threading, subprocess, re, resource
+import os, sys, time, socket, struct, threading, subprocess, re
 from queue import Queue, Empty
 from typing import Optional
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 # --------- Tunables ----------
 DIAL_TIMEOUT = 5
@@ -14,11 +19,11 @@ SYNC_INTERVAL = 3
 # --------- Auto pool sizing ----------
 def auto_pool_size(role: str = "ir") -> int:
     """Pick a safe default pool size based on process FD limit + RAM.
-    Can be overridden with env var A,S_POOL (positive int).
+    Can be overridden with env var AS_POOL or A_S_POOL (positive int).
     """
     # Allow explicit override
     try:
-        env_pool = int(os.environ.get("AS_POOL") or os.environ.get("PAHLAVI_POOL") or os.environ.get("A_S_POOL") or os.environ.get("A,S_POOL") or "0")
+        env_pool = int(os.environ.get("AS_POOL") or os.environ.get("A_S_POOL") or "0")
         if env_pool > 0:
             return env_pool
     except Exception:
@@ -154,15 +159,22 @@ def bridge(a: socket.socket, b: socket.socket):
 _port_re = re.compile(r":(\d+)$")
 def get_listen_ports(exclude_bridge, exclude_sync):
     try:
-        out = subprocess.check_output(["bash","-lc","ss -lntp | awk '{print $4}'"], stderr=subprocess.DEVNULL).decode()
+        out = subprocess.check_output(
+            ["ss", "-lntp"],
+            stderr=subprocess.DEVNULL
+        ).decode()
     except Exception:
         return []
     ports = set()
     for ln in out.splitlines():
         ln = ln.strip()
-        if not ln: 
+        if not ln:
             continue
-        m = _port_re.search(ln)
+        # Extract the local address column (4th field)
+        parts = ln.split()
+        if len(parts) < 4:
+            continue
+        m = _port_re.search(parts[3])
         if not m:
             continue
         p = int(m.group(1))
@@ -234,7 +246,7 @@ def ir_mode(bridge_port, sync_port, pool_size, auto_sync, manual_ports_csv):
             try:
                 c, _ = srv.accept()
             except OSError as e:
-                print(f"[IR] sync_listener error: {e}")
+                print(f"[IR] accept_bridge error: {e}")
                 time.sleep(0.2)
                 continue
             tune_tcp(c)
@@ -319,7 +331,7 @@ def ir_mode(bridge_port, sync_port, pool_size, auto_sync, manual_ports_csv):
             try:
                 c, _ = srv.accept()
             except OSError as e:
-                print(f"[IR] accept_bridge error: {e}")
+                print(f"[IR] sync_listener error: {e}")
                 time.sleep(0.2)
                 continue
             def handle_sync(conn):
@@ -394,7 +406,7 @@ def main():
             nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
         except Exception:
             nofile = -1
-        print(f"[AUTO] role=EU nofile={nofile} pool={pool} (override: A,S_POOL)")
+        print(f"[AUTO] role=EU nofile={nofile} pool={pool} (override: AS_POOL)")
         eu_mode(iran_ip, bridge, sync, pool_size=pool)
     else:
         bridge = int(read_line() or "7000")
@@ -406,7 +418,7 @@ def main():
                 nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
             except Exception:
                 nofile = -1
-            print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: A,S_POOL)")
+            print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: AS_POOL)")
             ir_mode(bridge, sync, pool_size=pool, auto_sync=True, manual_ports_csv="")
         else:
             ports = read_line()
@@ -415,7 +427,7 @@ def main():
                 nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
             except Exception:
                 nofile = -1
-            print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: A,S_POOL)")
+            print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: AS_POOL)")
             ir_mode(bridge, sync, pool_size=pool, auto_sync=False, manual_ports_csv=ports)
 
 if __name__ == "__main__":
