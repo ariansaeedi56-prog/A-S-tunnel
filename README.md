@@ -415,6 +415,9 @@ Restart the tunnel after changes — or just re-save the profile, since saving a
 
 You may run an unmodified official release on servers you own or are authorized to administer. Copying, modifying for redistribution, removing attribution, rebranding, sublicensing, selling, or redistributing this project requires prior written permission. See [LICENSE](LICENSE). Third-party components remain subject to their own licenses.
 
+### 🌟 Credits & Acknowledgments
+This project incorporates ideas and architectural foundations from the open-source tunneling community, including [Pahlavi-tunnel](https://github.com/Zehnovik/Pahlavi-tunnel) by Zehnovik, with substantial custom extensions: unified Master Web Panel & multi-node Agent architecture, NeoTunnel & Paqet integration, BBR network optimization, and real-time mesh diagnostics.
+
 ## ❤️ Maintained by A,S
 
 **TEL:** [@Asnejad](https://t.me/Asnejad)
@@ -781,6 +784,9 @@ Cron Health Check را فعال کن تا تانل را دوباره اجرا ک
 **A,S Tunnel با مدیریت A,S (@Asnejad؛ GitHub: [ariansaeedi56-prog](https://github.com/ariansaeedi56-prog)) منتشر می‌شود. همهٔ حقوق محفوظ است.**
 
 می‌توانی نسخهٔ رسمی و بدون تغییر را روی سرورهایی که مالکشان هستی یا اجازهٔ مدیریتشان را داری اجرا کنی. کپی، تغییر برای بازنشر، حذف نام سازنده، تغییر برند، فروش یا توزیع مجدد بدون اجازهٔ کتبی مجاز نیست. جزئیات در [LICENSE](LICENSE) آمده است. اجزای متعلق به اشخاص ثالث تابع مجوز خودشان هستند.
+
+### 🌟 تشکر و اعتبارات (Credits)
+این پروژه بر پایه مفاهیم و معماری پایه‌ای جامعه اوپن‌سورس و پروژه [Pahlavi-tunnel](https://github.com/Zehnovik/Pahlavi-tunnel) توسعه یافته و با افزونه‌های اختصاصی گسترده از جمله وب‌پنل یکپارچه مستر، شبکه توزیع‌شده ایجنت‌ها، موتور NeoTunnel، بهینه‌سازهای شبکه BBR و ابزارهای عیب‌یابی زنده بهینه‌سازی شده است.
 
 ## ❤️ نگهداری پروژه
 
