@@ -243,6 +243,11 @@ def ir_mode(bridge_port, sync_port, pool_size, auto_sync, manual_ports_csv):
     def accept_bridge():
         srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if hasattr(socket, "SO_REUSEPORT"):
+            try:
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+            except Exception:
+                pass
         srv.bind(("0.0.0.0", bridge_port))
         srv.listen(16384)
         print(f"[IR] Bridge listening on {bridge_port}")
@@ -393,6 +398,40 @@ def read_line(prompt=None):
     return s.strip()
 
 def main():
+    # If command-line arguments are provided, use them; otherwise fall back to stdin menu
+    if len(sys.argv) > 1 and any(arg.startswith("--") for arg in sys.argv[1:]):
+        import argparse
+        parser = argparse.ArgumentParser(description="A,S Reverse Tunnel Core")
+        parser.add_argument("--role", choices=["eu", "iran"], required=True, help="Tunnel side (eu or iran)")
+        parser.add_argument("--iran-ip", default="", help="Iran server IP (required for EU role)")
+        parser.add_argument("--bridge", type=int, default=7000, help="Bridge port (default 7000)")
+        parser.add_argument("--sync", type=int, default=7001, help="Sync port (default 7001)")
+        parser.add_argument("--auto-sync", action="store_true", default=False, help="AutoSync listening ports")
+        parser.add_argument("--ports", default="", help="Manual ports CSV (for IRAN without auto-sync)")
+        parser.add_argument("--pool", type=int, default=0, help="Pool size override")
+        args = parser.parse_args()
+
+        if args.pool > 0:
+            os.environ["AS_POOL"] = str(args.pool)
+
+        try:
+            nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0] if resource else -1
+        except Exception:
+            nofile = -1
+
+        if args.role == "eu":
+            if not args.iran_ip:
+                print("Error: --iran-ip is required for role=eu")
+                sys.exit(1)
+            pool = args.pool if args.pool > 0 else auto_pool_size("eu")
+            print(f"[AUTO] role=EU nofile={nofile} pool={pool} (override: AS_POOL)")
+            eu_mode(args.iran_ip, args.bridge, args.sync, pool_size=pool)
+        else:
+            pool = args.pool if args.pool > 0 else auto_pool_size("ir")
+            print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: AS_POOL)")
+            ir_mode(args.bridge, args.sync, pool_size=pool, auto_sync=args.auto_sync, manual_ports_csv=args.ports)
+        return
+
     # expected input order (from your shell wrapper):
     # EU: 1, IRAN_IP, BRIDGE, SYNC
     # IR: 2, BRIDGE, SYNC, y|n, [PORTS if n]
@@ -407,7 +446,7 @@ def main():
         sync = int(read_line() or "7001")
         pool = auto_pool_size("eu")
         try:
-            nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+            nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0] if resource else -1
         except Exception:
             nofile = -1
         print(f"[AUTO] role=EU nofile={nofile} pool={pool} (override: AS_POOL)")
@@ -419,7 +458,7 @@ def main():
         if yn == "y":
             pool = auto_pool_size("ir")
             try:
-                nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+                nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0] if resource else -1
             except Exception:
                 nofile = -1
             print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: AS_POOL)")
@@ -428,7 +467,7 @@ def main():
             ports = read_line()
             pool = auto_pool_size("ir")
             try:
-                nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0]
+                nofile = resource.getrlimit(resource.RLIMIT_NOFILE)[0] if resource else -1
             except Exception:
                 nofile = -1
             print(f"[AUTO] role=IR nofile={nofile} pool={pool} (override: AS_POOL)")
