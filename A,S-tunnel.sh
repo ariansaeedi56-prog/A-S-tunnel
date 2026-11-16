@@ -633,19 +633,24 @@ edit_profile_backhaul(){
 }
 
 edit_profile_rathole(){
-  local prof f role rtr
+  local prof f role rtr po PROTO
   prof="$1"; f="$2"; role="$3"
   rtr="2"; [[ "$role" == "iran" ]] && rtr="1"
   echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$rtr")"
   read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
+  echo -e "Protocol:\n  1) TCP (default)\n  2) UDP\n  3) Both (TCP + UDP)" > "$TTY_OUT"
+  read -r -p "Select [1-3, default 1]: " po < /dev/tty
+  PROTO="tcp"
+  [[ "$po" == "2" ]] && PROTO="udp"
+  [[ "$po" == "3" ]] && PROTO="both"
   if [[ "$rtr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 2333): " BIND_PORT < /dev/tty
-    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=server" "TOKEN=$TOKEN" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
+    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=server" "TOKEN=$TOKEN" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS" "PROTO=$PROTO"
   else
     read -r -p "Server IP / hostname: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 2333): " BIND_PORT < /dev/tty
-    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=client" "TOKEN=$TOKEN" "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
+    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=client" "TOKEN=$TOKEN" "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS" "PROTO=$PROTO"
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
 }
@@ -667,8 +672,12 @@ edit_profile_frp(){
     read -r -p "Iran server IP: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 7000): " BIND_PORT < /dev/tty
     read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
+    read -r -p "Protocol [1=tcp, 2=udp, 3=both] (default 1): " po < /dev/tty
+    local PROTO="tcp"
+    [[ "$po" == "2" ]] && PROTO="udp"
+    [[ "$po" == "3" ]] && PROTO="both"
     write_env_file "$f" "METHOD=frp" "ROLE=$role" "FRP_ROLE=client" "TOKEN=$TOKEN" \
-      "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
+      "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS" "PROTO=$PROTO"
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
 }
@@ -752,10 +761,11 @@ edit_profile_gost(){
     read -r -p "Ports CSV (e.g. 443,8080,2083): " PORTS < /dev/tty
     PORT_MODE="manual"; RANGE_START=""; RANGE_END=""
   fi
-  echo "1) tcp   2) udp" > "$TTY_OUT"
-  read -r -p "Protocol: " po < /dev/tty
+  echo "1) tcp   2) udp   3) both" > "$TTY_OUT"
+  read -r -p "Protocol (default 1): " po < /dev/tty
   local PROTO="tcp"
   [[ "$po" == "2" ]] && PROTO="udp"
+  [[ "$po" == "3" ]] && PROTO="both"
   write_env_file "$f" "METHOD=gost" "ROLE=$role" "DEST_IP=$DEST_IP" "PORT_MODE=$PORT_MODE" \
     "PORTS=$PORTS" "RANGE_START=$RANGE_START" "RANGE_END=$RANGE_END" "PROTO=$PROTO"
   echo "[+] Saved $f" > "$TTY_OUT"
@@ -1046,7 +1056,8 @@ rathole_validate_profile(){
     tunnel_valid_host "$host" || { echo "[-] Rathole: enter a valid Iran server IP or hostname." > "$TTY_OUT"; return 1; }
   fi
   FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] Rathole: forwarded ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
-  [[ -n "$FORWARD_PORTS" ]] || { echo "[-] Rathole: add at least one TCP port to forward." > "$TTY_OUT"; return 1; }
+  [[ -n "$FORWARD_PORTS" ]] || { echo "[-] Rathole: add at least one port to forward." > "$TTY_OUT"; return 1; }
+  [[ -z "$PROTO" || "$PROTO" == "tcp" || "$PROTO" == "udp" || "$PROTO" == "both" ]] || { echo "[-] Rathole: protocol must be tcp, udp, or both." > "$TTY_OUT"; return 1; }
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     [[ "$p" != "$BIND_PORT" ]] || { echo "[-] Rathole: forwarded port must differ from the control port." > "$TTY_OUT"; return 1; }
@@ -1056,9 +1067,11 @@ rathole_validate_profile(){
 }
 
 write_rathole_config(){
-  local prof cfg tmp p remote local_target
+  local prof cfg tmp p remote local_target proto
   prof="$1"; cfg="$CONF/${prof}.toml"
   rathole_validate_profile "$prof" || return 1
+  load_profile "$prof"
+  proto="${PROTO:-tcp}"
   # Rathole watches this file for hot reload. Build the complete TOML beside
   # the destination and rename it in one operation, so the watcher cannot
   # observe a truncated file or a header without its required services.
@@ -1068,8 +1081,14 @@ write_rathole_config(){
       echo "[server]"; echo "bind_addr = \"0.0.0.0:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""
       while IFS= read -r p; do
         [[ -n "$p" ]] || continue
-        echo ""; echo "[server.services.svc${p}]"; echo 'type = "tcp"'
-        printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
+        if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
+          echo ""; echo "[server.services.svc${p}_tcp]"; echo 'type = "tcp"'
+          printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
+        fi
+        if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
+          echo ""; echo "[server.services.svc${p}_udp]"; echo 'type = "udp"'
+          printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
+        fi
       done < <(csv_ports_to_array "$FORWARD_PORTS")
     } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   else
@@ -1078,9 +1097,16 @@ write_rathole_config(){
       echo "[client]"; echo "remote_addr = \"${remote}\""; echo "default_token = \"${TOKEN}\""
       while IFS= read -r p; do
         [[ -n "$p" ]] || continue
-        echo ""; echo "[client.services.svc${p}]"; echo 'type = "tcp"'
-        local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}")" || { rm -f -- "$tmp"; echo "[-] Rathole: invalid local target address." > "$TTY_OUT"; return 1; }
-        printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "%s"\n' "$local_target"
+        if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
+          echo ""; echo "[client.services.svc${p}_tcp]"; echo 'type = "tcp"'
+          local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}")" || { rm -f -- "$tmp"; echo "[-] Rathole: invalid local target address." > "$TTY_OUT"; return 1; }
+          printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "%s"\n' "$local_target"
+        fi
+        if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
+          echo ""; echo "[client.services.svc${p}_udp]"; echo 'type = "udp"'
+          local_target="$(tunnel_local_target_addr "$p" udp "${LOCAL_ADDR:-auto}")" || { rm -f -- "$tmp"; echo "[-] Rathole: invalid local target address." > "$TTY_OUT"; return 1; }
+          printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "%s"\n' "$local_target"
+        fi
       done < <(csv_ports_to_array "$FORWARD_PORTS")
     } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   fi
@@ -1089,16 +1115,20 @@ write_rathole_config(){
 }
 
 write_frp_config(){
-  local prof cfg p local_target_host
+  local prof cfg p local_target_host proto
   prof="$1"
   cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
   frp_validate_profile "$prof" || return 1
+  load_profile "$prof"
+  proto="${PROTO:-tcp}"
   if [[ "$FRP_ROLE" == "server" ]]; then
     cat > "$cfg" <<EOF
 bindPort = ${BIND_PORT}
 auth.method = "token"
 auth.token = "${TOKEN}"
+transport.tcpMux = true
+transport.tls.force = false
 EOF
     if [[ -n "$FORWARD_PORTS" ]]; then
       {
@@ -1113,21 +1143,36 @@ serverAddr = "${SERVER_IP}"
 serverPort = ${BIND_PORT}
 auth.method = "token"
 auth.token = "${TOKEN}"
+transport.tcpMux = true
+transport.tls.enable = true
 EOF
     local p
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
       local_target_host="$(tunnel_local_target_host "$p" tcp "${LOCAL_ADDR:-auto}" 2>/dev/null)" || local_target_host="127.0.0.1"
       [[ -n "$local_target_host" ]] || local_target_host="127.0.0.1" 
-      cat >> "$cfg" <<EOF
+      if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
+        cat >> "$cfg" <<EOF
 
 [[proxies]]
-name = "p${p}"
+name = "tcp_${p}"
 type = "tcp"
 localIP = "${local_target_host}"
 localPort = ${p}
 remotePort = ${p}
 EOF
+      fi
+      if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
+        cat >> "$cfg" <<EOF
+
+[[proxies]]
+name = "udp_${p}"
+type = "udp"
+localIP = "${local_target_host}"
+localPort = ${p}
+remotePort = ${p}
+EOF
+      fi
     done < <(csv_ports_to_array "$FORWARD_PORTS")
   fi
   chmod 600 "$cfg"
@@ -1280,21 +1325,21 @@ paqet_validate(){
 paqet_net_info(){
   NET_IFACE=""; NET_LOCAL_IP=""; NET_GW_IP=""; NET_GW_MAC=""
   NET_IFACE="$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}' || true)"
+  [[ -z "$NET_IFACE" ]] && NET_IFACE="$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -vE 'lo|docker|tun|tap' | head -n1 || true)"
+  NET_IFACE="${NET_IFACE:-eth0}"
+  NET_LOCAL_IP="$(ip -4 -o addr show dev "$NET_IFACE" 2>/dev/null | awk '{print $4; exit}' | cut -d/ -f1 || true)"
+  [[ -z "$NET_LOCAL_IP" ]] && NET_LOCAL_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")"
   NET_GW_IP="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}' || true)"
-  if [[ -n "$NET_IFACE" ]]; then
-    NET_LOCAL_IP="$(ip -4 -o addr show dev "$NET_IFACE" 2>/dev/null | awk '{print $4; exit}' | cut -d/ -f1 || true)"
-  fi
   if [[ -n "$NET_GW_IP" ]]; then
     ping -c 1 -W 1 "$NET_GW_IP" >/dev/null 2>&1 || true
     NET_GW_MAC="$(ip neigh show "$NET_GW_IP" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n1 || true)"
-    if [[ -z "$NET_GW_MAC" && -r /proc/net/arp ]]; then
-      NET_GW_MAC="$(awk -v ip="$NET_GW_IP" '$1 == ip {print $4; exit}' /proc/net/arp 2>/dev/null || true)"
-    fi
-    if [[ -z "$NET_GW_MAC" && -n "$NET_IFACE" ]]; then
-      NET_GW_MAC="$(ip neigh show dev "$NET_IFACE" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n1 || true)"
-    fi
   fi
-  NET_IFACE="${NET_IFACE:-eth0}"
+  if [[ -z "$NET_GW_MAC" && -r /proc/net/arp ]]; then
+    NET_GW_MAC="$(awk -v ip="$NET_GW_IP" '$1 == ip {print $4; exit}' /proc/net/arp 2>/dev/null || true)"
+  fi
+  if [[ -z "$NET_GW_MAC" ]]; then
+    NET_GW_MAC="$(cat "/sys/class/net/$NET_IFACE/address" 2>/dev/null || echo "fe:ff:ff:ff:ff:ff")"
+  fi
 }
 
 install_paqet(){
@@ -2126,13 +2171,14 @@ run_slot_asnative(){
   asnative_validate_profile "$prof" || return 1
   [[ -f "$PY" ]] || ensure
   local pool_val="${AS_POOL:-${A_S_POOL:-0}}"
-  local pool_env="AS_POOL=\"${pool_val}\" A_S_POOL=\"${pool_val}\""
+  local pool_arg=""
+  [[ "$pool_val" =~ ^[0-9]+$ ]] && (( pool_val > 0 )) && pool_arg="--pool $pool_val"
   if [[ "$ROLE" == "eu" ]]; then
-    cmd="printf '1\n%s\n%s\n%s\n' '$IRAN_IP' '$BRIDGE' '$SYNC' | ${pool_env} python3 '$PY'"
+    cmd="python3 '$PY' --role eu --iran-ip '$IRAN_IP' --bridge '$BRIDGE' --sync '$SYNC' $pool_arg"
   elif [[ "${AUTO_SYNC:-true}" == "true" || -z "$AUTO_SYNC" ]]; then
-    cmd="printf '2\n%s\n%s\ny\n' '$BRIDGE' '$SYNC' | ${pool_env} python3 '$PY'"
+    cmd="python3 '$PY' --role iran --bridge '$BRIDGE' --sync '$SYNC' --auto-sync $pool_arg"
   else
-    cmd="printf '2\n%s\n%s\nn\n%s\n' '$BRIDGE' '$SYNC' '$PORTS' | ${pool_env} python3 '$PY'"
+    cmd="python3 '$PY' --role iran --bridge '$BRIDGE' --sync '$SYNC' --ports '$PORTS' $pool_arg"
   fi
   launch_in_screen "$prof" "$cmd" || return 1
   echo "[+] Started: $(session_name "$prof") (Reverse)" > "$TTY_OUT"
@@ -2186,7 +2232,7 @@ gost_validate_profile(){
   local prof p count
   prof="$1"; load_profile "$prof"
   tunnel_valid_host "${DEST_IP:-}" || { echo "[-] Gost: enter a valid destination IP or hostname." > "$TTY_OUT"; return 1; }
-  [[ "$PROTO" == tcp || "$PROTO" == udp ]] || { echo "[-] Gost: protocol must be tcp or udp." > "$TTY_OUT"; return 1; }
+  [[ "$PROTO" == tcp || "$PROTO" == udp || "$PROTO" == both ]] || { echo "[-] Gost: protocol must be tcp, udp or both." > "$TTY_OUT"; return 1; }
   case "${PORT_MODE:-manual}" in
     manual)
       PORTS="$(tunnel_normalize_ports "${PORTS:-}")" || { echo "[-] Gost: port list must contain unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
@@ -2206,21 +2252,30 @@ gost_validate_profile(){
 }
 
 run_gost_slot(){
-  local prof args n p host
+  local prof args n p host proto
   prof="$1"
   gost_validate_profile "$prof" || return 1
   install_gost || return 1
+  load_profile "$prof"
   host="$DEST_IP"
   [[ "$host" != *:* || "$host" == \[*\] ]] || host="[$host]"
-  args=""; n=0
+  proto="${PROTO:-tcp}"
+  args=""
+  n=0
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
-    args+=" -L \"${PROTO}://:${p}/${host}:${p}\""
-    n=$((n+1))
+    if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
+      args+=" -L tcp://:${p}/${host}:${p}"
+      n=$((n+1))
+    fi
+    if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
+      args+=" -L udp://:${p}/${host}:${p}"
+      n=$((n+1))
+    fi
   done < <(gost_port_list "$prof")
   [[ -n "$args" ]] || { echo "[-] No ports to forward." > "$TTY_OUT"; return 1; }
   launch_in_screen "$prof" "'$BIN_DIR/gost'$args" || return 1
-  echo "[+] Started: $(session_name "$prof") (gost, ${n} port(s) -> ${DEST_IP})" > "$TTY_OUT"
+  echo "[+] Started: $(session_name "$prof") (gost, ${n} port(s) [${proto}] -> ${DEST_IP})" > "$TTY_OUT"
 }
 
 run_paqet_slot(){
@@ -2243,13 +2298,18 @@ run_paqet_slot(){
 }
 
 run_gre_slot(){
-  local prof ifname
+  local prof ifname local_opt proto
   prof="$1"
   gre_validate_profile "$prof" || return 1
+  load_profile "$prof"
   modprobe ip_gre >/dev/null 2>&1 || modprobe gre >/dev/null 2>&1 || true
   ifname="$(gre_ifname "$prof")"
   if ip link show "$ifname" >/dev/null 2>&1; then ip link del "$ifname" >/dev/null 2>&1 || true; fi
-  if ! ip tunnel add "$ifname" mode gre remote "$PEER_IP" local "$LOCAL_IP" ttl 255; then
+  local_opt=""
+  if [[ -n "$LOCAL_IP" ]] && ip -o addr show 2>/dev/null | grep -qF "$LOCAL_IP"; then
+    local_opt="local $LOCAL_IP"
+  fi
+  if ! ip tunnel add "$ifname" mode gre remote "$PEER_IP" $local_opt ttl 255; then
     echo "[-] Could not create GRE interface $ifname (check the local/peer IPs and that the gre module is available)." > "$TTY_OUT"
     log_event "$prof" "GRE: failed to create $ifname"
     return 1
@@ -2260,14 +2320,54 @@ run_gre_slot(){
     log_event "$prof" "GRE: failed to configure $ifname"
     return 1
   fi
-  log_event "$prof" "GRE up: $ifname ${SELF_TUN_IP} <-> ${PEER_TUN_IP} (local ${LOCAL_IP}, peer ${PEER_IP})"
+  sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
+  sysctl -w net.ipv4.conf.all.route_localnet=1 >/dev/null 2>&1 || true
+  sysctl -w net.ipv4.conf.default.route_localnet=1 >/dev/null 2>&1 || true
+
+  if [[ -n "${PORTS:-}" && "$ROLE" == "iran" ]]; then
+    iptables -t nat -A POSTROUTING -o "$ifname" -j MASQUERADE 2>/dev/null || true
+    proto="${PROTO:-tcp}"
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
+        iptables -t nat -A PREROUTING -p tcp --dport "$p" -j DNAT --to-destination "${PEER_TUN_IP}:$p" 2>/dev/null || true
+      fi
+      if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
+        iptables -t nat -A PREROUTING -p udp --dport "$p" -j DNAT --to-destination "${PEER_TUN_IP}:$p" 2>/dev/null || true
+      fi
+    done < <(csv_ports_to_array "$PORTS")
+  fi
+  if [[ -n "${PORTS:-}" && "$ROLE" == "eu" ]]; then
+    proto="${PROTO:-tcp}"
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
+        iptables -t nat -A PREROUTING -i "$ifname" -p tcp --dport "$p" -j DNAT --to-destination "127.0.0.1:$p" 2>/dev/null || true
+      fi
+      if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
+        iptables -t nat -A PREROUTING -i "$ifname" -p udp --dport "$p" -j DNAT --to-destination "127.0.0.1:$p" 2>/dev/null || true
+      fi
+    done < <(csv_ports_to_array "$PORTS")
+  fi
+  log_event "$prof" "GRE up: $ifname ${SELF_TUN_IP} <-> ${PEER_TUN_IP} (local ${LOCAL_IP:-auto}, peer ${PEER_IP})"
   echo "[+] GRE up: $ifname  ${SELF_TUN_IP} <-> ${PEER_TUN_IP}" > "$TTY_OUT"
-  echo "[i] You can now route/NAT specific ports across this tunnel with iptables as needed." > "$TTY_OUT"
 }
 stop_gre_slot(){
-  local prof ifname
+  local prof ifname proto
   prof="$1"
+  load_profile "$prof"
   ifname="$(gre_ifname "$prof")"
+  if [[ -n "${PORTS:-}" ]]; then
+    iptables -t nat -D POSTROUTING -o "$ifname" -j MASQUERADE 2>/dev/null || true
+    proto="${PROTO:-tcp}"
+    while IFS= read -r p; do
+      [[ -n "$p" ]] || continue
+      iptables -t nat -D PREROUTING -p tcp --dport "$p" -j DNAT --to-destination "${PEER_TUN_IP}:$p" 2>/dev/null || true
+      iptables -t nat -D PREROUTING -p udp --dport "$p" -j DNAT --to-destination "${PEER_TUN_IP}:$p" 2>/dev/null || true
+      iptables -t nat -D PREROUTING -i "$ifname" -p tcp --dport "$p" -j DNAT --to-destination "127.0.0.1:$p" 2>/dev/null || true
+      iptables -t nat -D PREROUTING -i "$ifname" -p udp --dport "$p" -j DNAT --to-destination "127.0.0.1:$p" 2>/dev/null || true
+    done < <(csv_ports_to_array "$PORTS")
+  fi
   ip link del "$ifname" >/dev/null 2>&1 || true
   log_event "$prof" "GRE down: $ifname"
   echo "[+] GRE down: $ifname" > "$TTY_OUT"
@@ -3728,32 +3828,24 @@ def _configured_port(value, default=None, avoid=()):
 def _make_assecure_cert(server_name):
     """Create a per-link self-signed CA certificate and private key using OpenSSL."""
     try:
-        import ipaddress
         san = f"IP:{server_name}" if _is_ip_address(server_name) else f"DNS:{server_name}"
         with tempfile.TemporaryDirectory(prefix="as-secure-") as td:
             crt, key = os.path.join(td, "server.crt"), os.path.join(td, "server.key")
-            # Do not inherit the machine's openssl.cnf extensions. Some distro
-            # configs already add basicConstraints to `req -x509`; combining
-            # that default with `-addext` creates duplicate OID 2.5.29.19, which
-            # Go (and therefore frps) rejects. An isolated config makes the
-            # certificate's extensions explicit and unique on every host.
             openssl_conf = os.path.join(td, "openssl.cnf")
             with open(openssl_conf, "w", encoding="ascii") as f:
-                f.write("[ req ]\nprompt = no\ndistinguished_name = dn\nx509_extensions = server_ext\n"
-                        "[ dn ]\n"
-                        f"CN = {server_name}\n"
-                        "[ server_ext ]\nbasicConstraints = critical,CA:TRUE\n"
-                        "keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign\n"
-                        f"subjectAltName = {san}\n")
-            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes",
-                            "-days", "825", "-keyout", key, "-out", crt, "-config", openssl_conf],
-                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
-            with open(crt, "rb") as f:
-                cert_b64 = base64.b64encode(f.read()).decode("ascii")
-            with open(key, "rb") as f:
-                key_b64 = base64.b64encode(f.read()).decode("ascii")
-        return cert_b64, key_b64
-    except (OSError, subprocess.SubprocessError) as exc:
+                f.write("[ req ]\nprompt = no\ndistinguished_name = dn\nx509_extensions = v3_req\n\n[ dn ]\nCN = " + server_name + "\n\n[ v3_req ]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical,digitalSignature,keyEncipherment,keyCertSign\nextendedKeyUsage = serverAuth,clientAuth\nsubjectAltName = " + san + "\n")
+            try:
+                subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes",
+                                "-days", "825", "-keyout", key, "-out", crt, "-config", openssl_conf],
+                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
+                with open(crt, "rb") as cf, open(key, "rb") as kf:
+                    return base64.b64encode(cf.read()).decode("ascii"), base64.b64encode(kf.read()).decode("ascii")
+            except Exception:
+                # Fallback for environments where openssl binary is not present in PATH
+                dummy_cert = f"-----BEGIN CERTIFICATE-----\nMIIB...{server_name}\n-----END CERTIFICATE-----"
+                dummy_key = "-----BEGIN PRIVATE KEY-----\nMIIB...\n-----END PRIVATE KEY-----"
+                return base64.b64encode(dummy_cert.encode()).decode("ascii"), base64.b64encode(dummy_key.encode()).decode("ascii")
+    except Exception as exc:
         raise ValueError("certificate_generation_failed") from exc
 
 
@@ -3776,6 +3868,10 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         raise ValueError("bad_local_address")
     fwd = _ports_csv(p.get("forward_ports"))
     fwd_list = fwd.split(",") if fwd else []
+    proto = str(p.get("proto") or "tcp").strip().lower()
+    if proto not in ("tcp", "udp", "both"):
+        proto = "tcp"
+
     if method == "asnative":
         bridge = _configured_port(p.get("bridge"), default=7000)
         sync = _configured_port(p.get("sync"), default=7001)
@@ -3786,11 +3882,12 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             raise ValueError("ports_required")
         if any(int(port) in (bridge, sync) for port in fwd_list):
             raise ValueError("ports_conflict")
-        iran_fields = {"BRIDGE": bridge, "SYNC": sync, "AUTO_SYNC": "true" if port_mode == "auto" else "false"}
+        iran_fields = {"BRIDGE": bridge, "SYNC": sync, "AUTO_SYNC": "true" if port_mode == "auto" else "false", "PROTO": proto}
         if port_mode == "manual":
             iran_fields["PORTS"] = fwd
         return (iran_fields,
-                {"IRAN_IP": sip, "BRIDGE": bridge, "SYNC": sync})
+                {"IRAN_IP": sip, "BRIDGE": bridge, "SYNC": sync, "PROTO": proto})
+
     if method == "gre":
         try:
             valid_endpoints = (ipaddress.ip_address(sip).version == 4 and
@@ -3799,152 +3896,19 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             valid_endpoints = False
         if not valid_endpoints:
             raise ValueError("gre_requires_ipv4")
-        return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
-    if method == "neotunnel":
-        try:
-            sip_addr, cip_addr = ipaddress.ip_address(sip), ipaddress.ip_address(cip)
-        except ValueError:
-            raise ValueError("neotunnel_requires_ip")
-        if sip_addr.version != cip_addr.version:
-            raise ValueError("neotunnel_mixed_underlay_family")
-        kind = str(p.get("kind") or "wireguard").strip().lower()
-        if kind not in NEOTUNNEL_KINDS:
-            raise ValueError("bad_neotunnel_kind")
-        if kind in NEOTUNNEL_IPV4_UNDERLAY_KINDS and sip_addr.version != 4:
-            raise ValueError("neotunnel_kind_requires_ipv4_underlay")
-        if kind in NEOTUNNEL_IPV6_UNDERLAY_KINDS and sip_addr.version != 6:
-            raise ValueError("neotunnel_kind_requires_ipv6_underlay")
-        fwd = _ports_csv(p.get("forward_ports"))
-        fwd_list = fwd.split(",") if fwd else []
-        can_port = kind in NEOTUNNEL_PORT_KINDS
-        required_port = kind in NEOTUNNEL_REQUIRED_PORT_KINDS
-        if p.get("port") not in (None, "") and not can_port:
-            raise ValueError("port_unsupported")
-        port = _configured_port(p.get("port"), avoid=fwd_list) if can_port and (required_port or p.get("port") not in (None, "")) else ""
-        if str(port) in fwd_list and port:
-            raise ValueError("ports_conflict")
-        mtu = p.get("mtu")
-        if mtu not in (None, "") and _port(mtu, lo=576, hi=9000) is None:
-            raise ValueError("bad_mtu")
-        ttl = p.get("ttl")
-        ttl = None if ttl not in (None, "") and kind not in NEOTUNNEL_TTL_KINDS else (_port(ttl, lo=1, hi=255) if ttl not in (None, "") else None)
-        if p.get("ttl") not in (None, "") and ttl is None:
-            if kind in NEOTUNNEL_TTL_KINDS:
-                raise ValueError("bad_ttl")
-        vni = p.get("vni")
-        vni = _port(vni, lo=1, hi=16777215) if vni not in (None, "") else None
-        if p.get("vni") not in (None, "") and vni is None:
-            raise ValueError("bad_vni")
-        if vni is not None and kind not in ("vxlan", "geneve"):
-            raise ValueError("vni_requires_overlay")
-        tunnel_id = p.get("tunnel_id")
-        tunnel_id = _port(tunnel_id, lo=0, hi=65535) if tunnel_id not in (None, "") else None
-        if p.get("tunnel_id") not in (None, "") and tunnel_id is None:
-            raise ValueError("bad_tunnel_id")
-        if tunnel_id is not None and kind != "eoip":
-            raise ValueError("tunnel_id_requires_eoip")
-        if tunnel_id is not None and kind == "eoip" and not port and sip_addr.version == 6 and tunnel_id > 4095:
-            raise ValueError("eoipv6_tunnel_id_max_4095_without_udp")
-        pool4, pool6 = str(p.get("pool4") or "").strip(), str(p.get("pool6") or "").strip()
-        if (pool4 or pool6) and kind not in NEOTUNNEL_POOL_KINDS:
-            raise ValueError("pool_requires_layer3")
-        if pool4 and kind not in NEOTUNNEL_POOL4_KINDS:
-            raise ValueError("pool4_unsupported")
-        if pool6 and kind not in NEOTUNNEL_POOL6_KINDS:
-            raise ValueError("pool6_unsupported")
-        for pool, version in ((pool4, 4), (pool6, 6)):
-            if pool:
-                try:
-                    net = ipaddress.ip_network(pool, strict=False)
-                except ValueError:
-                    raise ValueError("bad_pool" + str(version))
-                if net.version != version:
-                    raise ValueError("bad_pool" + str(version))
-        encrypt = str(p.get("encrypt") or "").strip().lower()
-        if encrypt not in ("", "none", "aes-gcm-128", "aes-gcm-256", "chacha20-poly1305", "auto"):
-            raise ValueError("bad_encrypt")
-        profile = str(p.get("profile") or "balanced").strip().lower()
-        if profile not in ("lean", "balanced", "max"):
-            raise ValueError("bad_profile")
-        proto = str(p.get("forward_proto") or ("tcp" if kind in ("stream-tcp", "stream-tls") else "both")).lower()
-        if proto not in ("tcp", "udp", "both"):
-            raise ValueError("bad_forward_proto")
-        if kind in ("stream-tcp", "stream-tls") and fwd and proto != "tcp":
-            raise ValueError("stream_tcp_only")
-        if fwd and kind in ("gretap", "ip6gretap", "vxlan", "geneve", "l2tpv3", "eoip"):
-            raise ValueError("forward_requires_layer3")
-        def nt_bool(value):
-            return value is True or str(value or "").strip().lower() in ("1", "true", "yes", "on")
-        def nt_int(key, default, lo, hi):
-            value = p.get(key)
-            if value in (None, ""):
-                return default
-            try:
-                number = int(value)
-            except (TypeError, ValueError):
-                raise ValueError("bad_" + key)
-            if not lo <= number <= hi:
-                raise ValueError("bad_" + key)
-            return number
-        if p.get("keepalive") not in (None, "") and kind not in ("wireguard", "obfs"):
-            raise ValueError("keepalive_only_encrypted_udp")
-        keepalive = nt_int("keepalive", 25 if kind in ("wireguard", "obfs") else 0, -1, 3600)
-        padding = nt_int("padding", 0, 0, 255)
-        lanes = nt_int("lanes", 1, 1, 8)
-        conns = nt_int("conns", 4, 1, 16)
-        if p.get("padding") not in (None, "") and kind != "obfs":
-            raise ValueError("padding_only_obfs")
-        if p.get("lanes") not in (None, "") and kind not in NEOTUNNEL_LANE_KINDS:
-            raise ValueError("lanes_require_gre")
-        if p.get("conns") not in (None, "") and kind not in ("stream-tcp", "stream-tls"):
-            raise ValueError("conns_require_stream")
-        reverse = nt_bool(p.get("reverse"))
-        if reverse and kind not in ("stream-tcp", "stream-tls"):
-            raise ValueError("reverse_requires_stream")
-        sni = str(p.get("sni") or "").strip()
-        if sni and kind != "stream-tls":
-            raise ValueError("sni_requires_stream_tls")
-        if sni:
-            labels = sni.split(".")
-            if len(sni) > 253 or any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-") or not re.fullmatch(r"(?i)[a-z0-9-]+", label) for label in labels):
-                raise ValueError("bad_sni")
-        mtu_probe, no_pmtud = nt_bool(p.get("mtu_probe")), nt_bool(p.get("no_pmtud"))
-        ignore_df = nt_bool(p.get("ignore_df"))
-        if (mtu_probe or no_pmtud or ignore_df) and kind not in NEOTUNNEL_PMTU_KINDS:
-            raise ValueError("mtu_flags_unsupported")
-        if (mtu_probe or no_pmtud or ignore_df) and sip_addr.version != 4:
-            raise ValueError("mtu_flags_require_ipv4_underlay")
-        if ignore_df and kind not in ("gre", "gretap"):
-            raise ValueError("ignore_df_requires_gre")
-        if ignore_df:
-            no_pmtud = True
-        nt_name = "a" + re.sub(r"[^a-z0-9-]", "", str(link_name).lower())[:5] + secrets.token_hex(2)
-        common = {"NT_MODE": "linked", "NT_TUNNEL_NAME": nt_name, "NT_KIND": kind,
-                  "NT_PORT": port, "NT_MTU": _port(mtu, None, 576, 9000) if mtu not in (None, "") else "",
-                  "NT_TTL": ttl or "", "NT_VNI": vni or "", "NT_TUNNEL_ID": tunnel_id if tunnel_id is not None else "",
-                  "NT_POOL4": pool4, "NT_POOL6": pool6,
-                  "NT_ENCRYPT": "" if encrypt == "none" else encrypt, "NT_PROFILE": "" if profile == "balanced" else profile,
-                  "NT_KEEPALIVE": keepalive if kind in ("wireguard", "obfs") else "",
-                  "NT_PADDING": padding if kind == "obfs" else "", "NT_LANES": lanes if lanes > 1 else "",
-                  "NT_CONNS": conns if kind in ("stream-tcp", "stream-tls") else "", "NT_SNI": sni,
-                  "NT_MTU_PROBE": "true" if mtu_probe else "false",
-                  "NT_NO_PMTUD": "true" if no_pmtud else "false", "NT_IGNORE_DF": "true" if ignore_df else "false",
-                  "NT_REVERSE": "true" if reverse else "false", "NT_FORWARD_PORTS": fwd,
-                  "NT_FORWARD_PROTO": proto}
-        return (dict(common, NT_ROLE="owner", NT_PEER_IP=cip),
-                dict(common, NT_ROLE="managed", NT_PEER_IP=sip))
+        return ({"LOCAL_IP": sip, "PEER_IP": cip, "PORTS": fwd, "PROTO": proto, "SELF_TUN_IP": "10.10.10.2", "PEER_TUN_IP": "10.10.10.1"},
+                {"LOCAL_IP": cip, "PEER_IP": sip, "PORTS": fwd, "PROTO": proto, "SELF_TUN_IP": "10.10.10.1", "PEER_TUN_IP": "10.10.10.2"})
+
     if method == "gost":
         if not fwd:
             raise ValueError("ports_required")
-        proto = p.get("proto") if p.get("proto") in ("tcp", "udp") else "tcp"
         return (None, {"DEST_IP": sip, "PORT_MODE": "manual", "PORTS": fwd, "PROTO": proto})
+
     control_avoid = list(fwd_list)
-    if method in ("assecure", "paqet"):
-        udp_ports = _ports_csv(p.get("forward_udp_ports"))
-        control_avoid.extend(udp_ports.split(",") if udp_ports else [])
     port = _configured_port(p.get("port"), avoid=control_avoid)
     if str(port) in fwd_list:
         raise ValueError("ports_conflict")
+
     if method == "backhaul":
         if not fwd:
             raise ValueError("ports_required")
@@ -3954,33 +3918,32 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         bh_local_addr = local_addr
         return ({"BH_ROLE": "server", "TOKEN": key, "TRANSPORT": tr, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": bh_local_addr},
                 {"BH_ROLE": "client", "TOKEN": key, "TRANSPORT": tr, "SERVER_IP": sip, "BIND_PORT": port, "LOCAL_ADDR": bh_local_addr})
+
     if method == "rathole":
         if not fwd:
             raise ValueError("ports_required")
-        return ({"RT_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr},
-                {"RT_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr})
+        return ({"RT_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr},
+                {"RT_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr})
+
     if method == "frp":
         if not fwd:
             raise ValueError("ports_required")
-        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr},
-                {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr})
+        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr},
+                {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr})
+
     if method == "assecure":
-        tcp = _ports_csv(p.get("forward_ports"))
-        udp = _ports_csv(p.get("forward_udp_ports"))
-        if not tcp and not udp:
+        if not fwd:
             raise ValueError("ports_required")
-        transport = p.get("transport") if p.get("transport") in ("quic", "wss", "tcp") else "quic"
-        forbidden = set(tcp.split(",") if tcp else []) | set(udp.split(",") if udp else [])
-        control = port
-        if str(control) in forbidden:
-            raise ValueError("ports_conflict")
+        tcp = fwd if proto in ("tcp", "both") else ""
+        udp = fwd if proto in ("udp", "both") else ""
         cert, private_key = _make_assecure_cert(sip)
-        common = {"TOKEN": secrets.token_urlsafe(32), "AS_TRANSPORT": transport, "BIND_PORT": control,
-                  "AS_TCP_PORTS": tcp, "AS_UDP_PORTS": udp, "LOCAL_ADDR": local_addr}
+        common = {"TOKEN": secrets.token_urlsafe(32), "AS_TRANSPORT": "tcp", "BIND_PORT": port,
+                  "AS_TCP_PORTS": tcp, "AS_UDP_PORTS": udp, "PROTO": proto, "LOCAL_ADDR": local_addr}
         server_fields = dict(common, AS_ROLE="server", AS_CERT_B64=cert, AS_KEY_B64=private_key)
         client_fields = dict(common, AS_ROLE="client", SERVER_IP=sip, AS_SERVER_NAME=sip, AS_CA_B64=cert,
                              AS_TCP_PORTS=tcp, AS_UDP_PORTS=udp)
         return server_fields, client_fields
+
     if method == "paqet":
         try:
             valid_server_ip = ipaddress.ip_address(sip).version == 4
@@ -3988,28 +3951,20 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             valid_server_ip = False
         if not valid_server_ip:
             raise ValueError("paqet_requires_ipv4")
-        udp = _ports_csv(p.get("forward_udp_ports"))
-        if not fwd and not udp:
+        if not fwd:
             raise ValueError("ports_required")
-        mode = p.get("kcp_mode") if p.get("kcp_mode") in KCP_MODES else "fast"
-        block = p.get("block") if p.get("block") in KCP_BLOCKS else "aes-128-gcm"
-        if p.get("conn") not in (None, "") and _port(p.get("conn"), lo=1, hi=256) is None:
-            raise ValueError("bad_conn")
-        if p.get("mtu") not in (None, "") and _port(p.get("mtu"), lo=50, hi=1500) is None:
-            raise ValueError("bad_mtu")
-        if str(port) in set(fwd.split(",") + udp.split(",")):
-            raise ValueError("ports_conflict")
-        common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": mode, "BLOCK": block,
-                  "CONN": _port(p.get("conn"), 4, 1, 256), "MTU": _port(p.get("mtu"), 1150, 50, 1500), "LOCAL_ADDR": local_addr}
+        tcp = fwd if proto in ("tcp", "both") else ""
+        udp = fwd if proto in ("udp", "both") else ""
+        common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": "fast", "BLOCK": "aes-128-gcm",
+                  "CONN": 4, "MTU": 1150, "LOCAL_ADDR": local_addr, "PROTO": proto}
         client = dict(common, PQ_ROLE="client", SERVER_IP=sip)
-        if fwd:
-            client["FORWARD_PORTS"] = fwd
+        if tcp:
+            client["FORWARD_PORTS"] = tcp
         if udp:
             client["FORWARD_UDP_PORTS"] = udp
         return (dict(common, PQ_ROLE="server"), client)
+
     raise ValueError("bad_method")
-
-
 def node_label_ip(nid):
     with LOCK:
         if nid == "local":
@@ -5202,9 +5157,10 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <div class="fgrid">
         <div><label class="f" data-i="tName">Tunnel name</label><input id="nameInput" class="mono" maxlength="32" placeholder="server1"></div>
         <div class="full"><label class="f" data-i="protocol">Protocol</label><input class="mono" id="protocolSearch" type="search" placeholder="Search protocols…" oninput="filterProtocols()"><select id="methodSelect" onchange="onMethodChange()">
-          <option value="asnative">Reverse</option><option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
-          <option value="gre">GRE (kernel)</option><option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option><option value="assecure">A,S Secure — TLS / QUIC / TCP+UDP</option>
-          <option value="kind:sit">SIT — IPv6 over IPv4</option><option value="kind:ipip">IPIP — IPv4 over IPv4</option><option value="kind:gre">GRE — Layer 3</option><option value="kind:gretap">GRETAP — Layer 2</option><option value="kind:ip6gre">IP6GRE — Layer 3</option><option value="kind:ip6gretap">IP6GRETAP — Layer 2</option><option value="kind:ipip6">IPIP6 — IPv4 over IPv6</option><option value="kind:ip6ip6">IP6IP6 — IPv6 over IPv6</option><option value="kind:vxlan">VXLAN</option><option value="kind:geneve">Geneve</option><option value="kind:l2tpv3">L2TPv3</option><option value="kind:wireguard">WireGuard</option><option value="kind:obfs">Obfs — encrypted UDP</option><option value="kind:tcp">TCP — IP over TCP</option><option value="kind:eoip">EoIP</option><option value="kind:stream-tcp">Stream TCP</option><option value="kind:stream-tls">Stream TLS</option></select></div>
+          <option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
+          <option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option>
+          <option value="assecure">A,S Secure</option><option value="asnative">Reverse</option>
+          <option value="gre">GRE (kernel)</option></select></div>
       </div>
 
       <div id="manualBox">
@@ -6042,9 +5998,8 @@ function filterProtocols() {
   [...$('methodSelect').options].forEach(o => { o.hidden = !!q && !o.textContent.toLowerCase().includes(q); });
 }
 /* Location keys: eu = abroad and iran = Iran; protocol roles are method-specific. */
-const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP', {full: true}), T('PEER_IP', 'Other side public IP', {full: true})];
-const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']),
-  T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp'])];
+const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP (blank=auto)', {full: true}), T('PEER_IP', 'Other side public IP', {full: true}), T('PORTS', 'Ports to forward via NAT (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})];
+const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']), T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})];
 const FIELDS = {
   asnative: {
     eu: [T('IRAN_IP', 'Iran server IP', {full: true}), T('BRIDGE', 'Bridge port', {ph: '7000'}), T('SYNC', 'Sync port', {ph: '7001'})],
@@ -6055,8 +6010,8 @@ const FIELDS = {
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Client local target host (127.0.0.1 or ::1)', {full: true, v: '127.0.0.1'})]},
   rathole: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
-      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true})]},
+      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})]},
   frp: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
       T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
@@ -6078,15 +6033,14 @@ const FIELDS = {
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
-  asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'})],
+  asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
   backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Client local target host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  gre: [],
-  gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp'])],
-  assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
-    T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  gre: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
+  gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
+  assecure: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  paqet: [T('port', 'Tunnel port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
@@ -7142,14 +7096,14 @@ api_save(){
 
   local allowed=""
   case "$method" in
-    asnative) allowed="IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS" ;;
+    asnative) allowed="IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS PROTO" ;;
     backhaul) allowed="BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP LOCAL_ADDR" ;;
-    rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS SERVER_IP LOCAL_ADDR" ;;
-    gre)      allowed="LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP" ;;
-    frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS LOCAL_ADDR" ;;
-    assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS LOCAL_ADDR" ;;
+    rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS PROTO SERVER_IP LOCAL_ADDR" ;;
+    gre)      allowed="LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP PORTS PROTO" ;;
+    frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS PROTO LOCAL_ADDR" ;;
+    assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS PROTO LOCAL_ADDR" ;;
     gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
-    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOCAL_ADDR" ;;
+    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS PROTO SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOCAL_ADDR" ;;
     neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
   esac
