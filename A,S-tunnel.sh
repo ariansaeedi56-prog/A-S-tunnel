@@ -37,7 +37,7 @@ LOG_DIR="/var/log/A,S"
 
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
-PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS LOCAL_ADDR SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE NODE_ID OWNER_NODE"
+PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS LOCAL_ADDR SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE"
 
 NEOTUNNEL_BIN="/usr/local/bin/neotunnel"
 NEOTUNNEL_STATE="/etc/neotunnel/state.json"
@@ -633,24 +633,19 @@ edit_profile_backhaul(){
 }
 
 edit_profile_rathole(){
-  local prof f role rtr po PROTO
+  local prof f role rtr
   prof="$1"; f="$2"; role="$3"
   rtr="2"; [[ "$role" == "iran" ]] && rtr="1"
   echo -e "${CLR_DIM}Role: $(role_badge "$role")${CLR_RESET}" > "$TTY_OUT"
   TOKEN="$(prompt_token "$rtr")"
-  echo "1) tcp   2) udp   3) both (tcp+udp)" > "$TTY_OUT"
-  read -r -p "Protocol [1-3, default 1]: " po < /dev/tty
-  PROTO="tcp"
-  [[ "$po" == "2" ]] && PROTO="udp"
-  [[ "$po" == "3" ]] && PROTO="both"
   read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
   if [[ "$rtr" == "1" ]]; then
     read -r -p "Control bind port (e.g. 2333): " BIND_PORT < /dev/tty
-    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=server" "TOKEN=$TOKEN" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS" "PROTO=$PROTO"
+    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=server" "TOKEN=$TOKEN" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   else
     read -r -p "Server IP / hostname: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 2333): " BIND_PORT < /dev/tty
-    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=client" "TOKEN=$TOKEN" "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS" "PROTO=$PROTO"
+    write_env_file "$f" "METHOD=rathole" "ROLE=$role" "RT_ROLE=client" "TOKEN=$TOKEN" "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
 }
@@ -672,12 +667,8 @@ edit_profile_frp(){
     read -r -p "Iran server IP: " SERVER_IP < /dev/tty
     read -r -p "Server control port (e.g. 7000): " BIND_PORT < /dev/tty
     read -r -p "Ports to forward, CSV (e.g. 443,8080,2083): " FORWARD_PORTS < /dev/tty
-    read -r -p "Protocol [1=tcp, 2=udp, 3=both] (default 1): " po < /dev/tty
-    local PROTO="tcp"
-    [[ "$po" == "2" ]] && PROTO="udp"
-    [[ "$po" == "3" ]] && PROTO="both"
     write_env_file "$f" "METHOD=frp" "ROLE=$role" "FRP_ROLE=client" "TOKEN=$TOKEN" \
-      "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS" "PROTO=$PROTO"
+      "SERVER_IP=$SERVER_IP" "BIND_PORT=$BIND_PORT" "FORWARD_PORTS=$FORWARD_PORTS"
   fi
   echo "[+] Saved $f" > "$TTY_OUT"
 }
@@ -761,11 +752,10 @@ edit_profile_gost(){
     read -r -p "Ports CSV (e.g. 443,8080,2083): " PORTS < /dev/tty
     PORT_MODE="manual"; RANGE_START=""; RANGE_END=""
   fi
-  echo "1) tcp   2) udp   3) both" > "$TTY_OUT"
-  read -r -p "Protocol (default 1): " po < /dev/tty
+  echo "1) tcp   2) udp" > "$TTY_OUT"
+  read -r -p "Protocol: " po < /dev/tty
   local PROTO="tcp"
   [[ "$po" == "2" ]] && PROTO="udp"
-  [[ "$po" == "3" ]] && PROTO="both"
   write_env_file "$f" "METHOD=gost" "ROLE=$role" "DEST_IP=$DEST_IP" "PORT_MODE=$PORT_MODE" \
     "PORTS=$PORTS" "RANGE_START=$RANGE_START" "RANGE_END=$RANGE_END" "PROTO=$PROTO"
   echo "[+] Saved $f" > "$TTY_OUT"
@@ -1055,10 +1045,8 @@ rathole_validate_profile(){
     host="${SERVER_IP:-}"
     tunnel_valid_host "$host" || { echo "[-] Rathole: enter a valid Iran server IP or hostname." > "$TTY_OUT"; return 1; }
   fi
-  PROTO="${PROTO:-tcp}"
-  [[ "$PROTO" == "tcp" || "$PROTO" == "udp" || "$PROTO" == "both" ]] || { echo "[-] Rathole: protocol must be tcp, udp, or both." > "$TTY_OUT"; return 1; }
   FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] Rathole: forwarded ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
-  [[ -n "$FORWARD_PORTS" ]] || { echo "[-] Rathole: add at least one port to forward." > "$TTY_OUT"; return 1; }
+  [[ -n "$FORWARD_PORTS" ]] || { echo "[-] Rathole: add at least one TCP port to forward." > "$TTY_OUT"; return 1; }
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
     [[ "$p" != "$BIND_PORT" ]] || { echo "[-] Rathole: forwarded port must differ from the control port." > "$TTY_OUT"; return 1; }
@@ -1068,12 +1056,9 @@ rathole_validate_profile(){
 }
 
 write_rathole_config(){
-  local prof cfg tmp p remote local_target proto sname
+  local prof cfg tmp p remote local_target
   prof="$1"; cfg="$CONF/${prof}.toml"
   rathole_validate_profile "$prof" || return 1
-  load_profile "$prof"
-  proto="${PROTO:-tcp}"
-  [[ "$proto" == "tcp" || "$proto" == "udp" || "$proto" == "both" ]] || proto="tcp"
   # Rathole watches this file for hot reload. Build the complete TOML beside
   # the destination and rename it in one operation, so the watcher cannot
   # observe a truncated file or a header without its required services.
@@ -1083,18 +1068,8 @@ write_rathole_config(){
       echo "[server]"; echo "bind_addr = \"0.0.0.0:${BIND_PORT}\""; echo "default_token = \"${TOKEN}\""
       while IFS= read -r p; do
         [[ -n "$p" ]] || continue
-        if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
-          sname="svc${p}"
-          [[ "$proto" == "both" ]] && sname="svc${p}_tcp"
-          echo ""; echo "[server.services.${sname}]"; echo 'type = "tcp"'
-          printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
-        fi
-        if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
-          sname="svc${p}"
-          [[ "$proto" == "both" ]] && sname="svc${p}_udp"
-          echo ""; echo "[server.services.${sname}]"; echo 'type = "udp"'
-          printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
-        fi
+        echo ""; echo "[server.services.svc${p}]"; echo 'type = "tcp"'
+        printf 'token = "%s"\n' "$TOKEN"; printf 'bind_addr = "0.0.0.0:%s"\n' "$p"
       done < <(csv_ports_to_array "$FORWARD_PORTS")
     } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   else
@@ -1103,20 +1078,9 @@ write_rathole_config(){
       echo "[client]"; echo "remote_addr = \"${remote}\""; echo "default_token = \"${TOKEN}\""
       while IFS= read -r p; do
         [[ -n "$p" ]] || continue
-        if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
-          sname="svc${p}"
-          [[ "$proto" == "both" ]] && sname="svc${p}_tcp"
-          echo ""; echo "[client.services.${sname}]"; echo 'type = "tcp"'
-          local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}")" || { rm -f -- "$tmp"; echo "[-] Rathole: invalid local target address." > "$TTY_OUT"; return 1; }
-          printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "%s"\n' "$local_target"
-        fi
-        if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
-          sname="svc${p}"
-          [[ "$proto" == "both" ]] && sname="svc${p}_udp"
-          echo ""; echo "[client.services.${sname}]"; echo 'type = "udp"'
-          local_target="$(tunnel_local_target_addr "$p" udp "${LOCAL_ADDR:-auto}")" || { rm -f -- "$tmp"; echo "[-] Rathole: invalid local target address." > "$TTY_OUT"; return 1; }
-          printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "%s"\n' "$local_target"
-        fi
+        echo ""; echo "[client.services.svc${p}]"; echo 'type = "tcp"'
+        local_target="$(tunnel_local_target_addr "$p" tcp "${LOCAL_ADDR:-auto}")" || { rm -f -- "$tmp"; echo "[-] Rathole: invalid local target address." > "$TTY_OUT"; return 1; }
+        printf 'token = "%s"\n' "$TOKEN"; printf 'local_addr = "%s"\n' "$local_target"
       done < <(csv_ports_to_array "$FORWARD_PORTS")
     } > "$tmp" || { rm -f -- "$tmp"; return 1; }
   fi
@@ -1125,26 +1089,21 @@ write_rathole_config(){
 }
 
 write_frp_config(){
-  local prof cfg p local_target_host proto
+  local prof cfg p local_target_host
   prof="$1"
   cfg="$CONF/${prof}.toml"
   # shellcheck disable=SC1090
   frp_validate_profile "$prof" || return 1
-  load_profile "$prof"
-  proto="${PROTO:-tcp}"
   if [[ "$FRP_ROLE" == "server" ]]; then
     cat > "$cfg" <<EOF
 bindPort = ${BIND_PORT}
 auth.method = "token"
 auth.token = "${TOKEN}"
-transport.tcpMux = true
-transport.tls.force = false
 EOF
     if [[ -n "$FORWARD_PORTS" ]]; then
       {
         echo 'allowPorts = ['
-        while IFS= read -r p; do [[ -n "$p" ]] && printf '  { single = %s },
-' "$p"; done < <(csv_ports_to_array "$FORWARD_PORTS")
+        while IFS= read -r p; do [[ -n "$p" ]] && printf '  { single = %s },\n' "$p"; done < <(csv_ports_to_array "$FORWARD_PORTS")
         echo ']'
       } >> "$cfg"
     fi
@@ -1154,36 +1113,21 @@ serverAddr = "${SERVER_IP}"
 serverPort = ${BIND_PORT}
 auth.method = "token"
 auth.token = "${TOKEN}"
-transport.tcpMux = true
-transport.tls.enable = true
 EOF
     local p
     while IFS= read -r p; do
       [[ -n "$p" ]] || continue
       local_target_host="$(tunnel_local_target_host "$p" tcp "${LOCAL_ADDR:-auto}" 2>/dev/null)" || local_target_host="127.0.0.1"
       [[ -n "$local_target_host" ]] || local_target_host="127.0.0.1" 
-      if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
-        cat >> "$cfg" <<EOF
+      cat >> "$cfg" <<EOF
 
 [[proxies]]
-name = "tcp_${p}"
+name = "p${p}"
 type = "tcp"
 localIP = "${local_target_host}"
 localPort = ${p}
 remotePort = ${p}
 EOF
-      fi
-      if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
-        cat >> "$cfg" <<EOF
-
-[[proxies]]
-name = "udp_${p}"
-type = "udp"
-localIP = "${local_target_host}"
-localPort = ${p}
-remotePort = ${p}
-EOF
-      fi
     done < <(csv_ports_to_array "$FORWARD_PORTS")
   fi
   chmod 600 "$cfg"
@@ -1336,21 +1280,21 @@ paqet_validate(){
 paqet_net_info(){
   NET_IFACE=""; NET_LOCAL_IP=""; NET_GW_IP=""; NET_GW_MAC=""
   NET_IFACE="$(ip route 2>/dev/null | awk '/^default/ {print $5; exit}' || true)"
-  [[ -z "$NET_IFACE" ]] && NET_IFACE="$(ip -o link show 2>/dev/null | awk -F': ' '{print $2}' | grep -vE 'lo|docker|tun|tap' | head -n1 || true)"
-  NET_IFACE="${NET_IFACE:-eth0}"
-  NET_LOCAL_IP="$(ip -4 -o addr show dev "$NET_IFACE" 2>/dev/null | awk '{print $4; exit}' | cut -d/ -f1 || true)"
-  [[ -z "$NET_LOCAL_IP" ]] && NET_LOCAL_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")"
   NET_GW_IP="$(ip route 2>/dev/null | awk '/^default/ {print $3; exit}' || true)"
+  if [[ -n "$NET_IFACE" ]]; then
+    NET_LOCAL_IP="$(ip -4 -o addr show dev "$NET_IFACE" 2>/dev/null | awk '{print $4; exit}' | cut -d/ -f1 || true)"
+  fi
   if [[ -n "$NET_GW_IP" ]]; then
     ping -c 1 -W 1 "$NET_GW_IP" >/dev/null 2>&1 || true
     NET_GW_MAC="$(ip neigh show "$NET_GW_IP" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n1 || true)"
+    if [[ -z "$NET_GW_MAC" && -r /proc/net/arp ]]; then
+      NET_GW_MAC="$(awk -v ip="$NET_GW_IP" '$1 == ip {print $4; exit}' /proc/net/arp 2>/dev/null || true)"
+    fi
+    if [[ -z "$NET_GW_MAC" && -n "$NET_IFACE" ]]; then
+      NET_GW_MAC="$(ip neigh show dev "$NET_IFACE" 2>/dev/null | grep -oE '([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}' | head -n1 || true)"
+    fi
   fi
-  if [[ -z "$NET_GW_MAC" && -r /proc/net/arp ]]; then
-    NET_GW_MAC="$(awk -v ip="$NET_GW_IP" '$1 == ip {print $4; exit}' /proc/net/arp 2>/dev/null || true)"
-  fi
-  if [[ -z "$NET_GW_MAC" ]]; then
-    NET_GW_MAC="$(cat "/sys/class/net/$NET_IFACE/address" 2>/dev/null || echo "fe:ff:ff:ff:ff:ff")"
-  fi
+  NET_IFACE="${NET_IFACE:-eth0}"
 }
 
 install_paqet(){
@@ -2242,7 +2186,7 @@ gost_validate_profile(){
   local prof p count
   prof="$1"; load_profile "$prof"
   tunnel_valid_host "${DEST_IP:-}" || { echo "[-] Gost: enter a valid destination IP or hostname." > "$TTY_OUT"; return 1; }
-  [[ "$PROTO" == tcp || "$PROTO" == udp || "$PROTO" == both ]] || { echo "[-] Gost: protocol must be tcp, udp or both." > "$TTY_OUT"; return 1; }
+  [[ "$PROTO" == tcp || "$PROTO" == udp ]] || { echo "[-] Gost: protocol must be tcp or udp." > "$TTY_OUT"; return 1; }
   case "${PORT_MODE:-manual}" in
     manual)
       PORTS="$(tunnel_normalize_ports "${PORTS:-}")" || { echo "[-] Gost: port list must contain unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
@@ -2262,30 +2206,21 @@ gost_validate_profile(){
 }
 
 run_gost_slot(){
-  local prof args n p host proto
+  local prof args n p host
   prof="$1"
   gost_validate_profile "$prof" || return 1
   install_gost || return 1
-  load_profile "$prof"
   host="$DEST_IP"
   [[ "$host" != *:* || "$host" == \[*\] ]] || host="[$host]"
-  proto="${PROTO:-tcp}"
-  args=""
-  n=0
+  args=""; n=0
   while IFS= read -r p; do
     [[ -n "$p" ]] || continue
-    if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
-      args+=" -L tcp://:${p}/${host}:${p}"
-      n=$((n+1))
-    fi
-    if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
-      args+=" -L udp://:${p}/${host}:${p}"
-      n=$((n+1))
-    fi
+    args+=" -L \"${PROTO}://:${p}/${host}:${p}\""
+    n=$((n+1))
   done < <(gost_port_list "$prof")
   [[ -n "$args" ]] || { echo "[-] No ports to forward." > "$TTY_OUT"; return 1; }
   launch_in_screen "$prof" "'$BIN_DIR/gost'$args" || return 1
-  echo "[+] Started: $(session_name "$prof") (gost, ${n} port(s) [${proto}] -> ${DEST_IP})" > "$TTY_OUT"
+  echo "[+] Started: $(session_name "$prof") (gost, ${n} port(s) -> ${DEST_IP})" > "$TTY_OUT"
 }
 
 run_paqet_slot(){
@@ -2308,18 +2243,13 @@ run_paqet_slot(){
 }
 
 run_gre_slot(){
-  local prof ifname local_opt proto
+  local prof ifname
   prof="$1"
   gre_validate_profile "$prof" || return 1
-  load_profile "$prof"
   modprobe ip_gre >/dev/null 2>&1 || modprobe gre >/dev/null 2>&1 || true
   ifname="$(gre_ifname "$prof")"
   if ip link show "$ifname" >/dev/null 2>&1; then ip link del "$ifname" >/dev/null 2>&1 || true; fi
-  local_opt=""
-  if [[ -n "$LOCAL_IP" ]] && ip -o addr show 2>/dev/null | grep -qF "$LOCAL_IP"; then
-    local_opt="local $LOCAL_IP"
-  fi
-  if ! ip tunnel add "$ifname" mode gre remote "$PEER_IP" $local_opt ttl 255; then
+  if ! ip tunnel add "$ifname" mode gre remote "$PEER_IP" local "$LOCAL_IP" ttl 255; then
     echo "[-] Could not create GRE interface $ifname (check the local/peer IPs and that the gre module is available)." > "$TTY_OUT"
     log_event "$prof" "GRE: failed to create $ifname"
     return 1
@@ -2330,22 +2260,9 @@ run_gre_slot(){
     log_event "$prof" "GRE: failed to configure $ifname"
     return 1
   fi
-  if [[ -n "${PORTS:-}" && "$ROLE" == "iran" ]]; then
-    echo 1 > /proc/sys/net/ipv4/ip_forward 2>/dev/null || true
-    iptables -t nat -A POSTROUTING -o "$ifname" -j MASQUERADE 2>/dev/null || true
-    proto="${PROTO:-tcp}"
-    while IFS= read -r p; do
-      [[ -n "$p" ]] || continue
-      if [[ "$proto" == "tcp" || "$proto" == "both" ]]; then
-        iptables -t nat -A PREROUTING -p tcp --dport "$p" -j DNAT --to-destination "${PEER_TUN_IP}:$p" 2>/dev/null || true
-      fi
-      if [[ "$proto" == "udp" || "$proto" == "both" ]]; then
-        iptables -t nat -A PREROUTING -p udp --dport "$p" -j DNAT --to-destination "${PEER_TUN_IP}:$p" 2>/dev/null || true
-      fi
-    done < <(csv_ports_to_array "$PORTS")
-  fi
-  log_event "$prof" "GRE up: $ifname ${SELF_TUN_IP} <-> ${PEER_TUN_IP} (local ${LOCAL_IP:-auto}, peer ${PEER_IP})"
+  log_event "$prof" "GRE up: $ifname ${SELF_TUN_IP} <-> ${PEER_TUN_IP} (local ${LOCAL_IP}, peer ${PEER_IP})"
   echo "[+] GRE up: $ifname  ${SELF_TUN_IP} <-> ${PEER_TUN_IP}" > "$TTY_OUT"
+  echo "[i] You can now route/NAT specific ports across this tunnel with iptables as needed." > "$TTY_OUT"
 }
 stop_gre_slot(){
   local prof ifname
@@ -2922,7 +2839,7 @@ def iperf_client(host, port, duration, parallel, reverse):
             "retransmits": s.get("retransmits", 0)}
 
 
-def list_tunnels(node_id=None):
+def list_tunnels():
     """Ultra-fast native profile list without spawning heavy bash subshells."""
     conf_dir = os.environ.get("CONF_DIR", "/etc/A,S_manager/profiles")
     if not os.path.isdir(conf_dir):
@@ -2952,11 +2869,6 @@ def list_tunnels(node_id=None):
             prof = fname[:-4]
             fpath = os.path.join(conf_dir, fname)
             env = load_env(fpath)
-            prof_node = env.get("NODE_ID") or env.get("LINK_OWNER_NODE") or env.get("NT_OWNER_NODE") or ""
-            # Multi-node isolation: filter tunnels by node_id if requested
-            if node_id and prof_node and prof_node != node_id:
-                continue
-
             method = env.get("METHOD", "asnative")
             role = env.get("ROLE", "iran")
             running = False
@@ -2984,7 +2896,6 @@ def list_tunnels(node_id=None):
                 "role": role,
                 "method": method,
                 "running": running,
-                "node_id": prof_node,
                 "link_mode": env.get("LINK_MODE", ""),
                 "link_id": env.get("LINK_ID", ""),
                 "link_owner_node": env.get("LINK_OWNER_NODE", ""),
@@ -3012,10 +2923,9 @@ def _prof(a):
 def execute(cmd, args=None):
     """Run one whitelisted command on THIS server. Never executes arbitrary shell."""
     a = args or {}
-    nid = a.get("node_id") or a.get("owner_node") or ""
     try:
         if cmd == "list":
-            return list_tunnels(node_id=nid)
+            return list_tunnels()
         if cmd == "get":
             return run_api(["get", _prof(a)], timeout=30)
         if cmd == "probe_local_target":
@@ -3025,11 +2935,7 @@ def execute(cmd, args=None):
                 return {"error": "bad_probe_args"}
             return run_api(["probe", port, proto], timeout=15)
         if cmd == "save":
-            body = a.get("body") or {}
-            if nid and isinstance(body, dict):
-                body.setdefault("NODE_ID", nid)
-                body.setdefault("OWNER_NODE", nid)
-            return run_api(["save", _prof(a)], stdin_data=json.dumps(body), timeout=300)
+            return run_api(["save", _prof(a)], stdin_data=json.dumps(a.get("body") or {}), timeout=300)
         if cmd in ("start", "stop", "restart", "delete"):
             return run_api([cmd, _prof(a)], timeout=300)
         if cmd == "logs":
@@ -3096,7 +3002,6 @@ import os
 import re
 import secrets
 import socket
-import sqlite3
 import ssl
 import subprocess
 import sys
@@ -3142,287 +3047,9 @@ NODES = {}      # node id -> node dict (runtime + persisted fields)
 JOBS = {}       # job id  -> job dict
 SETTINGS = {}   # network_name, local_name
 SPEED_HISTORY = deque(maxlen=20)
-DB = None
 
 
 # ------------------------------------------------------------ persistence
-class MasterDB:
-    """Lightweight, portable SQLite database for master panel fleet state."""
-    def __init__(self, db_path):
-        self.db_path = db_path
-        self._local = threading.local()
-        try:
-            os.makedirs(os.path.dirname(db_path), exist_ok=True)
-            self._init_db()
-        except Exception as e:
-            logging.error("Failed to init master sqlite db: %s", e)
-
-    def get_conn(self):
-        conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = sqlite3.connect(self.db_path, timeout=20.0, check_same_thread=False)
-            conn.row_factory = sqlite3.Row
-            conn.execute("PRAGMA journal_mode = WAL")
-            conn.execute("PRAGMA synchronous = NORMAL")
-            conn.execute("PRAGMA cache_size = -2000")
-            self._local.conn = conn
-        return conn
-
-    def _init_db(self):
-        conn = self.get_conn()
-        with conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS settings (
-                    key TEXT PRIMARY KEY,
-                    value TEXT
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS nodes (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    role TEXT,
-                    token_hash TEXT,
-                    ip TEXT,
-                    hostname TEXT,
-                    version TEXT,
-                    status TEXT,
-                    last_seen REAL,
-                    rtt REAL,
-                    metrics_json TEXT,
-                    hello_json TEXT,
-                    created REAL,
-                    updated REAL
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS tunnels (
-                    prof TEXT,
-                    node_id TEXT,
-                    method TEXT,
-                    role TEXT,
-                    running INTEGER,
-                    link_mode TEXT,
-                    link_id TEXT,
-                    link_owner_node TEXT,
-                    link_peer_node TEXT,
-                    link_side TEXT,
-                    fields_json TEXT,
-                    updated REAL,
-                    PRIMARY KEY (prof, node_id)
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS links (
-                    id TEXT PRIMARY KEY,
-                    name TEXT,
-                    method TEXT,
-                    server_node TEXT,
-                    client_node TEXT,
-                    server_prof TEXT,
-                    client_prof TEXT,
-                    params_json TEXT,
-                    status TEXT,
-                    created REAL,
-                    updated REAL
-                )
-            """)
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_tun_nid ON tunnels (node_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_tun_link ON tunnels (link_id)")
-
-    def save_settings(self, settings_dict):
-        try:
-            conn = self.get_conn()
-            with conn:
-                for k, v in settings_dict.items():
-                    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (str(k), str(v)))
-        except Exception:
-            pass
-
-    def load_settings(self):
-        try:
-            conn = self.get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT key, value FROM settings")
-            return {row["key"]: row["value"] for row in cur.fetchall()}
-        except Exception:
-            return {}
-
-    def save_node(self, node_data):
-        try:
-            conn = self.get_conn()
-            now = time.time()
-            with conn:
-                conn.execute("""
-                    INSERT OR REPLACE INTO nodes
-                    (id, name, role, token_hash, ip, hostname, version, status, last_seen, rtt, metrics_json, hello_json, created, updated)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    node_data.get("id"),
-                    node_data.get("name"),
-                    node_data.get("role"),
-                    node_data.get("token_hash"),
-                    node_data.get("remote_ip", ""),
-                    (node_data.get("hello") or {}).get("hostname", ""),
-                    (node_data.get("hello") or {}).get("version", ""),
-                    "online" if (now - (node_data.get("last_seen") or 0)) < ONLINE_SECS else "offline",
-                    float(node_data.get("last_seen") or 0),
-                    float(node_data.get("rtt_ms")) if node_data.get("rtt_ms") is not None else None,
-                    json.dumps(node_data.get("metrics") or {}),
-                    json.dumps(node_data.get("hello") or {}),
-                    float(node_data.get("created") or now),
-                    now
-                ))
-            if isinstance(node_data.get("tunnels"), list):
-                self.sync_tunnels(node_data.get("id"), node_data["tunnels"])
-        except Exception:
-            pass
-
-    def remove_node(self, node_id):
-        try:
-            conn = self.get_conn()
-            with conn:
-                conn.execute("DELETE FROM nodes WHERE id = ?", (node_id,))
-                conn.execute("DELETE FROM tunnels WHERE node_id = ?", (node_id,))
-        except Exception:
-            pass
-
-    def load_nodes(self):
-        try:
-            conn = self.get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM nodes")
-            rows = cur.fetchall()
-            result = {}
-            for r in rows:
-                nid = r["id"]
-                result[nid] = {
-                    "id": nid,
-                    "name": r["name"],
-                    "role": r["role"],
-                    "token_hash": r["token_hash"],
-                    "created": r["created"],
-                    "remote_ip": r["ip"],
-                    "last_seen": r["last_seen"],
-                    "rtt_ms": r["rtt"],
-                    "metrics": json.loads(r["metrics_json"] or "{}"),
-                    "hello": json.loads(r["hello_json"] or "{}"),
-                }
-            return result
-        except Exception:
-            return {}
-
-    def sync_tunnels(self, node_id, tunnels_list):
-        try:
-            conn = self.get_conn()
-            now = time.time()
-            with conn:
-                conn.execute("DELETE FROM tunnels WHERE node_id = ?", (node_id,))
-                for t in tunnels_list:
-                    conn.execute("""
-                        INSERT OR REPLACE INTO tunnels
-                        (prof, node_id, method, role, running, link_mode, link_id, link_owner_node, link_peer_node, link_side, fields_json, updated)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        t.get("prof"),
-                        node_id,
-                        t.get("method"),
-                        t.get("role"),
-                        1 if t.get("running") else 0,
-                        t.get("link_mode", ""),
-                        t.get("link_id", ""),
-                        t.get("link_owner_node", ""),
-                        t.get("link_peer_node", ""),
-                        t.get("link_side", ""),
-                        json.dumps(t.get("fields") or {}),
-                        now
-                    ))
-        except Exception:
-            pass
-
-    def get_node_tunnels(self, node_id):
-        try:
-            conn = self.get_conn()
-            cur = conn.cursor()
-            cur.execute("SELECT * FROM tunnels WHERE node_id = ?", (node_id,))
-            rows = cur.fetchall()
-            result = []
-            for r in rows:
-                result.append({
-                    "prof": r["prof"],
-                    "method": r["method"],
-                    "role": r["role"],
-                    "running": bool(r["running"]),
-                    "node_id": node_id,
-                    "link_mode": r["link_mode"],
-                    "link_id": r["link_id"],
-                    "link_owner_node": r["link_owner_node"],
-                    "link_peer_node": r["link_peer_node"],
-                    "link_side": r["link_side"],
-                    "fields": json.loads(r["fields_json"] or "{}")
-                })
-            return result
-        except Exception:
-            return []
-
-    def export_all(self):
-        try:
-            conn = self.get_conn()
-            cur = conn.cursor()
-            data = {"version": 1, "exported_at": time.time()}
-            cur.execute("SELECT key, value FROM settings")
-            data["settings"] = {r["key"]: r["value"] for r in cur.fetchall()}
-            cur.execute("SELECT * FROM nodes")
-            data["nodes"] = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM tunnels")
-            data["tunnels"] = [dict(r) for r in cur.fetchall()]
-            cur.execute("SELECT * FROM links")
-            data["links"] = [dict(r) for r in cur.fetchall()]
-            return data
-        except Exception as e:
-            return {"error": str(e)}
-
-    def import_all(self, data):
-        conn = self.get_conn()
-        now = time.time()
-        with conn:
-            if "settings" in data and isinstance(data["settings"], dict):
-                for k, v in data["settings"].items():
-                    conn.execute("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)", (str(k), str(v)))
-            if "nodes" in data and isinstance(data["nodes"], list):
-                for n in data["nodes"]:
-                    conn.execute("""
-                        INSERT OR REPLACE INTO nodes
-                        (id, name, role, token_hash, ip, hostname, version, status, last_seen, rtt, metrics_json, hello_json, created, updated)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        n.get("id"), n.get("name"), n.get("role"), n.get("token_hash"),
-                        n.get("ip", ""), n.get("hostname", ""), n.get("version", ""),
-                        n.get("status", "offline"), n.get("last_seen", 0.0), n.get("rtt", None),
-                        n.get("metrics_json", "{}"), n.get("hello_json", "{}"),
-                        n.get("created", now), now
-                    ))
-            if "links" in data and isinstance(data["links"], list):
-                for l in data["links"]:
-                    conn.execute("""
-                        INSERT OR REPLACE INTO links
-                        (id, name, method, server_node, client_node, server_prof, client_prof, params_json, status, created, updated)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        l.get("id"), l.get("name"), l.get("method"), l.get("server_node"),
-                        l.get("client_node"), l.get("server_prof"), l.get("client_prof"),
-                        l.get("params_json", "{}"), l.get("status", ""), l.get("created", now), now
-                    ))
-
-    def reset_all(self):
-        conn = self.get_conn()
-        with conn:
-            conn.execute("DELETE FROM nodes")
-            conn.execute("DELETE FROM tunnels")
-            conn.execute("DELETE FROM links")
-            conn.execute("DELETE FROM settings")
-
-
 def _write_private(path, text):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     tmp = path + ".tmp"
@@ -3437,47 +3064,25 @@ def save_registry():
         data = {"settings": SETTINGS,
                 "nodes": {nid: {k: n[k] for k in ("id", "name", "role", "token_hash", "created")}
                           for nid, n in NODES.items()}}
-        if DB:
-            DB.save_settings(SETTINGS)
-            for n in NODES.values():
-                DB.save_node(n)
     _write_private(NODES_FILE, json.dumps(data, indent=2))
 
 
 def new_node_runtime(base):
-    rt = dict(last_seen=0.0, remote_ip="", hello={}, metrics={}, tunnels=[],
-              rtt=deque(maxlen=90), rtt_ms=None, queue=[])
-    rt.update(base)
-    if not isinstance(rt.get("rtt"), deque):
-        rt["rtt"] = deque(maxlen=90)
-    return rt
+    base = dict(base)
+    base.update(last_seen=0.0, remote_ip="", hello={}, metrics={}, tunnels=[],
+                rtt=deque(maxlen=90), rtt_ms=None, queue=[])
+    return base
 
 
 def load_registry():
-    global DB
-    db_path = os.path.join(STATE_DIR, "as_master.db")
-    DB = MasterDB(db_path)
-    db_settings = DB.load_settings()
-    SETTINGS.update(db_settings)
-    db_nodes = DB.load_nodes()
-    if db_nodes:
-        for nid, n in db_nodes.items():
-            rt = new_node_runtime(n)
-            rt["tunnels"] = DB.get_node_tunnels(nid)
-            NODES[nid] = rt
-    else:
-        try:
-            with open(NODES_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-        except (OSError, ValueError):
-            data = {}
-        SETTINGS.update(data.get("settings") or {})
-        for nid, n in (data.get("nodes") or {}).items():
-            NODES[nid] = new_node_runtime(n)
-        if SETTINGS:
-            DB.save_settings(SETTINGS)
-        for n in NODES.values():
-            DB.save_node(n)
+    try:
+        with open(NODES_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, ValueError):
+        data = {}
+    SETTINGS.update(data.get("settings") or {})
+    for nid, n in (data.get("nodes") or {}).items():
+        NODES[nid] = new_node_runtime(n)
 
 
 def join_key():
@@ -3729,58 +3334,9 @@ def api_remove_node(nid):
         if nid not in NODES:
             return jsonify({"error": "node_not_found"}), 404
         NODES.pop(nid)
-        if DB:
-            DB.remove_node(nid)
         COND.notify_all()
     save_registry()
     return jsonify({"ok": True})
-
-
-# ------------------------------------------------------- master database management
-@app.get("/api/master/db/export")
-def api_db_export():
-    if not DB:
-        return jsonify({"error": "db_not_initialized"}), 500
-    return jsonify({"ok": True, "database": DB.export_all()})
-
-
-@app.post("/api/master/db/import")
-def api_db_import():
-    b = request.get_json(force=True, silent=True) or {}
-    payload = b.get("database") if isinstance(b.get("database"), dict) else b
-    if not isinstance(payload, dict):
-        return jsonify({"error": "bad_import_data"}), 400
-    if DB:
-        DB.import_all(payload)
-        load_registry()
-    return jsonify({"ok": True, "nodes": len(NODES)})
-
-
-@app.post("/api/master/db/reset")
-def api_db_reset():
-    b = request.get_json(force=True, silent=True) or {}
-    del_remote = bool(b.get("delete_remote_tunnels"))
-    if del_remote:
-        with LOCK:
-            node_ids = list(NODES.keys())
-        for nid in node_ids:
-            try:
-                res = run_on_node(nid, "list", timeout=15)
-                if isinstance(res, list):
-                    for tun in res:
-                        prof = tun.get("prof")
-                        if prof:
-                            run_on_node(nid, "delete", {"prof": prof}, timeout=20)
-            except Exception:
-                pass
-    with COND:
-        NODES.clear()
-        SETTINGS.clear()
-        if DB:
-            DB.reset_all()
-        COND.notify_all()
-    save_registry()
-    return jsonify({"ok": True, "deleted_remote_tunnels": del_remote})
 
 
 # ------------------------------------------------------- command relay
@@ -3847,9 +3403,6 @@ def n_slot_get(nid, prof):
 @app.post("/api/n/<nid>/slots/<prof>")
 def n_slot_save(nid, prof):
     body = request.get_json(force=True, silent=True) or {}
-    if isinstance(body, dict):
-        body.setdefault("NODE_ID", nid)
-        body.setdefault("OWNER_NODE", nid)
     return respond(run_on_node(nid, "save", {"prof": prof, "body": body}, timeout=330))
 
 
@@ -3905,8 +3458,6 @@ def linked_profile_pair_matches(method, left, right):
             "paqet": ("SECRET_KEY", "SERVER_PORT", "KCP_MODE", "BLOCK"),
         }[method]
         if lf.get("LOCAL_ADDR", "auto") != rf.get("LOCAL_ADDR", "auto"):
-            return False
-        if method == "rathole" and lf.get("PROTO", "tcp") != rf.get("PROTO", "tcp"):
             return False
         return all(lf.get(k) not in (None, "") and lf.get(k) == rf.get(k) for k in keys)
     if method == "asnative":
@@ -4177,24 +3728,32 @@ def _configured_port(value, default=None, avoid=()):
 def _make_assecure_cert(server_name):
     """Create a per-link self-signed CA certificate and private key using OpenSSL."""
     try:
+        import ipaddress
         san = f"IP:{server_name}" if _is_ip_address(server_name) else f"DNS:{server_name}"
         with tempfile.TemporaryDirectory(prefix="as-secure-") as td:
             crt, key = os.path.join(td, "server.crt"), os.path.join(td, "server.key")
+            # Do not inherit the machine's openssl.cnf extensions. Some distro
+            # configs already add basicConstraints to `req -x509`; combining
+            # that default with `-addext` creates duplicate OID 2.5.29.19, which
+            # Go (and therefore frps) rejects. An isolated config makes the
+            # certificate's extensions explicit and unique on every host.
             openssl_conf = os.path.join(td, "openssl.cnf")
             with open(openssl_conf, "w", encoding="ascii") as f:
-                f.write("[ req ]\nprompt = no\ndistinguished_name = dn\nx509_extensions = v3_req\n\n[ dn ]\nCN = " + server_name + "\n\n[ v3_req ]\nbasicConstraints = critical,CA:TRUE\nkeyUsage = critical,digitalSignature,keyEncipherment,keyCertSign\nextendedKeyUsage = serverAuth,clientAuth\nsubjectAltName = " + san + "\n")
-            try:
-                subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes",
-                                "-days", "825", "-keyout", key, "-out", crt, "-config", openssl_conf],
-                               check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
-                with open(crt, "rb") as cf, open(key, "rb") as kf:
-                    return base64.b64encode(cf.read()).decode("ascii"), base64.b64encode(kf.read()).decode("ascii")
-            except Exception:
-                # Fallback for environments where openssl binary is not present in PATH
-                dummy_cert = f"-----BEGIN CERTIFICATE-----\nMIIB...{server_name}\n-----END CERTIFICATE-----"
-                dummy_key = "-----BEGIN PRIVATE KEY-----\nMIIB...\n-----END PRIVATE KEY-----"
-                return base64.b64encode(dummy_cert.encode()).decode("ascii"), base64.b64encode(dummy_key.encode()).decode("ascii")
-    except Exception as exc:
+                f.write("[ req ]\nprompt = no\ndistinguished_name = dn\nx509_extensions = server_ext\n"
+                        "[ dn ]\n"
+                        f"CN = {server_name}\n"
+                        "[ server_ext ]\nbasicConstraints = critical,CA:TRUE\n"
+                        "keyUsage = critical,digitalSignature,keyEncipherment,keyCertSign,cRLSign\n"
+                        f"subjectAltName = {san}\n")
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:3072", "-sha256", "-nodes",
+                            "-days", "825", "-keyout", key, "-out", crt, "-config", openssl_conf],
+                           check=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, timeout=30)
+            with open(crt, "rb") as f:
+                cert_b64 = base64.b64encode(f.read()).decode("ascii")
+            with open(key, "rb") as f:
+                key_b64 = base64.b64encode(f.read()).decode("ascii")
+        return cert_b64, key_b64
+    except (OSError, subprocess.SubprocessError) as exc:
         raise ValueError("certificate_generation_failed") from exc
 
 
@@ -4217,10 +3776,6 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         raise ValueError("bad_local_address")
     fwd = _ports_csv(p.get("forward_ports"))
     fwd_list = fwd.split(",") if fwd else []
-    proto = str(p.get("proto") or "tcp").strip().lower()
-    if proto not in ("tcp", "udp", "both"):
-        proto = "tcp"
-
     if method == "asnative":
         bridge = _configured_port(p.get("bridge"), default=7000)
         sync = _configured_port(p.get("sync"), default=7001)
@@ -4231,12 +3786,11 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             raise ValueError("ports_required")
         if any(int(port) in (bridge, sync) for port in fwd_list):
             raise ValueError("ports_conflict")
-        iran_fields = {"BRIDGE": bridge, "SYNC": sync, "AUTO_SYNC": "true" if port_mode == "auto" else "false", "PROTO": proto}
+        iran_fields = {"BRIDGE": bridge, "SYNC": sync, "AUTO_SYNC": "true" if port_mode == "auto" else "false"}
         if port_mode == "manual":
             iran_fields["PORTS"] = fwd
         return (iran_fields,
-                {"IRAN_IP": sip, "BRIDGE": bridge, "SYNC": sync, "PROTO": proto})
-
+                {"IRAN_IP": sip, "BRIDGE": bridge, "SYNC": sync})
     if method == "gre":
         try:
             valid_endpoints = (ipaddress.ip_address(sip).version == 4 and
@@ -4245,19 +3799,152 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             valid_endpoints = False
         if not valid_endpoints:
             raise ValueError("gre_requires_ipv4")
-        return ({"LOCAL_IP": sip, "PEER_IP": cip, "PORTS": fwd, "PROTO": proto, "SELF_TUN_IP": "10.10.10.2", "PEER_TUN_IP": "10.10.10.1"},
-                {"LOCAL_IP": cip, "PEER_IP": sip, "PORTS": fwd, "PROTO": proto, "SELF_TUN_IP": "10.10.10.1", "PEER_TUN_IP": "10.10.10.2"})
-
+        return ({"LOCAL_IP": sip, "PEER_IP": cip}, {"LOCAL_IP": cip, "PEER_IP": sip})
+    if method == "neotunnel":
+        try:
+            sip_addr, cip_addr = ipaddress.ip_address(sip), ipaddress.ip_address(cip)
+        except ValueError:
+            raise ValueError("neotunnel_requires_ip")
+        if sip_addr.version != cip_addr.version:
+            raise ValueError("neotunnel_mixed_underlay_family")
+        kind = str(p.get("kind") or "wireguard").strip().lower()
+        if kind not in NEOTUNNEL_KINDS:
+            raise ValueError("bad_neotunnel_kind")
+        if kind in NEOTUNNEL_IPV4_UNDERLAY_KINDS and sip_addr.version != 4:
+            raise ValueError("neotunnel_kind_requires_ipv4_underlay")
+        if kind in NEOTUNNEL_IPV6_UNDERLAY_KINDS and sip_addr.version != 6:
+            raise ValueError("neotunnel_kind_requires_ipv6_underlay")
+        fwd = _ports_csv(p.get("forward_ports"))
+        fwd_list = fwd.split(",") if fwd else []
+        can_port = kind in NEOTUNNEL_PORT_KINDS
+        required_port = kind in NEOTUNNEL_REQUIRED_PORT_KINDS
+        if p.get("port") not in (None, "") and not can_port:
+            raise ValueError("port_unsupported")
+        port = _configured_port(p.get("port"), avoid=fwd_list) if can_port and (required_port or p.get("port") not in (None, "")) else ""
+        if str(port) in fwd_list and port:
+            raise ValueError("ports_conflict")
+        mtu = p.get("mtu")
+        if mtu not in (None, "") and _port(mtu, lo=576, hi=9000) is None:
+            raise ValueError("bad_mtu")
+        ttl = p.get("ttl")
+        ttl = None if ttl not in (None, "") and kind not in NEOTUNNEL_TTL_KINDS else (_port(ttl, lo=1, hi=255) if ttl not in (None, "") else None)
+        if p.get("ttl") not in (None, "") and ttl is None:
+            if kind in NEOTUNNEL_TTL_KINDS:
+                raise ValueError("bad_ttl")
+        vni = p.get("vni")
+        vni = _port(vni, lo=1, hi=16777215) if vni not in (None, "") else None
+        if p.get("vni") not in (None, "") and vni is None:
+            raise ValueError("bad_vni")
+        if vni is not None and kind not in ("vxlan", "geneve"):
+            raise ValueError("vni_requires_overlay")
+        tunnel_id = p.get("tunnel_id")
+        tunnel_id = _port(tunnel_id, lo=0, hi=65535) if tunnel_id not in (None, "") else None
+        if p.get("tunnel_id") not in (None, "") and tunnel_id is None:
+            raise ValueError("bad_tunnel_id")
+        if tunnel_id is not None and kind != "eoip":
+            raise ValueError("tunnel_id_requires_eoip")
+        if tunnel_id is not None and kind == "eoip" and not port and sip_addr.version == 6 and tunnel_id > 4095:
+            raise ValueError("eoipv6_tunnel_id_max_4095_without_udp")
+        pool4, pool6 = str(p.get("pool4") or "").strip(), str(p.get("pool6") or "").strip()
+        if (pool4 or pool6) and kind not in NEOTUNNEL_POOL_KINDS:
+            raise ValueError("pool_requires_layer3")
+        if pool4 and kind not in NEOTUNNEL_POOL4_KINDS:
+            raise ValueError("pool4_unsupported")
+        if pool6 and kind not in NEOTUNNEL_POOL6_KINDS:
+            raise ValueError("pool6_unsupported")
+        for pool, version in ((pool4, 4), (pool6, 6)):
+            if pool:
+                try:
+                    net = ipaddress.ip_network(pool, strict=False)
+                except ValueError:
+                    raise ValueError("bad_pool" + str(version))
+                if net.version != version:
+                    raise ValueError("bad_pool" + str(version))
+        encrypt = str(p.get("encrypt") or "").strip().lower()
+        if encrypt not in ("", "none", "aes-gcm-128", "aes-gcm-256", "chacha20-poly1305", "auto"):
+            raise ValueError("bad_encrypt")
+        profile = str(p.get("profile") or "balanced").strip().lower()
+        if profile not in ("lean", "balanced", "max"):
+            raise ValueError("bad_profile")
+        proto = str(p.get("forward_proto") or ("tcp" if kind in ("stream-tcp", "stream-tls") else "both")).lower()
+        if proto not in ("tcp", "udp", "both"):
+            raise ValueError("bad_forward_proto")
+        if kind in ("stream-tcp", "stream-tls") and fwd and proto != "tcp":
+            raise ValueError("stream_tcp_only")
+        if fwd and kind in ("gretap", "ip6gretap", "vxlan", "geneve", "l2tpv3", "eoip"):
+            raise ValueError("forward_requires_layer3")
+        def nt_bool(value):
+            return value is True or str(value or "").strip().lower() in ("1", "true", "yes", "on")
+        def nt_int(key, default, lo, hi):
+            value = p.get(key)
+            if value in (None, ""):
+                return default
+            try:
+                number = int(value)
+            except (TypeError, ValueError):
+                raise ValueError("bad_" + key)
+            if not lo <= number <= hi:
+                raise ValueError("bad_" + key)
+            return number
+        if p.get("keepalive") not in (None, "") and kind not in ("wireguard", "obfs"):
+            raise ValueError("keepalive_only_encrypted_udp")
+        keepalive = nt_int("keepalive", 25 if kind in ("wireguard", "obfs") else 0, -1, 3600)
+        padding = nt_int("padding", 0, 0, 255)
+        lanes = nt_int("lanes", 1, 1, 8)
+        conns = nt_int("conns", 4, 1, 16)
+        if p.get("padding") not in (None, "") and kind != "obfs":
+            raise ValueError("padding_only_obfs")
+        if p.get("lanes") not in (None, "") and kind not in NEOTUNNEL_LANE_KINDS:
+            raise ValueError("lanes_require_gre")
+        if p.get("conns") not in (None, "") and kind not in ("stream-tcp", "stream-tls"):
+            raise ValueError("conns_require_stream")
+        reverse = nt_bool(p.get("reverse"))
+        if reverse and kind not in ("stream-tcp", "stream-tls"):
+            raise ValueError("reverse_requires_stream")
+        sni = str(p.get("sni") or "").strip()
+        if sni and kind != "stream-tls":
+            raise ValueError("sni_requires_stream_tls")
+        if sni:
+            labels = sni.split(".")
+            if len(sni) > 253 or any(not label or len(label) > 63 or label.startswith("-") or label.endswith("-") or not re.fullmatch(r"(?i)[a-z0-9-]+", label) for label in labels):
+                raise ValueError("bad_sni")
+        mtu_probe, no_pmtud = nt_bool(p.get("mtu_probe")), nt_bool(p.get("no_pmtud"))
+        ignore_df = nt_bool(p.get("ignore_df"))
+        if (mtu_probe or no_pmtud or ignore_df) and kind not in NEOTUNNEL_PMTU_KINDS:
+            raise ValueError("mtu_flags_unsupported")
+        if (mtu_probe or no_pmtud or ignore_df) and sip_addr.version != 4:
+            raise ValueError("mtu_flags_require_ipv4_underlay")
+        if ignore_df and kind not in ("gre", "gretap"):
+            raise ValueError("ignore_df_requires_gre")
+        if ignore_df:
+            no_pmtud = True
+        nt_name = "a" + re.sub(r"[^a-z0-9-]", "", str(link_name).lower())[:5] + secrets.token_hex(2)
+        common = {"NT_MODE": "linked", "NT_TUNNEL_NAME": nt_name, "NT_KIND": kind,
+                  "NT_PORT": port, "NT_MTU": _port(mtu, None, 576, 9000) if mtu not in (None, "") else "",
+                  "NT_TTL": ttl or "", "NT_VNI": vni or "", "NT_TUNNEL_ID": tunnel_id if tunnel_id is not None else "",
+                  "NT_POOL4": pool4, "NT_POOL6": pool6,
+                  "NT_ENCRYPT": "" if encrypt == "none" else encrypt, "NT_PROFILE": "" if profile == "balanced" else profile,
+                  "NT_KEEPALIVE": keepalive if kind in ("wireguard", "obfs") else "",
+                  "NT_PADDING": padding if kind == "obfs" else "", "NT_LANES": lanes if lanes > 1 else "",
+                  "NT_CONNS": conns if kind in ("stream-tcp", "stream-tls") else "", "NT_SNI": sni,
+                  "NT_MTU_PROBE": "true" if mtu_probe else "false",
+                  "NT_NO_PMTUD": "true" if no_pmtud else "false", "NT_IGNORE_DF": "true" if ignore_df else "false",
+                  "NT_REVERSE": "true" if reverse else "false", "NT_FORWARD_PORTS": fwd,
+                  "NT_FORWARD_PROTO": proto}
+        return (dict(common, NT_ROLE="owner", NT_PEER_IP=cip),
+                dict(common, NT_ROLE="managed", NT_PEER_IP=sip))
     if method == "gost":
         if not fwd:
             raise ValueError("ports_required")
+        proto = p.get("proto") if p.get("proto") in ("tcp", "udp") else "tcp"
         return (None, {"DEST_IP": sip, "PORT_MODE": "manual", "PORTS": fwd, "PROTO": proto})
-
     control_avoid = list(fwd_list)
+    if method in ("assecure", "paqet"):
+        udp_ports = _ports_csv(p.get("forward_udp_ports"))
+        control_avoid.extend(udp_ports.split(",") if udp_ports else [])
     port = _configured_port(p.get("port"), avoid=control_avoid)
     if str(port) in fwd_list:
         raise ValueError("ports_conflict")
-
     if method == "backhaul":
         if not fwd:
             raise ValueError("ports_required")
@@ -4267,32 +3954,33 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
         bh_local_addr = local_addr
         return ({"BH_ROLE": "server", "TOKEN": key, "TRANSPORT": tr, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": bh_local_addr},
                 {"BH_ROLE": "client", "TOKEN": key, "TRANSPORT": tr, "SERVER_IP": sip, "BIND_PORT": port, "LOCAL_ADDR": bh_local_addr})
-
     if method == "rathole":
         if not fwd:
             raise ValueError("ports_required")
-        return ({"RT_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr},
-                {"RT_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr})
-
+        return ({"RT_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr},
+                {"RT_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr})
     if method == "frp":
         if not fwd:
             raise ValueError("ports_required")
-        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr},
-                {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "PROTO": proto, "LOCAL_ADDR": local_addr})
-
+        return ({"FRP_ROLE": "server", "TOKEN": key, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr},
+                {"FRP_ROLE": "client", "TOKEN": key, "SERVER_IP": sip, "BIND_PORT": port, "FORWARD_PORTS": fwd, "LOCAL_ADDR": local_addr})
     if method == "assecure":
-        if not fwd:
+        tcp = _ports_csv(p.get("forward_ports"))
+        udp = _ports_csv(p.get("forward_udp_ports"))
+        if not tcp and not udp:
             raise ValueError("ports_required")
-        tcp = fwd if proto in ("tcp", "both") else ""
-        udp = fwd if proto in ("udp", "both") else ""
+        transport = p.get("transport") if p.get("transport") in ("quic", "wss", "tcp") else "quic"
+        forbidden = set(tcp.split(",") if tcp else []) | set(udp.split(",") if udp else [])
+        control = port
+        if str(control) in forbidden:
+            raise ValueError("ports_conflict")
         cert, private_key = _make_assecure_cert(sip)
-        common = {"TOKEN": secrets.token_urlsafe(32), "AS_TRANSPORT": "tcp", "BIND_PORT": port,
-                  "AS_TCP_PORTS": tcp, "AS_UDP_PORTS": udp, "PROTO": proto, "LOCAL_ADDR": local_addr}
+        common = {"TOKEN": secrets.token_urlsafe(32), "AS_TRANSPORT": transport, "BIND_PORT": control,
+                  "AS_TCP_PORTS": tcp, "AS_UDP_PORTS": udp, "LOCAL_ADDR": local_addr}
         server_fields = dict(common, AS_ROLE="server", AS_CERT_B64=cert, AS_KEY_B64=private_key)
         client_fields = dict(common, AS_ROLE="client", SERVER_IP=sip, AS_SERVER_NAME=sip, AS_CA_B64=cert,
                              AS_TCP_PORTS=tcp, AS_UDP_PORTS=udp)
         return server_fields, client_fields
-
     if method == "paqet":
         try:
             valid_server_ip = ipaddress.ip_address(sip).version == 4
@@ -4300,20 +3988,28 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             valid_server_ip = False
         if not valid_server_ip:
             raise ValueError("paqet_requires_ipv4")
-        if not fwd:
+        udp = _ports_csv(p.get("forward_udp_ports"))
+        if not fwd and not udp:
             raise ValueError("ports_required")
-        tcp = fwd if proto in ("tcp", "both") else ""
-        udp = fwd if proto in ("udp", "both") else ""
-        common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": "fast", "BLOCK": "aes-128-gcm",
-                  "CONN": 4, "MTU": 1150, "LOCAL_ADDR": local_addr, "PROTO": proto}
+        mode = p.get("kcp_mode") if p.get("kcp_mode") in KCP_MODES else "fast"
+        block = p.get("block") if p.get("block") in KCP_BLOCKS else "aes-128-gcm"
+        if p.get("conn") not in (None, "") and _port(p.get("conn"), lo=1, hi=256) is None:
+            raise ValueError("bad_conn")
+        if p.get("mtu") not in (None, "") and _port(p.get("mtu"), lo=50, hi=1500) is None:
+            raise ValueError("bad_mtu")
+        if str(port) in set(fwd.split(",") + udp.split(",")):
+            raise ValueError("ports_conflict")
+        common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": mode, "BLOCK": block,
+                  "CONN": _port(p.get("conn"), 4, 1, 256), "MTU": _port(p.get("mtu"), 1150, 50, 1500), "LOCAL_ADDR": local_addr}
         client = dict(common, PQ_ROLE="client", SERVER_IP=sip)
-        if tcp:
-            client["FORWARD_PORTS"] = tcp
+        if fwd:
+            client["FORWARD_PORTS"] = fwd
         if udp:
             client["FORWARD_UDP_PORTS"] = udp
         return (dict(common, PQ_ROLE="server"), client)
-
     raise ValueError("bad_method")
+
+
 def node_label_ip(nid):
     with LOCK:
         if nid == "local":
@@ -4492,10 +4188,6 @@ def api_link():
     if sfields is not None:
         sfields.update(link_owner_fields)
         cfields.update(link_peer_fields)
-        sfields["NODE_ID"] = server
-        sfields["OWNER_NODE"] = server
-        cfields["NODE_ID"] = client
-        cfields["OWNER_NODE"] = client
 
     if method == "neotunnel":
         return _neotunnel_link(name, server, client, sname, cname, sip, cip, params, sfields, cfields)
@@ -4620,10 +4312,6 @@ def agent_heartbeat():
             n["rtt"].append(float(rtt))
         elif rtt is None:
             n["rtt_ms"] = n["rtt_ms"]
-        if DB:
-            DB.save_node(n)
-            if isinstance(b.get("tunnels"), list):
-                DB.sync_tunnels(n["id"], n["tunnels"])
     return jsonify({"ok": True, "name": n["name"], "role": n["role"], "time": int(time.time())})
 
 
@@ -4692,22 +4380,18 @@ write_agent_py(){
   mkdir -p "$WEBPANEL_DIR"
   cat > "$WEBPANEL_DIR/agent.py" <<'AGENT_EOF'
 #!/usr/bin/env python3
-"""A,S Tunnel — node agent (with Multi-Node & Master isolation support).
+"""A,S Tunnel — node agent.
 
 Runs on every Iran / abroad server that should appear in the master panel.
 It only makes OUTBOUND connections to the master (so Iran servers behind
 filtering work too): a heartbeat every few seconds, plus a long-poll that
-receives commands. Supports multiple node instances per server connecting to
-different master panels simultaneously with strict tunnel isolation.
+receives commands. Standard library only — no pip packages needed.
 
   agent.py register --url URL --key KEY --name NAME --role eu|iran [--fp SHA256]
-  agent.py run [--cfg PATH]
+  agent.py run
   agent.py status
-  agent.py list
-  agent.py unregister --id NODE_ID
 """
 import argparse
-import glob
 import hashlib
 import http.client
 import json
@@ -4724,68 +4408,24 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import asnode  # noqa: E402
 
 CFG_PATH = os.environ.get("AGENT_CFG", "/etc/A,S_manager/agent.json")
-AGENTS_DIR = os.environ.get("AGENTS_DIR", "/etc/A,S_manager/agents")
 
 
 def log(*a):
     print("[agent]", *a, file=sys.stderr, flush=True)
 
 
-def _load_one(path):
-    with open(path, encoding="utf-8") as f:
-        data = json.load(f)
-        data["_cfg_path"] = path
-        return data
+def load_cfg():
+    with open(CFG_PATH, encoding="utf-8") as f:
+        return json.load(f)
 
 
-def load_cfg(path=None):
-    p = path or CFG_PATH
-    if os.path.isfile(p):
-        return _load_one(p)
-    # Check agents dir
-    if os.path.isdir(AGENTS_DIR):
-        files = sorted(glob.glob(os.path.join(AGENTS_DIR, "*.json")))
-        if files:
-            return _load_one(files[0])
-    raise FileNotFoundError("no agent configuration found")
-
-
-def load_all_cfgs():
-    cfgs = []
-    seen_ids = set()
-    if os.path.isdir(AGENTS_DIR):
-        for p in sorted(glob.glob(os.path.join(AGENTS_DIR, "*.json"))):
-            try:
-                c = _load_one(p)
-                nid = c.get("node_id") or p
-                if nid not in seen_ids:
-                    seen_ids.add(nid)
-                    cfgs.append(c)
-            except Exception:
-                pass
-    if not cfgs and os.path.isfile(CFG_PATH):
-        try:
-            cfgs.append(_load_one(CFG_PATH))
-        except Exception:
-            pass
-    return cfgs
-
-
-def save_node_cfg(cfg):
-    nid = cfg.get("node_id") or "default"
-    os.makedirs(AGENTS_DIR, exist_ok=True)
-    target = os.path.join(AGENTS_DIR, f"{nid}.json")
-    for dest in (target, CFG_PATH):
-        try:
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            tmp = dest + ".tmp"
-            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-            clean_data = {k: v for k, v in cfg.items() if not k.startswith("_")}
-            with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(clean_data, f, indent=2)
-            os.replace(tmp, dest)
-        except Exception as e:
-            log("warning: failed to write cfg to", dest, e)
+def save_cfg(cfg):
+    os.makedirs(os.path.dirname(CFG_PATH), exist_ok=True)
+    tmp = CFG_PATH + ".tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+    os.replace(tmp, CFG_PATH)
 
 
 class Master:
@@ -4874,7 +4514,7 @@ def cmd_register(args):
     cfg.update(node_id=j["node_id"], node_token=j["node_token"], name=j.get("name", args.name))
     if not cfg["fingerprint"] and m.seen_fp:
         cfg["fingerprint"] = m.seen_fp  # trust-on-first-use, then pinned
-    save_node_cfg(cfg)
+    save_cfg(cfg)
     print(json.dumps({"ok": True, "node_id": cfg["node_id"], "name": cfg["name"],
                       "fingerprint": cfg["fingerprint"]}))
     return 0
@@ -4919,22 +4559,15 @@ def self_update(m):
 
 
 def schedule_refresh():
+    # Detached: the script rewrites the service files and restarts this agent a moment later,
+    # after the result has been posted back to the master.
     subprocess.Popen(["/bin/bash", "-c", 'sleep 3; exec "$0" --agent-refresh', asnode.INSTALL_PATH],
                      start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
 # -------------------------------------------------------------------- loops
 def run_job(m, job):
-    jid, cmd, args = job.get("id"), job.get("cmd"), dict(job.get("args") or {})
-    nid = m.cfg.get("node_id")
-    # Tag command with node identity for multi-node tunnel isolation
-    args["node_id"] = nid
-    args["owner_node"] = nid
-    if cmd == "save" and isinstance(args.get("body"), dict):
-        args["body"].setdefault("NODE_ID", nid)
-        args["body"].setdefault("OWNER_NODE", nid)
-        args["body"].setdefault("LINK_OWNER_NODE", nid)
-
+    jid, cmd, args = job.get("id"), job.get("cmd"), job.get("args") or {}
     try:
         res = self_update(m) if cmd == "self_update" else asnode.execute(cmd, args)
     except Exception as e:
@@ -4952,17 +4585,15 @@ def run_job(m, job):
 
 def heartbeat_loop(m, stop):
     last_rtt, tun, fails = None, {"t": 0.0, "v": []}, 0
-    nid = m.cfg.get("node_id")
     while not stop.is_set():
         try:
             now = time.time()
             if now - tun["t"] > 10:
-                # Strictly isolate: only report tunnels belonging to THIS master's node
-                lst = asnode.list_tunnels(node_id=nid)
+                lst = asnode.list_tunnels()
                 tun = {"t": now, "v": lst if isinstance(lst, list) else tun["v"]}
             body = {"metrics": asnode.metrics(), "tunnels": tun["v"], "rtt_ms": last_rtt,
                     "hello": {"hostname": socket.gethostname(), "public_ip": asnode.public_ip(),
-                              "version": asnode.script_version(), "node_id": nid}}
+                              "version": asnode.script_version()}}
             t0 = time.perf_counter()
             st, j = m.request("POST", "/api/agent/heartbeat", body, timeout=10)
             if st == 200:
@@ -4971,11 +4602,11 @@ def heartbeat_loop(m, stop):
             else:
                 last_rtt = None
                 fails += 1
-                log(f"[{m.cfg.get('name')}] heartbeat rejected:", st, j.get("error", ""))
+                log("heartbeat rejected:", st, j.get("error", ""))
         except Exception as e:
             last_rtt = None
             fails += 1
-            log(f"[{m.cfg.get('name')}] heartbeat failed:", e)
+            log("heartbeat failed:", e)
         stop.wait(8 if fails == 0 else min(30, 8 + fails * 2))
 
 
@@ -4995,121 +4626,35 @@ def poll_loop(m, stop):
         stop.wait(min(30, 2 + fails * 2))
 
 
-def start_node_runner(cfg, stop_event):
+def cmd_run(_args):
+    try:
+        cfg = load_cfg()
+    except Exception as e:
+        log("no config — run `register` first:", e)
+        return 1
     m = Master(cfg)
-    log("starting node runner; master:", cfg["master_url"], "node:", cfg.get("name"), "id:", cfg.get("node_id"))
-    t1 = threading.Thread(target=heartbeat_loop, args=(m, stop_event), daemon=True)
-    t2 = threading.Thread(target=poll_loop, args=(m, stop_event), daemon=True)
-    t1.start()
-    t2.start()
-    return [t1, t2]
-
-
-def cmd_run(args):
     stop = threading.Event()
-    active_runners = {}  # nid -> (stop_event, [threads])
-
-    cfg_arg = getattr(args, "cfg", None)
-    if cfg_arg and os.path.isfile(cfg_arg):
-        try:
-            c = _load_one(cfg_arg)
-            nid = c.get("node_id") or "default"
-            active_runners[nid] = (stop, start_node_runner(c, stop))
-        except Exception as e:
-            log("failed to load specified config:", e)
-            return 1
-    else:
-        cfgs = load_all_cfgs()
-        if not cfgs:
-            log("no agent configs found — run `register` first")
-            return 1
-        for c in cfgs:
-            nid = c.get("node_id") or "default"
-            s_evt = threading.Event()
-            active_runners[nid] = (s_evt, start_node_runner(c, s_evt))
-
-    log(f"Multi-node agent active with {len(active_runners)} node worker(s)")
+    log("starting; master:", cfg["master_url"], "node:", cfg.get("name"))
+    threads = [threading.Thread(target=heartbeat_loop, args=(m, stop), daemon=True),
+               threading.Thread(target=poll_loop, args=(m, stop), daemon=True)]
+    for t in threads:
+        t.start()
     try:
         while True:
-            time.sleep(10)
-            # Periodic scan: detect newly added node configs without needing restart
-            if not cfg_arg:
-                latest = load_all_cfgs()
-                latest_map = {c.get("node_id") or "default": c for c in latest}
-                # Check for removed
-                for nid in list(active_runners.keys()):
-                    if nid not in latest_map:
-                        log(f"Stopping removed node runner: {nid}")
-                        s_evt, _ = active_runners.pop(nid)
-                        s_evt.set()
-                # Check for added
-                for nid, c in latest_map.items():
-                    if nid not in active_runners:
-                        log(f"Spawning newly added node runner: {nid} ({c.get('name')})")
-                        s_evt = threading.Event()
-                        active_runners[nid] = (s_evt, start_node_runner(c, s_evt))
+            time.sleep(3600)
     except KeyboardInterrupt:
         stop.set()
-        for s_evt, _ in active_runners.values():
-            s_evt.set()
     return 0
 
 
 def cmd_status(_args):
-    cfgs = load_all_cfgs()
-    if not cfgs:
-        print(json.dumps({"configured": False, "nodes": []}))
+    try:
+        cfg = load_cfg()
+    except Exception:
+        print(json.dumps({"configured": False}))
         return 0
-    res = []
-    for c in cfgs:
-        res.append({
-            "configured": True,
-            "master_url": c.get("master_url"),
-            "name": c.get("name"),
-            "role": c.get("role"),
-            "node_id": c.get("node_id")
-        })
-    print(json.dumps({"configured": True, "count": len(res), "nodes": res,
-                      "primary": res[0] if res else {}}))
-    return 0
-
-
-def cmd_list(_args):
-    cfgs = load_all_cfgs()
-    out = []
-    for c in cfgs:
-        out.append({
-            "node_id": c.get("node_id"),
-            "name": c.get("name"),
-            "role": c.get("role"),
-            "master_url": c.get("master_url"),
-            "cfg_path": c.get("_cfg_path", "")
-        })
-    print(json.dumps(out, indent=2))
-    return 0
-
-
-def cmd_unregister(args):
-    target_id = args.id
-    removed = 0
-    if os.path.isdir(AGENTS_DIR):
-        p = os.path.join(AGENTS_DIR, f"{target_id}.json")
-        if os.path.isfile(p):
-            try:
-                os.remove(p)
-                removed += 1
-            except Exception:
-                pass
-    if os.path.isfile(CFG_PATH):
-        try:
-            with open(CFG_PATH, encoding="utf-8") as f:
-                c = json.load(f)
-            if c.get("node_id") == target_id:
-                os.remove(CFG_PATH)
-                removed += 1
-        except Exception:
-            pass
-    print(json.dumps({"ok": True, "removed": removed}))
+    print(json.dumps({"configured": True, "master_url": cfg.get("master_url"), "name": cfg.get("name"),
+                      "role": cfg.get("role"), "node_id": cfg.get("node_id")}))
     return 0
 
 
@@ -5122,25 +4667,10 @@ def main():
     r.add_argument("--name", required=True)
     r.add_argument("--role", choices=["eu", "iran"], required=True)
     r.add_argument("--fp", default="")
-
-    run_p = sub.add_parser("run")
-    run_p.add_argument("--cfg", default="", help="Optional single config path to run")
-
+    sub.add_parser("run")
     sub.add_parser("status")
-    sub.add_parser("list")
-
-    unreg = sub.add_parser("unregister")
-    unreg.add_argument("--id", required=True, help="Node ID to unregister")
-
     args = ap.parse_args()
-    dispatch = {
-        "register": cmd_register,
-        "run": cmd_run,
-        "status": cmd_status,
-        "list": cmd_list,
-        "unregister": cmd_unregister
-    }
-    return dispatch[args.cmd](args)
+    return {"register": cmd_register, "run": cmd_run, "status": cmd_status}[args.cmd](args)
 
 
 if __name__ == "__main__":
@@ -5547,18 +5077,6 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
         </div>
       </div>
     </div>
-    <div class="card" style="margin-top:16px">
-      <div class="sec-t"><span class="ico">💾</span><span data-i="dbTitle">Master Database & Backup</span></div>
-      <p class="muted" style="margin:0 0 14px;font-size:13px" data-i="dbDesc">Lightweight SQLite database holding all fleet state, nodes, and linked tunnels. Easily transfer to another server.</p>
-      <div class="btns" style="flex-wrap:wrap;gap:10px">
-        <button type="button" class="btn o-acc" onclick="exportMasterDB()">📥 <span data-i="dbExport">Export Database Backup</span></button>
-        <label class="btn ghost" style="cursor:pointer;margin:0">
-          📤 <span data-i="dbImport">Import / Restore Database</span>
-          <input type="file" id="dbFileInput" accept=".json,.db" style="display:none" onchange="importMasterDB(event)">
-        </label>
-        <button type="button" class="btn o-red" onclick="promptResetDB()" style="margin-inline-start:auto">🗑 <span data-i="dbReset">Reset Master DB</span></button>
-      </div>
-    </div>
   </div>
 
   <!-- ===== NODES ===== -->
@@ -5684,24 +5202,18 @@ pre.logbox{white-space:pre-wrap;word-break:break-word;background:#040209;border:
       <div class="fgrid">
         <div><label class="f" data-i="tName">Tunnel name</label><input id="nameInput" class="mono" maxlength="32" placeholder="server1"></div>
         <div class="full"><label class="f" data-i="protocol">Protocol</label><input class="mono" id="protocolSearch" type="search" placeholder="Search protocols…" oninput="filterProtocols()"><select id="methodSelect" onchange="onMethodChange()">
-          <option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
-          <option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option>
-          <option value="assecure">A,S Secure</option><option value="asnative">Reverse</option>
-          <option value="gre">GRE (kernel)</option></select></div>
+          <option value="asnative">Reverse</option><option value="backhaul">Backhaul</option><option value="rathole">Rathole</option>
+          <option value="gre">GRE (kernel)</option><option value="frp">FRP</option><option value="gost">Gost</option><option value="paqet">Paqet</option><option value="assecure">A,S Secure — TLS / QUIC / TCP+UDP</option>
+          <option value="kind:sit">SIT — IPv6 over IPv4</option><option value="kind:ipip">IPIP — IPv4 over IPv4</option><option value="kind:gre">GRE — Layer 3</option><option value="kind:gretap">GRETAP — Layer 2</option><option value="kind:ip6gre">IP6GRE — Layer 3</option><option value="kind:ip6gretap">IP6GRETAP — Layer 2</option><option value="kind:ipip6">IPIP6 — IPv4 over IPv6</option><option value="kind:ip6ip6">IP6IP6 — IPv6 over IPv6</option><option value="kind:vxlan">VXLAN</option><option value="kind:geneve">Geneve</option><option value="kind:l2tpv3">L2TPv3</option><option value="kind:wireguard">WireGuard</option><option value="kind:obfs">Obfs — encrypted UDP</option><option value="kind:tcp">TCP — IP over TCP</option><option value="kind:eoip">EoIP</option><option value="kind:stream-tcp">Stream TCP</option><option value="kind:stream-tls">Stream TLS</option></select></div>
       </div>
 
       <div id="manualBox">
         <div class="sidebar" id="sideBar"><span class="muted" data-i="side">Side</span><select class="side-select" id="sideSelect" onchange="onSideChange()" aria-label="Side"></select></div>
-        <div id="sideSwitchWrap" class="hidden" style="margin:12px 0;display:flex;gap:8px;">
-          <button type="button" class="btn sm" id="btnSideEu" onclick="switchModalSideTab('eu')" style="flex:1;font-weight:600;padding:8px 10px;border-radius:8px">🌍 ساید خارج (Kharej / Server)</button>
-          <button type="button" class="btn sm ghost" id="btnSideIran" onclick="switchModalSideTab('iran')" style="flex:1;font-weight:600;padding:8px 10px;border-radius:8px">🇮🇷 ساید ایران (Iran / Client)</button>
-        </div>
         <input type="hidden" id="roleSelect" value="eu">
         <div id="linkedHint" class="muted hidden" style="margin-top:12px"></div>
         <div id="fieldsBox" style="margin-top:14px"></div>
         <div class="btns" style="margin-top:20px">
           <button class="btn primary" id="saveBtn" onclick="saveSlot()">💾 <span data-i="saveStart">Save & Start</span></button>
-          <button type="button" class="btn" id="saveBothBtn" onclick="saveBothSides()" style="display:none;background:linear-gradient(135deg,#10b981,#059669);border-color:#10b981;color:#fff">💾 <span data-i="saveBoth">Save Both Sides</span></button>
           <button class="btn o-green" id="startBtn" onclick="doAction('start')">▶ <span data-i="start">Start</span></button>
           <button class="btn o-red" id="stopBtn" onclick="doAction('stop')">■ <span data-i="stop">Stop</span></button>
           <button class="btn o-amber" id="restartBtn" onclick="doAction('restart')">⟳ <span data-i="restart">Restart</span></button>
@@ -5769,10 +5281,7 @@ en:{
  pingTitle:'Latency to Master', pingDesc:'Live round-trip time between each node and this master (updates every few seconds)',
  cur:'Now', avg:'Avg', min:'Min', max:'Max', trend:'Trend', livePing:'Live Ping', pgFrom:'From node', pgTo:'Target', pgCustom:'Custom host / IP',
  pgStart:'Start live ping', pgStop:'Stop', clear:'Clear', loss:'Loss', custom:'Custom…',
- dbTitle:'Master Database & Backup', dbDesc:'Lightweight SQLite database holding all fleet state, nodes, and linked tunnels. Easily transfer to another server.',
-  dbExport:'Export Database Backup', dbImport:'Import / Restore Database', dbReset:'Reset Master DB',
-  sideEu:'Kharej (Abroad)', sideIran:'Iran', filterAllStatus:'All Status', saveBoth:'Save Both Sides',
-  tunTitle:'Tunnels Manager', tunAllNodes:'All nodes', linkedPair:'Linked pair', addTunnel:'Add tunnel', tunDesc:'All connected nodes. Linked node tunnels appear once; manual profiles remain per node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
+ tunTitle:'Tunnels Manager', tunAllNodes:'All nodes', linkedPair:'Linked pair', addTunnel:'Add tunnel', tunDesc:'All connected nodes. Linked node tunnels appear once; manual profiles remain per node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
  tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings', deletePair:'Delete pair', deletePairConfirm:'Delete linked tunnel “{n}” from both nodes?', linkedReadOnly:'Linked tunnel settings are managed together. This view is read-only; delete and recreate the pair to change its parameters.', e_neotunnel_forward_port_conflict:'Port {port} is already forwarded by tunnel {tunnel}. Choose another forwarded port or remove that existing mapping.',
  mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', protocolSearchHint:'Search protocols…', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
  sched:'Scheduled restart', schedNote:'(regardless of status)', hours:'hours', save2:'Save', live:'Live', newTunnel:'New tunnel',
@@ -5828,10 +5337,7 @@ fa:{
  pingTitle:'تأخیر تا مستر', pingDesc:'زمان رفت‌وبرگشت زنده بین هر نود و این مستر (هر چند ثانیه به‌روز می‌شود)',
  cur:'اکنون', avg:'میانگین', min:'کمینه', max:'بیشینه', trend:'روند', livePing:'پینگ زنده', pgFrom:'از نود', pgTo:'مقصد', pgCustom:'هاست / آی‌پی دلخواه',
  pgStart:'شروع پینگ زنده', pgStop:'توقف', clear:'پاک کردن', loss:'از دست رفته', custom:'دلخواه…',
- dbTitle:'دیتابیس سبک و پشتیبان‌گیری', dbDesc:'دیتابیس سبک و فوق‌سریع SQLite شامل لیست نودها، تانل‌ها و تنظیمات. قابل انتقال به هر سرور دیگر.',
-  dbExport:'دانلود پشتیبان دیتابیس', dbImport:'بازیابی / ایمپورت دیتابیس', dbReset:'ریست دیتابیس مستر',
-  sideEu:'خارج', sideIran:'ایران', filterAllStatus:'همه وضعیت‌ها', saveBoth:'ذخیره هر دو ساید',
-  tunTitle:'مدیریت تانل‌ها', tunAllNodes:'همهٔ نودها', linkedPair:'جفت‌شده', addTunnel:'افزودن تانل', tunDesc:'تانل‌های همهٔ نودهای وصل‌شده اینجا هستند؛ تانل‌های جفت‌شده یک‌بار و پروفایل‌های دستی جداگانه برای هر نود نمایش داده می‌شوند.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
+ tunTitle:'مدیریت تانل‌ها', tunAllNodes:'همهٔ نودها', linkedPair:'جفت‌شده', addTunnel:'افزودن تانل', tunDesc:'تانل‌های همهٔ نودهای وصل‌شده اینجا هستند؛ تانل‌های جفت‌شده یک‌بار و پروفایل‌های دستی جداگانه برای هر نود نمایش داده می‌شوند.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
  tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات', deletePair:'حذف جفت', deletePairConfirm:'تانل جفت‌شدهٔ «{n}» از هر دو نود حذف شود؟', linkedReadOnly:'تنظیمات تانل جفت‌شده با هم مدیریت می‌شوند. این بخش فقط‌خواندنی است؛ برای تغییر پارامترها، جفت تانل را حذف و دوباره ایجاد کنید.', e_neotunnel_forward_port_conflict:'پورت {port} از قبل توسط تانل {tunnel} فوروارد شده است. پورت دیگری انتخاب کنید یا فوروارد قبلی را حذف کنید.',
  mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', protocolSearchHint:'جست‌وجوی پروتکل…', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
  sched:'ریستارت زمان‌بندی‌شده', schedNote:'(بدون توجه به وضعیت)', hours:'ساعت', save2:'ذخیره', live:'زنده', newTunnel:'تانل جدید',
@@ -6290,58 +5796,25 @@ function markLegacyLinkedProfiles(nodes) {
 }
 function collectTunnelCards(nodes) {
   const grouped = new Map();
-  const allNodes = Array.isArray(nodes) ? nodes : [];
-  for (const node of allNodes) {
+  for (const node of (Array.isArray(nodes) ? nodes : [])) {
     for (const tunnel of (Array.isArray(node.tunnels) ? node.tunnels : [])) {
       const ntLinked = tunnel.method === 'neotunnel' && (tunnel.nt_mode === 'linked' || (tunnel.nt_role === 'managed' && tunnel.owner_node));
       const isLinked = (tunnel.link_mode === 'paired' && tunnel.link_id) || ntLinked;
       const ownerId = tunnel.link_owner_node || tunnel.owner_node || '';
-      const peerId = tunnel.link_peer_node || '';
       const linkId = tunnel.link_id || (ntLinked ? `linked:${ownerId || 'paired'}:${tunnel.tunnel_name || tunnel.prof}` : '');
       const groupKey = isLinked ? `linked:${linkId || ownerId}:${tunnel.prof}` : `node:${node.id}:${tunnel.prof}`;
-
-      // In linked tunnels, identify Kharej (eu) node and Iran (iran) node
-      let kharejNode = null, iranNode = null;
-      if (isLinked) {
-        const cands = allNodes.filter(n => n.id === node.id || n.id === ownerId || n.id === peerId);
-        kharejNode = cands.find(n => n.role === 'eu') || (node.role === 'eu' ? node : null);
-        iranNode = cands.find(n => n.role === 'iran') || (node.role === 'iran' ? node : null);
-      }
-      // Kharej (eu / server) node is primary by default
-      const primary = isLinked ? (kharejNode || allNodes.find(n => n.id === ownerId) || node) : node;
-      const secondary = isLinked ? (primary.id === kharejNode?.id ? iranNode : kharejNode) : null;
-
-      const item = Object.assign({}, tunnel, {
-        node_id: primary.id,
-        node_name: primary.name,
-        node_role: primary.role,
-        node_online: !!primary.online,
-        linked: !!isLinked,
-        link_id: linkId,
-        link_owner_node: ownerId || primary.id,
-        link_peer_node: secondary ? secondary.id : peerId,
-        peer_name: secondary ? secondary.name : '',
-        peer_role: secondary ? secondary.role : '',
-        kharej_node_id: kharejNode ? kharejNode.id : (primary.role === 'eu' ? primary.id : ''),
-        iran_node_id: iranNode ? iranNode.id : (primary.role === 'iran' ? primary.id : '')
-      });
-
+      const owner = isLinked ? (nodes.find(n => n.id === ownerId) || node) : node;
+      const item = Object.assign({}, tunnel, {node_id: owner.id, node_name: owner.name, node_role: owner.role,
+        node_online: !!owner.online, linked: !!isLinked, link_id:linkId, link_owner_node:ownerId || owner.id});
       const old = grouped.get(groupKey);
-      if (!old || (isLinked && primary.role === 'eu' && old.node_role !== 'eu')) {
-        grouped.set(groupKey, item);
-      }
+      if (!old || (isLinked && tunnel.link_side === 'owner' && old.link_side !== 'owner') || (ntLinked && tunnel.nt_role !== 'managed' && old.nt_role === 'managed')) grouped.set(groupKey, item);
     }
   }
   return Array.from(grouped.values()).map(item => {
     if (item.linked && !item.link_peer_node) {
-      const peer = allNodes.find(n => n.id !== item.node_id && (n.tunnels || []).some(t => t.prof === item.prof && t.method === item.method));
-      if (peer) {
-        item.link_peer_node = peer.id;
-        item.peer_name = peer.name;
-        item.peer_role = peer.role;
-        if (peer.role === 'iran' && !item.iran_node_id) item.iran_node_id = peer.id;
-        if (peer.role === 'eu' && !item.kharej_node_id) item.kharej_node_id = peer.id;
-      }
+      const peer = nodes.find(n => n.id !== item.node_id && (n.tunnels || []).some(t => t.prof === item.prof && t.method === item.method &&
+        ((item.link_id && t.link_id === item.link_id) || (item.method === 'neotunnel' && t.nt_mode === 'linked' && t.tunnel_name === item.tunnel_name))));
+      item.link_peer_node = peer ? peer.id : '';
     }
     return item;
   });
@@ -6353,7 +5826,6 @@ function linkedCardForTunnel(existing,targetNode) {
 }
 function setTunnelQuery(value) { S.tunQuery = String(value || '').trim().toLowerCase(); S.tunKey = ''; renderTunnels(); }
 function setTunnelStatus(value) { S.tunStatus = ['all','up','down'].includes(value) ? value : 'all'; S.tunKey = ''; renderTunnels(); }
-function setTunnelSide(value) { S.tunSide = ['all','eu','iran'].includes(value) ? value : 'eu'; S.tunKey = ''; renderTunnels(); }
 function renderTunnels() {
   const nodes = Array.isArray(S.nodes) ? S.nodes : [];
   const list = collectTunnelCards(nodes);
@@ -6365,38 +5837,23 @@ function renderTunnels() {
     <div class="tun-stat down"><div class="k">${t('tunStoppedCount')}</div><div class="v">${downCount}</div></div>
     <div class="tun-stat kind"><div class="k">${t('tunKinds')}</div><div class="v">${kindCount}</div></div>`;
   const q = S.tunQuery, status = S.tunStatus;
-  if (!S.tunSide) S.tunSide = 'eu'; // Default Tunnel Manager view to Kharej instead of Iran
-  const side = S.tunSide;
-  const euCount = list.filter(x => x.node_role === 'eu' || x.role === 'eu' || x.kharej_node_id).length;
-  const iranCount = list.filter(x => x.node_role === 'iran' || x.role === 'iran' || x.iran_node_id).length;
   const matching = list.filter(x => {
     if (status === 'up' && !x.running || status === 'down' && x.running) return false;
-    if (side === 'eu' && !(x.node_role === 'eu' || x.role === 'eu' || x.kharej_node_id)) return false;
-    if (side === 'iran' && !(x.node_role === 'iran' || x.role === 'iran' || x.iran_node_id)) return false;
     if (!q) return true;
-    return [x.prof, methodLabel(x.method, x.kind), x.role, x.method, x.kind, x.node_name, x.node_role, x.peer_name]
+    return [x.prof, methodLabel(x.method, x.kind), x.role, x.method, x.kind, x.node_name, x.node_role]
       .some(v => String(v || '').toLowerCase().includes(q));
   });
   $('tunSearch').value = S.tunQuery;
-  $('tunFilters').innerHTML = [
-    ['eu','sideEu',euCount],
-    ['iran','sideIran',iranCount],
-    ['all','filterAll',list.length]
-  ].map(([v,label,count]) => `<button type="button" class="tun-filter ${side === v ? 'on' : ''}" onclick="setTunnelSide('${v}')" aria-pressed="${side === v}">${v==='eu'?'🌍 ':v==='iran'?'🇮🇷 ':''}${t(label)} <b>${count}</b></button>`).join('')
-  + '<span style="opacity:0.3;margin:0 4px">|</span>'
-  + [['all','filterAllStatus',list.length],['up','filterRunning',upCount],['down','filterStopped',downCount]]
+  $('tunFilters').innerHTML = [['all','filterAll',list.length],['up','filterRunning',upCount],['down','filterStopped',downCount]]
     .map(([v,label,count]) => `<button type="button" class="tun-filter ${status === v ? 'on' : ''}" onclick="setTunnelStatus('${v}')" aria-pressed="${status === v}">${t(label)} <b>${count}</b></button>`).join('');
   $('tunFilters').setAttribute('aria-label', t('tunDesc'));
-  const key = JSON.stringify(list) + nodes.map(n => `${n.id}:${n.online}`).join('|') + LANG + status + side + q;
+  const key = JSON.stringify(list) + nodes.map(n => `${n.id}:${n.online}`).join('|') + LANG + status + q;
   if (S.tunKey === key) return; S.tunKey = key;
   $('tunGrid').innerHTML = matching.length ? matching.map(x => `<article class="tcard ${x.running ? 'on' : ''}">
     <button type="button" class="tcard-main" onclick="openSlotByName('${esc(x.prof)}','${esc(x.node_id)}')" aria-label="${esc(t('openTunnel'))}: ${esc(x.prof)}">
       <span class="tcard-glyph" aria-hidden="true">${methodGlyph(x.method, x.kind)}</span>
       <span class="tcard-copy"><span class="tcard-name-row"><span class="tcard-name">${esc(x.prof)}</span><span class="tcard-status ${x.running ? 'up' : ''}"><i></i>${t(x.running ? 'running' : 'stopped')}</span></span>
-      <span class="tcard-meta"><span class="tcard-proto">${esc(methodLabel(x.method, x.kind))}</span>
-        <span class="rb ${esc(x.node_role)}">${x.node_role==='eu'?'🌍 ':'🇮🇷 '}${esc(x.node_name)} · ${sideLabel(x.node_role)}</span>
-        ${x.linked && x.peer_name ? `<span class="tun-flow" style="font-size:12px;opacity:0.7"> ⇄ </span><span class="rb ${x.peer_role==='eu'?'eu':'iran'}">${x.peer_role==='eu'?'🌍 ':'🇮🇷 '}${esc(x.peer_name)} · ${sideLabel(x.peer_role||'iran')}</span>` : ''}
-        ${x.linked ? `<span class="tun-link-badge">${t('linkedPair')}</span>` : ''}</span></span>
+      <span class="tcard-meta"><span class="tcard-proto">${esc(methodLabel(x.method, x.kind))}</span><span class="rb ${esc(x.node_role)}">${esc(x.node_name)} · ${sideLabel(x.node_role)}</span>${x.linked ? `<span class="tun-link-badge">${t('linkedPair')}</span>` : ''}</span></span>
       <span class="tcard-arrow" aria-hidden="true">›</span></button>
     <div class="tcard-actions">
       <button type="button" class="tun-action start" onclick="quick('${esc(x.prof)}','start','${esc(x.node_id)}',${x.linked},'${esc(x.link_id)}','${esc(x.link_owner_node)}','${esc(x.link_peer_node)}','${esc(x.method)}')" aria-label="${t('start')} ${esc(x.prof)}" ${!x.node_online || x.running ? 'disabled' : ''}>▶ ${t('start')}</button>
@@ -6585,8 +6042,9 @@ function filterProtocols() {
   [...$('methodSelect').options].forEach(o => { o.hidden = !!q && !o.textContent.toLowerCase().includes(q); });
 }
 /* Location keys: eu = abroad and iran = Iran; protocol roles are method-specific. */
-const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP (blank=auto)', {full: true}), T('PEER_IP', 'Other side public IP', {full: true}), T('PORTS', 'Ports to forward via NAT (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})];
-const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']), T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})];
+const GRE_FIELDS = [T('LOCAL_IP', 'This server public IP', {full: true}), T('PEER_IP', 'Other side public IP', {full: true})];
+const GOST_FIELDS = [T('DEST_IP', 'Destination (abroad) IP', {full: true}), SEL('PORT_MODE', 'Port mode', ['manual', 'range']),
+  T('PORTS', 'Ports CSV (manual mode)', {full: true}), T('RANGE_START', 'Range start'), T('RANGE_END', 'Range end'), SEL('PROTO', 'Forward protocol', ['tcp', 'udp'])];
 const FIELDS = {
   asnative: {
     eu: [T('IRAN_IP', 'Iran server IP', {full: true}), T('BRIDGE', 'Bridge port', {ph: '7000'}), T('SYNC', 'Sync port', {ph: '7001'})],
@@ -6597,8 +6055,8 @@ const FIELDS = {
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Client local target host (127.0.0.1 or ::1)', {full: true, v: '127.0.0.1'})]},
   rathole: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
-      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})]},
+      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true})]},
   frp: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
       T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
@@ -6620,14 +6078,15 @@ const FIELDS = {
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
-  asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
+  asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'})],
   backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Client local target host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  gre: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
-  gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
-  assecure: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
-  paqet: [T('port', 'Tunnel port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  gre: [],
+  gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp'])],
+  assecure: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['quic', 'wss', 'tcp']), T('forward_ports', 'TCP ports (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports (CSV)', {full: true}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  paqet: [T('port', 'Tunnel port', {rand: 1}), SEL('kcp_mode', 'KCP mode', KCP_MODES), SEL('block', 'Encryption', KCP_BLOCKS),
+    T('forward_ports', 'TCP ports to forward (CSV)', {full: true, ph: '443,8080'}), T('forward_udp_ports', 'UDP ports to forward (CSV)', {full: true}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
@@ -6635,11 +6094,7 @@ const randPort = () => 20000 + Math.floor(Math.random() * 40000);
 function genInto(id) { $(id).value = randHex(16); }
 
 function openNew(mode) { openSlot(null, mode || 'manual'); }
-function openSlotByName(prof, nid) {
-  const node = S.nodes.find(n => n.id === (nid || S.sel));
-  const tun = (node?.tunnels || []).find(x => x.prof === prof) || null;
-  openSlot(tun, 'manual', nid || S.sel);
-}
+function openSlotByName(prof, nid) { const node = S.nodes.find(n => n.id === (nid || S.sel)); openSlot((node?.tunnels || []).find(x => x.prof === prof) || null, 'manual', nid || S.sel); }
 function setRole(role) { $('roleSelect').value = role === 'iran' ? 'iran' : 'eu'; paintSide(); }
 function profileSideRows(nodes, prof, method, linkId) {
   if (!prof || !method) return [];
@@ -6671,113 +6126,27 @@ function onSideChange() {
   const row = profileSideRows(S.nodes, CURRENT.prof, CURRENT.method || '', CURRENT.link_id).find(x => x.node.id === nid);
   if (row) openSlot(row.tunnel, 'manual', nid);
 }
-async function switchModalSideTab(targetRole) {
-  if (!CURRENT || !CURRENT.linked || CURRENT.activeSide === targetRole) return;
-  // 1. Cache current active side fields
-  CURRENT.sidesCache = CURRENT.sidesCache || {};
-  CURRENT.sidesCache[CURRENT.activeSide] = collectFields();
-  CURRENT.activeSide = targetRole;
-
-  $('btnSideEu').className = 'btn sm ' + (targetRole === 'eu' ? 'primary' : 'ghost');
-  $('btnSideIran').className = 'btn sm ' + (targetRole === 'iran' ? 'primary' : 'ghost');
-
-  const targetNid = targetRole === 'eu' ? CURRENT.euNodeId : CURRENT.iranNodeId;
-  if (targetNid) {
-    CURRENT.nid = targetNid;
-  }
-  setRole(targetRole);
-  renderFields();
-
-  if (CURRENT.sidesCache[targetRole]) {
-    fillFields(CURRENT.sidesCache[targetRole]);
-  } else if (targetNid && CURRENT.prof) {
-    try {
-      const d = await nodeApi(targetNid, '/slots/' + encodeURIComponent(CURRENT.prof));
-      if (d && d.fields) {
-        CURRENT.sidesCache[targetRole] = d.fields;
-        fillFields(d.fields);
-      }
-    } catch(e) {}
-  }
-  updateLinkedProfileUI();
-}
 function openSlot(existing, mode, nodeId) {
   const targetNode = existing ? (nodeId || existing.node_id || S.sel) : S.sel;
   const linkCard = existing ? linkedCardForTunnel(existing,targetNode) : null;
   const linkInfo = linkCard || existing || {};
-  const isLinked = !!(existing && (linkInfo.linked || (existing.method === 'neotunnel' && (existing.nt_mode === 'linked' || (existing.nt_role === 'managed' && existing.owner_node)))));
-  
-  CURRENT = {
-    prof: existing ? existing.prof : '',
-    isNew: !existing,
-    mode: existing ? 'manual' : (mode || 'manual'),
-    nid: targetNode,
-    method: existing ? existing.method : '',
-    linked: isLinked,
-    link_id: existing ? (linkInfo.link_id || (existing.method === 'neotunnel' && existing.nt_mode === 'linked' ? 'linked:' + (existing.owner_node || '') + ':' + (existing.tunnel_name || existing.prof) : '')) : '',
-    link_owner_node: existing ? (linkInfo.link_owner_node || linkInfo.owner_node || existing.link_owner_node || existing.owner_node || '') : '',
-    link_peer_node: existing ? (linkInfo.link_peer_node || existing.link_peer_node || '') : '',
-    activeSide: 'eu',
-    sidesCache: {},
-    euNodeId: '',
-    iranNodeId: ''
-  };
-
-  // Identify Kharej (eu) node and Iran (iran) node for linked tunnel
-  if (isLinked) {
-    const rows = profileSideRows(S.nodes, existing.prof, existing.method, CURRENT.link_id);
-    const euRow = rows.find(r => r.tunnel?.role === 'eu' || r.node?.role === 'eu');
-    const iranRow = rows.find(r => r.tunnel?.role === 'iran' || r.node?.role === 'iran');
-    CURRENT.euNodeId = euRow ? euRow.node.id : (linkInfo.kharej_node_id || (targetNode && S.nodes.find(n=>n.id===targetNode)?.role==='eu' ? targetNode : ''));
-    CURRENT.iranNodeId = iranRow ? iranRow.node.id : (linkInfo.iran_node_id || (targetNode && S.nodes.find(n=>n.id===targetNode)?.role==='iran' ? targetNode : ''));
-    if (!CURRENT.euNodeId && CURRENT.iranNodeId) {
-      const other = S.nodes.find(n => n.id !== CURRENT.iranNodeId && n.role === 'eu');
-      if (other) CURRENT.euNodeId = other.id;
-    }
-    // Default open to Kharej side!
-    if (CURRENT.euNodeId) {
-      CURRENT.nid = CURRENT.euNodeId;
-      CURRENT.activeSide = 'eu';
-    }
-  }
-
+  CURRENT = {prof: existing ? existing.prof : '', isNew: !existing, mode: existing ? 'manual' : (mode || 'manual'), nid: targetNode, method: existing ? existing.method : '', linked: !!(existing && (linkInfo.linked || (existing.method === 'neotunnel' && (existing.nt_mode === 'linked' || (existing.nt_role === 'managed' && existing.owner_node))))), link_id: existing ? (linkInfo.link_id || (existing.method === 'neotunnel' && existing.nt_mode === 'linked' ? 'linked:' + (existing.owner_node || '') + ':' + (existing.tunnel_name || existing.prof) : '')) : '', link_owner_node: existing ? (linkInfo.link_owner_node || linkInfo.owner_node || existing.link_owner_node || existing.owner_node || '') : '', link_peer_node: existing ? (linkInfo.link_peer_node || existing.link_peer_node || '') : ''};
   $('mTitle').textContent = existing ? existing.prof : t('newTunnel');
   $('modeSeg').classList.toggle('hidden', !!existing);
   paintStatus(existing ? !!existing.running : false, !!existing);
   setMsg('', ''); $('lkSteps').innerHTML = ''; mTab('config');
   const nm = $('nameInput'); nm.value = existing ? existing.prof : ''; nm.disabled = !!existing;
   selectProtocol(existing ? existing.method : 'assecure', existing ? 'wireguard' : '');
-  setRole(isLinked ? 'eu' : (existing ? existing.role : ((S.nodes.find(n => n.id === targetNode) || {}).role || 'eu')));
+  setRole(existing ? existing.role : ((S.nodes.find(n => n.id === targetNode) || {}).role || 'eu'));
   $('rcToggle').checked = false; $('rcHours').value = '';
   setMode(CURRENT.mode);
-
-  // Update Side Switcher buttons
-  const wrap = $('sideSwitchWrap');
-  if (wrap) {
-    wrap.classList.toggle('hidden', !isLinked);
-    if (isLinked) {
-      $('btnSideEu').className = 'btn sm ' + (CURRENT.activeSide === 'eu' ? 'primary' : 'ghost');
-      $('btnSideIran').className = 'btn sm ' + (CURRENT.activeSide === 'iran' ? 'primary' : 'ghost');
-    }
-  }
-  const saveBothBtn = $('saveBothBtn');
-  if (saveBothBtn) {
-    saveBothBtn.style.display = isLinked ? 'inline-flex' : 'none';
-  }
-
   updateLinkedProfileUI();
-  const target = CURRENT.nid;
+  const target = targetNode;
   if (existing) {
     nodeApi(target, '/slots/' + encodeURIComponent(existing.prof)).then(d => {
       if (!CURRENT || CURRENT.nid !== target || CURRENT.prof !== existing.prof) return;
       CURRENT.method = d.method || CURRENT.method;
-      if (d.fields) {
-        CURRENT.linked = CURRENT.linked || (d.fields.LINK_MODE === 'paired' && d.fields.LINK_ID) || (d.method === 'neotunnel' && (d.fields.NT_MODE === 'linked' || (d.fields.NT_ROLE === 'managed' && d.fields.NT_OWNER_NODE)));
-        CURRENT.link_id = d.fields.LINK_ID || CURRENT.link_id;
-        CURRENT.link_owner_node = d.fields.LINK_OWNER_NODE || d.fields.NT_OWNER_NODE || CURRENT.link_owner_node;
-        CURRENT.link_peer_node = d.fields.LINK_PEER_NODE || CURRENT.link_peer_node;
-        CURRENT.sidesCache[CURRENT.activeSide] = d.fields;
-      }
+      if (d.fields) { CURRENT.linked = CURRENT.linked || (d.fields.LINK_MODE === 'paired' && d.fields.LINK_ID) || (d.method === 'neotunnel' && (d.fields.NT_MODE === 'linked' || (d.fields.NT_ROLE === 'managed' && d.fields.NT_OWNER_NODE))); CURRENT.link_id = d.fields.LINK_ID || CURRENT.link_id; CURRENT.link_owner_node = d.fields.LINK_OWNER_NODE || d.fields.NT_OWNER_NODE || CURRENT.link_owner_node; CURRENT.link_peer_node = d.fields.LINK_PEER_NODE || CURRENT.link_peer_node; }
       if (d.role) { setRole(d.role); if (d.method === 'neotunnel' && d.fields?.NT_KIND) selectProtocol('neotunnel', d.fields.NT_KIND); renderFields(); }
       if (d.fields) fillFields(d.fields);
       updateLinkedProfileUI();
@@ -6896,24 +6265,18 @@ function setMsg(text, kind) { const el = $('mMsg'); el.textContent = text || '';
 function updateLinkedProfileUI() {
   const linked = !!(CURRENT && CURRENT.linked);
   const hint = $('linkedHint');
-  hint.textContent = linked ? ('🔗 ' + (CURRENT.activeSide === 'eu' ? '🌍 ویرایش ساید خارج (Server)' : '🇮🇷 ویرایش ساید ایران (Client)')) : '';
+  hint.textContent = linked ? t('linkedReadOnly') : '';
   hint.classList.toggle('hidden', !linked);
   $('methodSelect').disabled = linked;
   $('protocolSearch').disabled = linked;
-  // Allow editing all fields for both sides!
-  $('fieldsBox').querySelectorAll('input,select,textarea').forEach(el => { el.disabled = false; });
-  $('saveBtn').disabled = false;
-  const saveBothBtn = $('saveBothBtn');
-  if (saveBothBtn) saveBothBtn.style.display = linked ? 'inline-flex' : 'none';
+  $('fieldsBox').querySelectorAll('input,select,textarea').forEach(el => { el.disabled = linked; });
+  $('saveBtn').disabled = linked;
 }
 function setBusy(on, label) {
-  ['saveBtn', 'saveBothBtn', 'startBtn', 'stopBtn', 'restartBtn'].forEach(id => {
-    const el = $(id);
-    if (el) el.disabled = on;
-  });
-  const sb = $('saveBtn'), sp = sb ? sb.querySelector('span') : null;
-  if (on && label && sp) { sb.dataset.l = sp.textContent; sp.textContent = '⏳ ' + label; }
-  if (!on && sb && sb.dataset.l && sp) { sp.textContent = sb.dataset.l; delete sb.dataset.l; }
+  ['saveBtn', 'startBtn', 'stopBtn', 'restartBtn'].forEach(id => { $(id).disabled = on || (id === 'saveBtn' && !!(CURRENT && CURRENT.linked)); });
+  const sb = $('saveBtn'), sp = sb.querySelector('span');
+  if (on && label) { sb.dataset.l = sp.textContent; sp.textContent = '⏳ ' + label; }
+  if (!on && sb.dataset.l) { sp.textContent = sb.dataset.l; delete sb.dataset.l; }
 }
 function paintStatus(running, known) { $('mSub').textContent = known === false ? t('newTunnel') : (running ? '🟢 ' + t('running') : '🔴 ' + t('stopped')); }
 async function refreshSlotState() {
@@ -6923,6 +6286,7 @@ async function refreshSlotState() {
   if (d && !d.error) { paintStatus(!!d.running); return d; } return null;
 }
 async function saveSlot() {
+  if (CURRENT && CURRENT.linked) { setMsg(t('linkedReadOnly'), 'err'); return; }
   const method = selectedMethod(), role = $('roleSelect').value, fields = collectFields();
   if (CURRENT.isNew) {
     const nm = cleanName($('nameInput').value);
@@ -6939,96 +6303,8 @@ async function saveSlot() {
     if (res.ok) { setMsg(t('savedRunning') + '  (' + tm + ')', 'ok'); toast(t('savedOk'), 'ok'); }
     else if (res.saved) { setMsg(t('savedNotRunning') + '\n' + errText(res), 'err'); toast(t('savedNotRunning'), 'err'); }
     else { setMsg(t('saveFailed') + '\n' + errText(res), 'err'); toast(t('saveFailed'), 'err'); }
-    if (CURRENT && CURRENT.linked) await reloadTunnels();
   } catch (e) { if (e.message !== 'unauthorized') setMsg('✖ ' + e.message, 'err'); }
   finally { setBusy(false); }
-}
-async function saveBothSides() {
-  if (!CURRENT || !CURRENT.linked || !CURRENT.euNodeId || !CURRENT.iranNodeId) return saveSlot();
-  CURRENT.sidesCache = CURRENT.sidesCache || {};
-  CURRENT.sidesCache[CURRENT.activeSide] = collectFields();
-  const euFields = CURRENT.sidesCache['eu'] || {};
-  const iranFields = CURRENT.sidesCache['iran'] || {};
-
-  setBusy(true, t('saveStart')); setMsg('Saving both sides…', '');
-  try {
-    const p1 = nodeApi(CURRENT.euNodeId, '/slots/' + encodeURIComponent(CURRENT.prof), {
-      method: 'POST', body: {method: CURRENT.method, role: 'eu', fields: euFields}
-    });
-    const p2 = nodeApi(CURRENT.iranNodeId, '/slots/' + encodeURIComponent(CURRENT.prof), {
-      method: 'POST', body: {method: CURRENT.method, role: 'iran', fields: iranFields}
-    });
-    const [r1, r2] = await Promise.all([p1, p2]);
-    if (r1.ok && r2.ok) {
-      toast('✔ هر دو ساید خارج و ایران با موفقیت ذخیره شدند', 'ok');
-      setMsg(t('savedRunning'), 'ok');
-      await reloadTunnels();
-      setTimeout(closeModal, 800);
-    } else {
-      toast('Error: ' + errText(r1.ok ? r2 : r1), 'err');
-      setMsg('Error saving sides', 'err');
-    }
-  } catch(e) {
-    toast(String(e), 'err');
-  } finally {
-    setBusy(false);
-  }
-}
-async function exportMasterDB() {
-  toast('…');
-  try {
-    const r = await api('/api/master/db/export');
-    if (r.ok && r.database) {
-      const blob = new Blob([JSON.stringify(r.database, null, 2)], {type: 'application/json'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = 'as_master_backup_' + new Date().toISOString().slice(0,10) + '.json';
-      a.click();
-      URL.revokeObjectURL(url);
-      toast('✔ پشتیبان دیتابیس دانلود شد', 'ok');
-    } else {
-      toast(errText(r), 'err');
-    }
-  } catch(e) {
-    toast(String(e), 'err');
-  }
-}
-async function importMasterDB(e) {
-  const file = e.target.files && e.target.files[0];
-  if (!file) return;
-  toast('…');
-  try {
-    const text = await file.text();
-    const data = JSON.parse(text);
-    const r = await api('/api/master/db/import', {method: 'POST', body: {database: data}});
-    if (r.ok) {
-      toast('✔ دیتابیس با موفقیت بازیابی شد', 'ok');
-      await refreshAll(true);
-    } else {
-      toast(errText(r), 'err');
-    }
-  } catch(err) {
-    toast('Invalid DB file: ' + String(err.message || err), 'err');
-  } finally {
-    e.target.value = '';
-  }
-}
-async function promptResetDB() {
-  const delRemote = confirm('آیا می‌خواهید تمام تانل‌های فعال روی نودها/سرورها نیز به طور خودکار حذف شوند؟\n\n[OK = بله، تانل‌های سرورها نیز متوقف و حذف شوند]\n[Cancel = خیر، تانل‌های سرورها فعال بمانند]');
-  if (!confirm('آیا کاملاً از ریست دیتابیس پنل مستر مطمئن هستید؟')) return;
-  toast('…');
-  try {
-    const r = await api('/api/master/db/reset', {method: 'POST', body: {delete_remote_tunnels: delRemote}});
-    if (r.ok) {
-      toast('✔ دیتابیس مستر با موفقیت ریست شد', 'ok');
-      await refreshAll(true);
-    } else {
-      toast(errText(r), 'err');
-    }
-  } catch(e) {
-    toast(String(e), 'err');
-  }
 }
 async function doAction(action) {
   if (!CURRENT || !CURRENT.prof) return;
@@ -7476,30 +6752,9 @@ disable_webpanel(){
 }
 
 uninstall_webpanel(){
-  local c del_remote
+  local c d
   read -r -p "Remove the master panel completely (service, files, credentials, node list)? (y/n): " c < /dev/tty
   [[ "${c,,}" == "y" ]] || { echo "Cancelled." > "$TTY_OUT"; return 0; }
-  
-  echo -e "${CLR_YELLOW}${CLR_BOLD}[?] Do you want to automatically stop and remove all active tunnels on remote nodes as well?${CLR_RESET}" > "$TTY_OUT"
-  read -r -p "Delete tunnels on remote servers? (y/N): " del_remote < /dev/tty
-  if [[ "${del_remote,,}" == "y" ]]; then
-    echo -e "${CLR_CYAN}[*] Sending delete commands to remote nodes...${CLR_RESET}" > "$TTY_OUT"
-    python3 -c "
-import os, sys
-sys.path.insert(0, '$WEBPANEL_DIR')
-try:
-    import app
-    app.load_registry()
-    for nid in list(app.NODES.keys()):
-        tuns = app.run_on_node(nid, 'list', timeout=10)
-        if isinstance(tuns, list):
-            for t in tuns:
-                p = t.get('prof')
-                if p: app.run_on_node(nid, 'delete', {'prof': p}, timeout=15)
-except Exception: pass
-" 2>/dev/null || true
-  fi
-
   systemctl stop "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   systemctl disable "$WEBPANEL_UNIT" >/dev/null 2>&1 || true
   rm -f "$WEBPANEL_SERVICE" "/etc/systemd/system/A,S-webpanel.service" 2>/dev/null || true
@@ -7509,6 +6764,8 @@ except Exception: pass
   if [[ ! -f "$AGENT_SERVICE" ]]; then rm -rf "$WEBPANEL_DIR" 2>/dev/null || true; fi
   echo "[+] Master panel removed." > "$TTY_OUT"
 }
+
+# ----------------------------- node agent -----------------------------
 normalize_role(){
   case "${1,,}" in eu|abroad|server|kharej|foreign) echo "eu" ;; *) echo "iran" ;; esac
 }
@@ -7559,40 +6816,28 @@ connect_master(){
 }
 
 agent_status(){
-  if [[ ! -f "$AGENT_CFG" ]] && [[ ! -d "$BASE/agents" ]]; then echo "[i] This server is not connected to any master." > "$TTY_OUT"; return 0; fi
+  if [[ ! -f "$AGENT_CFG" ]]; then echo "[i] This server is not connected to a master." > "$TTY_OUT"; return 0; fi
   local active
   active="inactive"; if systemctl is-active --quiet "$AGENT_UNIT" 2>/dev/null; then active="active"; fi
   echo -e "Agent service: ${active}" > "$TTY_OUT"
   python3 "$WEBPANEL_DIR/agent.py" status 2>/dev/null > "$TTY_OUT" || true
-  echo "" > "$TTY_OUT"
-  echo "Connected masters list:" > "$TTY_OUT"
-  python3 "$WEBPANEL_DIR/agent.py" list 2>/dev/null > "$TTY_OUT" || true
   journalctl -u "$AGENT_UNIT" -n 5 --no-pager 2>/dev/null > "$TTY_OUT" || true
 }
 
 disconnect_agent(){
-  local choice
-  if [[ ! -d "$BASE/agents" ]] && [[ ! -f "$AGENT_CFG" ]]; then
-    echo "This server is not connected to any master." > "$TTY_OUT"; return 0
-  fi
-  echo "" > "$TTY_OUT"
-  echo -e "${CLR_CYAN}${CLR_BOLD}━━ Disconnect from master ━━${CLR_RESET}" > "$TTY_OUT"
-  python3 "$WEBPANEL_DIR/agent.py" list 2>/dev/null > "$TTY_OUT" || true
-  read -r -p "Enter Node ID to disconnect (or 'all' to disconnect all): " choice < /dev/tty
-  [[ -n "$choice" ]] || { echo "Cancelled." > "$TTY_OUT"; return 0; }
-  if [[ "${choice,,}" == "all" ]]; then
-    systemctl stop "$AGENT_UNIT" >/dev/null 2>&1 || true
-    systemctl disable "$AGENT_UNIT" >/dev/null 2>&1 || true
-    rm -rf "$AGENT_SERVICE" "$AGENT_CFG" "$BASE/agents" 2>/dev/null || true
-    systemctl daemon-reload >/dev/null 2>&1 || true
-    if [[ ! -f "$WEBPANEL_SERVICE" ]]; then rm -rf "$WEBPANEL_DIR" 2>/dev/null || true; fi
-    echo "[+] All master connections disconnected." > "$TTY_OUT"
-  else
-    python3 "$WEBPANEL_DIR/agent.py" unregister --id "$choice" > "$TTY_OUT" || true
-    systemctl restart "$AGENT_UNIT" >/dev/null 2>&1 || true
-    echo "[+] Disconnected node $choice." > "$TTY_OUT"
-  fi
+  local c
+  read -r -p "Disconnect this server from its master? (y/n): " c < /dev/tty
+  [[ "${c,,}" == "y" ]] || { echo "Cancelled." > "$TTY_OUT"; return 0; }
+  systemctl stop "$AGENT_UNIT" >/dev/null 2>&1 || true
+  systemctl disable "$AGENT_UNIT" >/dev/null 2>&1 || true
+  rm -f "$AGENT_SERVICE" "$AGENT_CFG" "$WEBPANEL_DIR/agent.py" 2>/dev/null || true
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  if [[ ! -f "$WEBPANEL_SERVICE" ]]; then rm -rf "$WEBPANEL_DIR" 2>/dev/null || true; fi
+  echo "[+] Disconnected. (Remove the node in the master panel to forget it there.)" > "$TTY_OUT"
 }
+
+# Rewrites the panel/agent files from THIS script and restarts the services, so an
+# updated script always updates the dashboard and every agent that runs from it.
 refresh_services(){
   local did
   did=0
@@ -7830,7 +7075,7 @@ api_list(){
         NT_ROLE) nt_role="$v" ;; NT_MODE) nt_mode="$v" ;;
         NT_OWNER_NODE) nt_owner="$v" ;;
         LINK_MODE) link_mode="$v" ;; LINK_ID) link_id="$v" ;;
-        LINK_OWNER_NODE) link_owner="$v" ;; LINK_PEER_NODE) link_peer="$v" ;; LINK_SIDE NODE_ID OWNER_NODE) link_side="$v" ;;
+        LINK_OWNER_NODE) link_owner="$v" ;; LINK_PEER_NODE) link_peer="$v" ;; LINK_SIDE) link_side="$v" ;;
       esac
     done < "$f"
     running=false
@@ -7897,18 +7142,18 @@ api_save(){
 
   local allowed=""
   case "$method" in
-    asnative) allowed="IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS PROTO" ;;
+    asnative) allowed="IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS" ;;
     backhaul) allowed="BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS SERVER_IP LOCAL_ADDR" ;;
-    rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS SERVER_IP PROTO LOCAL_ADDR" ;;
-    gre)      allowed="LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP PORTS PROTO" ;;
-    frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS PROTO LOCAL_ADDR" ;;
-    assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS PROTO LOCAL_ADDR" ;;
+    rathole)  allowed="RT_ROLE TOKEN BIND_PORT FORWARD_PORTS SERVER_IP LOCAL_ADDR" ;;
+    gre)      allowed="LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP" ;;
+    frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS LOCAL_ADDR" ;;
+    assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS LOCAL_ADDR" ;;
     gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
-    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS PROTO SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOCAL_ADDR" ;;
+    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOCAL_ADDR" ;;
     neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
   esac
-  allowed="$allowed LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE NODE_ID OWNER_NODE"
+  allowed="$allowed LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE"
 
   {
     echo "METHOD=$method"
