@@ -37,7 +37,7 @@ LOG_DIR="/var/log/A,S"
 
 # Every key a profile may contain (reset before each load so one profile's
 # values can never leak into the next one).
-PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS LOCAL_ADDR SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOG_LEVEL INTERFACE TCP_FLAGS TCP_LOCAL_FLAG TCP_REMOTE_FLAG PCAP_SOCKBUF DSHARD PSHARD SMUXBUF STREAMBUF NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE NODE_ID OWNER_NODE"
+PROFILE_KEYS="METHOD ROLE IRAN_IP BRIDGE SYNC AUTO_SYNC PORTS BH_ROLE TOKEN TRANSPORT BIND_PORT FORWARD_PORTS LOCAL_ADDR SERVER_IP RT_ROLE LOCAL_IP PEER_IP SELF_TUN_IP PEER_TUN_IP FRP_ROLE AS_ROLE AS_TRANSPORT AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_SERVER_NAME AS_TCP_PORTS AS_UDP_PORTS DEST_IP PORT_MODE RANGE_START RANGE_END PROTO PQ_ROLE SECRET_KEY SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_UDP_PORTS SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO NT_REGISTER_ONLY LINK_MODE LINK_ID LINK_OWNER_NODE LINK_PEER_NODE LINK_SIDE NODE_ID OWNER_NODE"
 
 NEOTUNNEL_BIN="/usr/local/bin/neotunnel"
 NEOTUNNEL_STATE="/etc/neotunnel/state.json"
@@ -1289,7 +1289,7 @@ paqet_validate(){
     echo "[-] Paqet: secret key needs 8+ characters (letters, digits and . _ @ : + = - only)." > "$TTY_OUT"; return 1
   fi
   mode="${KCP_MODE:-fast}"
-  case "$mode" in normal|fast|fast2|fast3|manual) ;; *) echo "[-] Paqet: KCP mode must be normal, fast, fast2, fast3 or manual." > "$TTY_OUT"; return 1 ;; esac
+  case "$mode" in normal|fast|fast2|fast3) ;; *) echo "[-] Paqet: KCP mode must be normal, fast, fast2 or fast3." > "$TTY_OUT"; return 1 ;; esac
   case "${BLOCK:-aes-128-gcm}" in aes-128-gcm|aes|aes-128|aes-192|salsa20|blowfish|twofish|cast5|3des|tea|xtea|xor|sm4|none|null) ;; *) echo "[-] Paqet: unknown encryption '${BLOCK}'." > "$TTY_OUT"; return 1 ;; esac
   conn="${CONN:-4}"; mtu="${MTU:-1150}"
   if ! [[ "$conn" =~ ^[0-9]{1,3}$ ]] || (( 10#$conn < 1 || 10#$conn > 256 )); then
@@ -1309,12 +1309,8 @@ paqet_validate(){
   if [[ -z "$FORWARD_PORTS" && -z "$FORWARD_UDP_PORTS" && -z "$SOCKS5_PORT" ]]; then
     echo "[-] Paqet client: give forward ports or a SOCKS5 port." > "$TTY_OUT"; return 1
   fi
-  if [[ -n "$FORWARD_PORTS" ]]; then
-    FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] Paqet: TCP forwarding ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
-  fi
-  if [[ -n "$FORWARD_UDP_PORTS" ]]; then
-    FORWARD_UDP_PORTS="$(tunnel_normalize_ports "${FORWARD_UDP_PORTS:-}")" || { echo "[-] Paqet: UDP forwarding ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
-  fi
+  FORWARD_PORTS="$(tunnel_normalize_ports "${FORWARD_PORTS:-}")" || { echo "[-] Paqet: TCP forwarding ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
+  FORWARD_UDP_PORTS="$(tunnel_normalize_ports "${FORWARD_UDP_PORTS:-}")" || { echo "[-] Paqet: UDP forwarding ports must be unique ports from 1 to 65535." > "$TTY_OUT"; return 1; }
   for p in $(csv_ports_to_array "$FORWARD_PORTS") $(csv_ports_to_array "$FORWARD_UDP_PORTS"); do
     if ! paqet_valid_port "$p"; then echo "[-] Paqet: invalid forward port '$p'." > "$TTY_OUT"; return 1; fi
     if (( 10#$p == SERVER_PORT )); then
@@ -1389,7 +1385,7 @@ install_paqet(){
 }
 
 write_paqet_config(){
-  local prof cfg mode conn mtu block mac p local_target iface log_lvl sockbuf dshard pshard flags_str
+  local prof cfg mode conn mtu block mac p local_target
   prof="$1"
   cfg="$CONF/${prof}.yaml"
   load_profile "$prof"
@@ -1397,52 +1393,30 @@ write_paqet_config(){
   paqet_net_info
   mode="${KCP_MODE:-fast}"; conn="${CONN:-4}"; mtu="${MTU:-1150}"; block="${BLOCK:-aes-128-gcm}"
   mac="${ROUTER_MAC:-$NET_GW_MAC}"
-  iface="${INTERFACE:-$NET_IFACE}"
-  log_lvl="${LOG_LEVEL:-info}"
-  sockbuf="${PCAP_SOCKBUF:-4194304}"
-  dshard="${DSHARD:-}"
-  pshard="${PSHARD:-}"
   if [[ -z "$mac" || -z "$NET_LOCAL_IP" ]]; then
-    echo "[-] Paqet: could not detect the local IP / router MAC (interface ${iface}). Set the router MAC in the profile." > "$TTY_OUT"
+    echo "[-] Paqet: could not detect the local IP / router MAC (interface ${NET_IFACE}). Set the router MAC in the profile." > "$TTY_OUT"
     return 1
   fi
-
-  # Format TCP flags
-  local flags_raw="${TCP_FLAGS:-PA}"
-  local clean_flags="${flags_raw//["'\[\] ]/}"
-  local -a flags_arr=()
-  local f_item
-  IFS=',' read -ra f_list <<< "$clean_flags"
-  for f_item in "${f_list[@]}"; do
-    [[ -n "$f_item" ]] && flags_arr+=(""$f_item"")
-  done
-  [[ ${#flags_arr[@]} -eq 0 ]] && flags_arr=(""PA"")
-  flags_str="[$(IFS=, ; echo "${flags_arr[*]}")]"
-
   {
     if [[ "$PQ_ROLE" == "server" ]]; then
       echo "# Paqet server — generated by A,S Tunnel"
       echo "role: \"server\""
       echo "log:"
-      echo "  level: \"${log_lvl}\""
+      echo "  level: \"info\""
       echo "listen:"
       echo "  addr: \":${SERVER_PORT}\""
       echo "network:"
-      echo "  interface: \"${iface}\""
+      echo "  interface: \"${NET_IFACE}\""
       echo "  ipv4:"
       echo "    addr: \"${NET_LOCAL_IP}:${SERVER_PORT}\""
       echo "    router_mac: \"${mac}\""
       echo "  tcp:"
-      echo "    local_flag: ${flags_str}"
-      if [[ -n "$sockbuf" ]]; then
-        echo "pcap:"
-        echo "  sockbuf: ${sockbuf}"
-      fi
+      echo "    local_flag: [\"PA\"]"
     else
       echo "# Paqet client — generated by A,S Tunnel"
       echo "role: \"client\""
       echo "log:"
-      echo "  level: \"${log_lvl}\""
+      echo "  level: \"info\""
       if [[ -n "$FORWARD_PORTS$FORWARD_UDP_PORTS" ]]; then
         echo "forward:"
         for p in $(csv_ports_to_array "$FORWARD_PORTS"); do
@@ -1467,17 +1441,13 @@ write_paqet_config(){
         fi
       fi
       echo "network:"
-      echo "  interface: \"${iface}\""
+      echo "  interface: \"${NET_IFACE}\""
       echo "  ipv4:"
       echo "    addr: \"${NET_LOCAL_IP}:0\""
       echo "    router_mac: \"${mac}\""
       echo "  tcp:"
-      echo "    local_flag: ${flags_str}"
-      echo "    remote_flag: ${flags_str}"
-      if [[ -n "$sockbuf" ]]; then
-        echo "pcap:"
-        echo "  sockbuf: ${sockbuf}"
-      fi
+      echo "    local_flag: [\"PA\"]"
+      echo "    remote_flag: [\"PA\"]"
       echo "server:"
       echo "  addr: \"${SERVER_IP}:${SERVER_PORT}\""
     fi
@@ -1489,16 +1459,6 @@ write_paqet_config(){
     echo "    mode: \"${mode}\""
     echo "    block: \"${block}\""
     echo "    mtu: ${mtu}"
-    if [[ -n "$dshard" && "$dshard" != "0" && -n "$pshard" && "$pshard" != "0" ]]; then
-      echo "    dshard: ${dshard}"
-      echo "    pshard: ${pshard}"
-    fi
-    if [[ -n "$SMUXBUF" ]]; then
-      echo "    smuxbuf: ${SMUXBUF}"
-    fi
-    if [[ -n "$STREAMBUF" ]]; then
-      echo "    streambuf: ${STREAMBUF}"
-    fi
   } > "$cfg"
   chmod 600 "$cfg" 2>/dev/null || true
 }
@@ -3890,9 +3850,6 @@ def n_slot_save(nid, prof):
     if isinstance(body, dict):
         body.setdefault("NODE_ID", nid)
         body.setdefault("OWNER_NODE", nid)
-        fields = body.get("fields")
-        if isinstance(fields, dict) and not fields.get("LOCAL_ADDR"):
-            fields["LOCAL_ADDR"] = "auto"
     return respond(run_on_node(nid, "save", {"prof": prof, "body": body}, timeout=330))
 
 
@@ -4343,37 +4300,17 @@ def build_link(method, p, sip, cip, link_name="tunnel"):
             valid_server_ip = False
         if not valid_server_ip:
             raise ValueError("paqet_requires_ipv4")
-        socks5_port = str(p.get("socks5_port") or "").strip()
-        if not fwd and not socks5_port:
+        if not fwd:
             raise ValueError("ports_required")
         tcp = fwd if proto in ("tcp", "both") else ""
         udp = fwd if proto in ("udp", "both") else ""
-        kcp_mode = str(p.get("kcp_mode") or "fast").strip()
-        if kcp_mode not in KCP_MODES:
-            kcp_mode = "fast"
-        block = str(p.get("block") or "aes-128-gcm").strip()
-        if block not in KCP_BLOCKS:
-            block = "aes-128-gcm"
-        conn = _port(p.get("conn"), default=4, lo=1, hi=256)
-        mtu = _port(p.get("mtu"), default=1150, lo=50, hi=1500)
-        tcp_flags = str(p.get("tcp_flags") or "PA").strip()
-        sockbuf = str(p.get("pcap_sockbuf") or "4194304").strip()
-        dshard = str(p.get("dshard") or "10").strip()
-        pshard = str(p.get("pshard") or "3").strip()
-
-        common = {
-            "SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": kcp_mode, "BLOCK": block,
-            "CONN": conn, "MTU": mtu, "LOCAL_ADDR": local_addr or "auto", "PROTO": proto,
-            "TCP_FLAGS": tcp_flags, "PCAP_SOCKBUF": sockbuf,
-            "DSHARD": dshard, "PSHARD": pshard
-        }
+        common = {"SERVER_PORT": port, "SECRET_KEY": key, "KCP_MODE": "fast", "BLOCK": "aes-128-gcm",
+                  "CONN": 4, "MTU": 1150, "LOCAL_ADDR": local_addr, "PROTO": proto}
         client = dict(common, PQ_ROLE="client", SERVER_IP=sip)
         if tcp:
             client["FORWARD_PORTS"] = tcp
         if udp:
             client["FORWARD_UDP_PORTS"] = udp
-        if socks5_port:
-            client["SOCKS5_PORT"] = socks5_port
         return (dict(common, PQ_ROLE="server"), client)
 
     raise ValueError("bad_method")
@@ -5835,8 +5772,6 @@ en:{
  dbTitle:'Master Database & Backup', dbDesc:'Lightweight SQLite database holding all fleet state, nodes, and linked tunnels. Easily transfer to another server.',
   dbExport:'Export Database Backup', dbImport:'Import / Restore Database', dbReset:'Reset Master DB',
   sideEu:'Kharej (Abroad)', sideIran:'Iran', filterAllStatus:'All Status', saveBoth:'Save Both Sides',
-  advSettingsShow:'⚙ Advanced Tunnel Settings & Tuning ▾', advSettingsHide:'⚙ Hide Advanced Settings ▴',
-  advPaqetNote:'Advanced packet options for censorship circumvention (default values recommended for standard setups):',
   tunTitle:'Tunnels Manager', tunAllNodes:'All nodes', linkedPair:'Linked pair', addTunnel:'Add tunnel', tunDesc:'All connected nodes. Linked node tunnels appear once; manual profiles remain per node. Search, filter by status, or open a card to configure it.', noTunnels:'No tunnels yet — add one.',
  tunTotal:'Total tunnels', tunRunningCount:'Running', tunStoppedCount:'Stopped', tunKinds:'Protocol types', tunSearch:'Search tunnels…', filterAll:'All', filterRunning:'Running', filterStopped:'Stopped', noTunnelMatches:'No tunnels match this search.', openTunnel:'Open settings', deletePair:'Delete pair', deletePairConfirm:'Delete linked tunnel “{n}” from both nodes?', linkedReadOnly:'Linked tunnel settings are managed together. This view is read-only; delete and recreate the pair to change its parameters.', e_neotunnel_forward_port_conflict:'Port {port} is already forwarded by tunnel {tunnel}. Choose another forwarded port or remove that existing mapping.',
  mCfg:'Config', mLog:'Live log', tName:'Tunnel name', protocol:'Protocol', protocolSearchHint:'Search protocols…', saveStart:'Save & Start', start:'Start', stop:'Stop', restart:'Restart', delete:'Delete',
@@ -5896,8 +5831,6 @@ fa:{
  dbTitle:'دیتابیس سبک و پشتیبان‌گیری', dbDesc:'دیتابیس سبک و فوق‌سریع SQLite شامل لیست نودها، تانل‌ها و تنظیمات. قابل انتقال به هر سرور دیگر.',
   dbExport:'دانلود پشتیبان دیتابیس', dbImport:'بازیابی / ایمپورت دیتابیس', dbReset:'ریست دیتابیس مستر',
   sideEu:'خارج', sideIran:'ایران', filterAllStatus:'همه وضعیت‌ها', saveBoth:'ذخیره هر دو ساید',
-  advSettingsShow:'⚙ تنظیمات پیشرفته و بهینه‌سازی (KCP، فلگ‌ها، FEC و...) ▾', advSettingsHide:'⚙ بستن تنظیمات پیشرفته ▴',
-  advPaqetNote:'تنظیمات تخصصی پکت جهت دور زدن فیلترینگ شدید و کاهش پکت‌لاس (در صورت عدم نیاز روی پیش‌فرض بگذارید):',
   tunTitle:'مدیریت تانل‌ها', tunAllNodes:'همهٔ نودها', linkedPair:'جفت‌شده', addTunnel:'افزودن تانل', tunDesc:'تانل‌های همهٔ نودهای وصل‌شده اینجا هستند؛ تانل‌های جفت‌شده یک‌بار و پروفایل‌های دستی جداگانه برای هر نود نمایش داده می‌شوند.', noTunnels:'هنوز تانلی نیست — یکی اضافه کنید.',
  tunTotal:'مجموع تانل‌ها', tunRunningCount:'در حال اجرا', tunStoppedCount:'متوقف', tunKinds:'نوع پروتکل', tunSearch:'جست‌وجوی تانل…', filterAll:'همه', filterRunning:'روشن', filterStopped:'خاموش', noTunnelMatches:'تانلی با این جست‌وجو پیدا نشد.', openTunnel:'باز کردن تنظیمات', deletePair:'حذف جفت', deletePairConfirm:'تانل جفت‌شدهٔ «{n}» از هر دو نود حذف شود؟', linkedReadOnly:'تنظیمات تانل جفت‌شده با هم مدیریت می‌شوند. این بخش فقط‌خواندنی است؛ برای تغییر پارامترها، جفت تانل را حذف و دوباره ایجاد کنید.', e_neotunnel_forward_port_conflict:'پورت {port} از قبل توسط تانل {tunnel} فوروارد شده است. پورت دیگری انتخاب کنید یا فوروارد قبلی را حذف کنید.',
  mCfg:'تنظیمات', mLog:'لاگ زنده', tName:'نام تانل', protocol:'پروتکل', protocolSearchHint:'جست‌وجوی پروتکل…', saveStart:'ذخیره و اجرا', start:'شروع', stop:'توقف', restart:'ریستارت', delete:'حذف',
@@ -6557,9 +6490,7 @@ const ROLE_KEYS = ['BH_ROLE', 'RT_ROLE', 'FRP_ROLE', 'PQ_ROLE', 'AS_ROLE'];
 const ROLE_KEY_OF = {backhaul: 'BH_ROLE', rathole: 'RT_ROLE', frp: 'FRP_ROLE', paqet: 'PQ_ROLE', assecure: 'AS_ROLE'};
 const T = (k, l, o = {}) => Object.assign({k, l, t: 'text'}, o);
 const SEL = (k, l, opts, o = {}) => Object.assign({k, l, t: 'select', opts}, o);
-const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3', 'manual'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'salsa20', 'blowfish', 'twofish', 'cast5', '3des', 'tea', 'xtea', 'xor', 'sm4', 'none', 'null'];
-const PAQET_TCP_FLAGS = ['PA', 'SA', 'A', 'FA', 'FPA', 'RA'];
-const PAQET_LOG_LEVELS = ['info', 'warn', 'error', 'debug', 'none'];
+const KCP_MODES = ['fast', 'normal', 'fast2', 'fast3'], KCP_BLOCKS = ['aes-128-gcm', 'aes', 'aes-128', 'aes-192', 'salsa20', 'blowfish', 'twofish', 'cast5', '3des', 'tea', 'xtea', 'xor', 'sm4', 'none', 'null'];
 const NEOTUNNEL_KINDS = ['sit','ipip','gre','gretap','ip6gre','ip6gretap','ipip6','ip6ip6','vxlan','geneve','l2tpv3','wireguard','obfs','tcp','eoip','stream-tcp','stream-tls'];
 const NT_ENCRYPT = ['none','aes-gcm-128','aes-gcm-256','chacha20-poly1305','auto'];
 const NT_PORT_KINDS = new Set(['sit','ipip','gre','gretap','vxlan','geneve','l2tpv3','wireguard','obfs','tcp','eoip','stream-tcp','stream-tls']);
@@ -6663,84 +6594,40 @@ const FIELDS = {
       SEL('AUTO_SYNC', 'Auto-sync ports from the abroad side', ['true', 'false']), T('PORTS', 'Manual ports CSV (when auto-sync is false)', {full: true})]},
   backhaul: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port')],
-    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})]},
+    iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), SEL('TRANSPORT', 'Transport', ['tcp', 'ws']), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Client local target host (127.0.0.1 or ::1)', {full: true, v: '127.0.0.1'})]},
   rathole: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
-      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
+      T('FORWARD_PORTS', 'Local ports to forward (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Ports to expose (CSV)', {full: true}), SEL('PROTO', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})]},
   frp: {
     eu: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('SERVER_IP', 'Iran server IP'), T('BIND_PORT', 'Server control port'),
-      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true})],
+      T('FORWARD_PORTS', 'Ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
     iran: [T('TOKEN', 'Shared token', {full: true, gen: 1}), T('BIND_PORT', 'Control port (listens)'), T('FORWARD_PORTS', 'Allowed ports (CSV)', {full: true})]},
   assecure: {
     eu: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('SERVER_IP', 'Iran server address'), T('BIND_PORT', 'Server control port'), T('AS_SERVER_NAME', 'TLS server name'),
-      T('AS_CA_B64', 'Pinned server CA certificate (base64)', {full: true}), T('AS_TCP_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('AS_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true})],
+      T('AS_CA_B64', 'Pinned server CA certificate (base64)', {full: true}), T('AS_TCP_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('AS_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}), T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
     iran: [T('TOKEN', 'Shared auth token', {full: true, gen: 1}), SEL('AS_TRANSPORT', 'Transport', ['quic', 'wss', 'tcp'], {v: 'quic'}), T('BIND_PORT', 'Control port (TCP; QUIC also uses UDP)', {ph: '24000'}),
       T('AS_TCP_PORTS', 'Allowed TCP ports (CSV)', {full: true}), T('AS_UDP_PORTS', 'Allowed UDP ports (CSV)', {full: true}), T('AS_CERT_B64', 'Server certificate (base64)', {full: true}), T('AS_KEY_B64', 'Server private key (base64)', {full: true})]},
   gre: {eu: GRE_FIELDS, iran: GRE_FIELDS},
   gost: {eu: GOST_FIELDS, iran: GOST_FIELDS},
   paqet: {
-    eu: [
-      T('SERVER_PORT', 'Tunnel port (listens)', {ph: '8888', v: '8888'}),
-      T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
-      SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast', adv: true}),
-      SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm', adv: true}),
-      T('CONN', 'Connections (1-256)', {ph: '4', v: '4', adv: true}),
-      T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150', adv: true}),
-      SEL('TCP_FLAGS', 'TCP Flags (DPI bypass)', PAQET_TCP_FLAGS, {v: 'PA', adv: true}),
-      T('INTERFACE', 'Network interface (blank = auto)', {ph: 'eth0', adv: true}),
-      T('PCAP_SOCKBUF', 'PCAP buffer bytes', {ph: '4194304', v: '4194304', adv: true}),
-      T('DSHARD', 'FEC Data shards (0 = off)', {ph: '10', v: '10', adv: true}),
-      T('PSHARD', 'FEC Parity shards (0 = off)', {ph: '3', v: '3', adv: true}),
-      SEL('LOG_LEVEL', 'Log level', PAQET_LOG_LEVELS, {v: 'info', adv: true}),
-      T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true, adv: true})
-    ],
-    iran: [
-      T('SERVER_IP', 'Abroad server IP'),
-      T('SERVER_PORT', 'Tunnel port (of the server)', {ph: '8888', v: '8888'}),
-      T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
-      T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}),
-      T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
-      SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast', adv: true}),
-      SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm', adv: true}),
-      T('CONN', 'Connections (1-256)', {ph: '4', v: '4', adv: true}),
-      T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150', adv: true}),
-      SEL('TCP_FLAGS', 'TCP Flags (DPI bypass)', PAQET_TCP_FLAGS, {v: 'PA', adv: true}),
-      T('INTERFACE', 'Network interface (blank = auto)', {ph: 'eth0', adv: true}),
-      T('PCAP_SOCKBUF', 'PCAP buffer bytes', {ph: '4194304', v: '4194304', adv: true}),
-      T('DSHARD', 'FEC Data shards (0 = off)', {ph: '10', v: '10', adv: true}),
-      T('PSHARD', 'FEC Parity shards (0 = off)', {ph: '3', v: '3', adv: true}),
-      T('SOCKS5_PORT', 'SOCKS5 proxy port (optional)', {ph: '1080', adv: true}),
-      T('SOCKS5_USER', 'SOCKS5 user', {adv: true}),
-      T('SOCKS5_PASS', 'SOCKS5 password', {adv: true}),
-      SEL('LOG_LEVEL', 'Log level', PAQET_LOG_LEVELS, {v: 'info', adv: true}),
-      T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true, adv: true})
-    ]
-  },
+    eu: [T('SERVER_PORT', 'Tunnel port (listens)', {ph: '8888', v: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}), SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}),
+      SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-256)', {ph: '4', v: '4'}), T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150'}), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})],
+    iran: [T('SERVER_IP', 'Abroad server IP'), T('SERVER_PORT', 'Tunnel port (of the server)', {ph: '8888', v: '8888'}), T('SECRET_KEY', 'Secret key', {full: true, gen: 1}),
+      SEL('KCP_MODE', 'KCP mode', KCP_MODES, {v: 'fast'}), SEL('BLOCK', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm'}), T('CONN', 'Connections (1-256)', {ph: '4', v: '4'}), T('MTU', 'MTU (50-1500)', {ph: '1150', v: '1150'}),
+      T('FORWARD_PORTS', 'TCP ports to forward (CSV)', {full: true}), T('FORWARD_UDP_PORTS', 'UDP ports to forward (CSV)', {full: true}),
+      T('LOCAL_ADDR', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'}), T('SOCKS5_PORT', 'SOCKS5 port'), T('SOCKS5_USER', 'SOCKS5 user'), T('SOCKS5_PASS', 'SOCKS5 password'), T('ROUTER_MAC', 'Router MAC (blank = auto)', {full: true})]},
 };
 /* Parameters asked when linking two panel nodes — keys/IPs are filled in automatically. */
 const LINK_PARAMS = {
   asnative: [T('bridge', 'Bridge port', {v: '7000'}), T('sync', 'Sync port', {v: '7001'}), SEL('port_mode', 'Port forwarding', ['auto', 'manual'], {v: 'auto'}), T('forward_ports', 'Ports to forward (manual mode, CSV)', {full: true, ph: '80,443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
-  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'})],
-  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
-  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
+  backhaul: [T('port', 'Control port', {rand: 1}), SEL('transport', 'Transport', ['tcp', 'ws']), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), T('local_addr', 'Client local target host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  rathole: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to expose (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  frp: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
   gre: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
   gost: [T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
-  assecure: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'})],
-  paqet: [
-    T('port', 'Tunnel port', {rand: 1}),
-    T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}),
-    SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}),
-    SEL('kcp_mode', 'KCP mode', KCP_MODES, {v: 'fast', adv: true}),
-    SEL('block', 'Encryption', KCP_BLOCKS, {v: 'aes-128-gcm', adv: true}),
-    T('conn', 'Connections (1-256)', {ph: '4', v: '4', adv: true}),
-    T('mtu', 'MTU (50-1500)', {ph: '1150', v: '1150', adv: true}),
-    SEL('tcp_flags', 'TCP Flags (DPI bypass)', PAQET_TCP_FLAGS, {v: 'PA', adv: true}),
-    T('pcap_sockbuf', 'PCAP buffer bytes', {ph: '4194304', v: '4194304', adv: true}),
-    T('dshard', 'FEC Data shards (0 = off)', {ph: '10', v: '10', adv: true}),
-    T('pshard', 'FEC Parity shards (0 = off)', {ph: '3', v: '3', adv: true}),
-    T('socks5_port', 'SOCKS5 proxy port (optional)', {ph: '1080', adv: true})
-  ],
+  assecure: [T('port', 'Control port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
+  paqet: [T('port', 'Tunnel port', {rand: 1}), T('forward_ports', 'Ports to forward (CSV)', {full: true, ph: '443,8080'}), SEL('proto', 'Forward protocol', ['tcp', 'udp', 'both'], {v: 'tcp'}), T('local_addr', 'Local service host (auto, 127.0.0.1 or ::1)', {full: true, v: 'auto'})],
 };
 const cleanName = v => (v || '').toLowerCase().replace(/[^a-z0-9_-]/g, '').slice(0, 32);
 const randHex = n => Array.from(crypto.getRandomValues(new Uint8Array(n)), b => b.toString(16).padStart(2, '0')).join('');
@@ -6915,57 +6802,16 @@ function inputHtml(f, prefix) {
   const inp = '<input class="mono" id="' + id + '" type="text" placeholder="' + esc(f.ph || '') + '">';
   return f.gen ? '<div class="row">' + inp + '<span class="icobtn" title="generate" onclick="genInto(\'' + id + '\')">↻</span></div>' : inp;
 }
-function toggleAdvSection(contId, btnId) {
-  const cont = $(contId);
-  if (!cont) return;
-  const isHidden = cont.style.display === 'none';
-  cont.style.display = isHidden ? 'block' : 'none';
-  const btn = $(btnId);
-  if (btn) {
-    const textSpan = btn.querySelector('.adv-btn-text') || btn.querySelector('span:last-child');
-    if (textSpan) {
-      textSpan.textContent = isHidden ? t('advSettingsHide') : t('advSettingsShow');
-    }
-  }
-}
 function renderFields() {
   const box = $('fieldsBox'); box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
   if (selectedMethod() === 'neotunnel' && NT_MANAGED_ONLY.has(selectedKind())) { box.innerHTML = '<div class="muted" style="padding:12px">This kind needs both nodes paired. Use Link panel nodes. / این نوع به اتصال هر دو سرور نیاز دارد؛ از «اتصال نودهای پنل» استفاده کنید.</div>'; updateLinkedProfileUI(); return; }
-  const allFields = fieldDefsFor();
-  const basicFields = allFields.filter(f => !f.adv);
-  const advFields = allFields.filter(f => !!f.adv);
-
-  basicFields.forEach(f => {
+  fieldDefsFor().forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'f_'); grid.appendChild(w);
     const el = document.getElementById('f_' + f.k);
     if (el && f.v) el.value = f.v;
     if (el && f.gen && CURRENT && CURRENT.isNew) genInto('f_' + f.k);
   });
-
-  if (advFields.length > 0) {
-    const advSection = document.createElement('div');
-    advSection.className = 'full';
-    advSection.style.marginTop = '12px';
-    advSection.innerHTML = `
-      <button type="button" class="btn" id="f_advBtn" onclick="toggleAdvSection('f_advCont', 'f_advBtn')" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:9px 14px;border:1px dashed rgba(255,255,255,0.18);border-radius:10px;background:rgba(255,255,255,0.02);cursor:pointer;font-size:13px;color:var(--text-dim);transition:all 0.2s ease">
-        <span style="font-size:14px">⚙</span> <span class="adv-btn-text">${t('advSettingsShow')}</span>
-      </button>
-      <div id="f_advCont" style="display:none;margin-top:10px;padding:14px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(0,0,0,0.22)">
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">${t('advPaqetNote')}</div>
-        <div class="fgrid" id="f_advGrid"></div>
-      </div>
-    `;
-    grid.appendChild(advSection);
-    const advGrid = advSection.querySelector('#f_advGrid');
-    advFields.forEach(f => {
-      const w = document.createElement('div'); if (f.full) w.className = 'full';
-      w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'f_'); advGrid.appendChild(w);
-      const el = document.getElementById('f_' + f.k);
-      if (el && f.v) el.value = f.v;
-      if (el && f.gen && CURRENT && CURRENT.isNew) genInto('f_' + f.k);
-    });
-  }
   updateLinkedProfileUI();
 }
 /* ---- link two nodes from the panel ---- */
@@ -7001,38 +6847,11 @@ function renderLinkParams(preserve=false) {
   const m = selectedMethod(), box = $('lkParams'), previous = {};
   if (preserve) box.querySelectorAll('[id^="lk_"]').forEach(el => { previous[el.id.slice(3)] = el.value; });
   box.innerHTML = '<div class="fgrid"></div>'; const grid = box.firstChild;
-  const allFields = linkFieldsFor(m);
-  const basicFields = allFields.filter(f => !f.adv);
-  const advFields = allFields.filter(f => !!f.adv);
-
-  basicFields.forEach(f => {
+  linkFieldsFor(m).forEach(f => {
     const w = document.createElement('div'); if (f.full) w.className = 'full';
     w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'lk_'); grid.appendChild(w);
     const el = $('lk_' + f.k); if (el && Object.prototype.hasOwnProperty.call(previous, f.k)) el.value = previous[f.k]; else if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
   });
-
-  if (advFields.length > 0) {
-    const advSection = document.createElement('div');
-    advSection.className = 'full';
-    advSection.style.marginTop = '12px';
-    advSection.innerHTML = `
-      <button type="button" class="btn" id="lk_advBtn" onclick="toggleAdvSection('lk_advCont', 'lk_advBtn')" style="width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:9px 14px;border:1px dashed rgba(255,255,255,0.18);border-radius:10px;background:rgba(255,255,255,0.02);cursor:pointer;font-size:13px;color:var(--text-dim);transition:all 0.2s ease">
-        <span style="font-size:14px">⚙</span> <span class="adv-btn-text">${t('advSettingsShow')}</span>
-      </button>
-      <div id="lk_advCont" style="display:none;margin-top:10px;padding:14px;border:1px solid rgba(255,255,255,0.08);border-radius:10px;background:rgba(0,0,0,0.22)">
-        <div style="font-size:11px;color:var(--text-dim);margin-bottom:12px">${t('advPaqetNote')}</div>
-        <div class="fgrid" id="lk_advGrid"></div>
-      </div>
-    `;
-    grid.appendChild(advSection);
-    const advGrid = advSection.querySelector('#lk_advGrid');
-    advFields.forEach(f => {
-      const w = document.createElement('div'); if (f.full) w.className = 'full';
-      w.innerHTML = '<label class="f">' + esc(f.l) + '</label>' + inputHtml(f, 'lk_'); advGrid.appendChild(w);
-      const el = $('lk_' + f.k); if (el && Object.prototype.hasOwnProperty.call(previous, f.k)) el.value = previous[f.k]; else if (el && f.rand) el.value = randPort(); else if (el && f.v) el.value = f.v;
-    });
-  }
-
   const reverse = ['asnative', 'backhaul', 'rathole', 'frp', 'assecure'].includes(m);
   const noteKey = m === 'gost' ? 'lkNoteGost' : (m === 'neotunnel' ? 'lkNoteExtended' : (reverse ? 'lkNoteReverse' : 'lkNote'));
   $('lkNote').dataset.i = noteKey; $('lkNote').textContent = t(noteKey);
@@ -7061,20 +6880,7 @@ async function createLink() {
   } catch (e) { if (e.message !== 'unauthorized') setMsg('✖ ' + e.message, 'err'); }
   finally { btn.disabled = false; }
 }
-function fillFields(fields) {
-  Object.keys(fields).forEach(k => { const el = $('f_' + k); if (el) el.value = fields[k]; });
-  const advCont = $('f_advCont');
-  if (advCont) {
-    const hasCustomAdv = Array.from(advCont.querySelectorAll('input,select')).some(el => {
-      const k = el.id.replace('f_', '');
-      const val = fields[k];
-      return val !== undefined && val !== '' && val !== null;
-    });
-    if (hasCustomAdv && advCont.style.display === 'none') {
-      toggleAdvSection('f_advCont', 'f_advBtn');
-    }
-  }
-}
+function fillFields(fields) { Object.keys(fields).forEach(k => { const el = $('f_' + k); if (el) el.value = fields[k]; }); }
 function collectFields() {
   const out = {}; fieldDefsFor().forEach(f => { const el = $('f_' + f.k); if (el && el.value !== '') out[f.k] = el.value; });
   const method = selectedMethod(), rk = ROLE_KEY_OF[method];
@@ -7083,9 +6889,6 @@ function collectFields() {
     const side = $('roleSelect').value;
     const serverHere = ['backhaul', 'rathole', 'frp', 'assecure'].includes(method) ? side === 'iran' : side === 'eu';
     out[rk] = serverHere ? 'server' : 'client';
-  }
-  if (!out.LOCAL_ADDR) {
-    out.LOCAL_ADDR = (CURRENT && CURRENT.fields && CURRENT.fields.LOCAL_ADDR) || 'auto';
   }
   return out;
 }
@@ -8101,7 +7904,7 @@ api_save(){
     frp)      allowed="FRP_ROLE TOKEN BIND_PORT SERVER_IP FORWARD_PORTS PROTO LOCAL_ADDR" ;;
     assecure) allowed="AS_ROLE AS_TRANSPORT TOKEN BIND_PORT SERVER_IP AS_SERVER_NAME AS_CERT_B64 AS_KEY_B64 AS_CA_B64 AS_TCP_PORTS AS_UDP_PORTS PROTO LOCAL_ADDR" ;;
     gost)     allowed="DEST_IP PORT_MODE PORTS RANGE_START RANGE_END PROTO" ;;
-    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS PROTO SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOCAL_ADDR LOG_LEVEL INTERFACE TCP_FLAGS TCP_LOCAL_FLAG TCP_REMOTE_FLAG PCAP_SOCKBUF DSHARD PSHARD SMUXBUF STREAMBUF" ;;
+    paqet)    allowed="PQ_ROLE SECRET_KEY SERVER_IP SERVER_PORT KCP_MODE CONN MTU BLOCK FORWARD_PORTS FORWARD_UDP_PORTS PROTO SOCKS5_PORT SOCKS5_USER SOCKS5_PASS ROUTER_MAC LOCAL_ADDR" ;;
     neotunnel) allowed="NT_MODE NT_ROLE NT_KIND NT_PEER NT_PEER_IP NT_REMOTE_IP NT_TUNNEL_NAME NT_OWNER_NODE NT_PORT NT_MTU NT_TTL NT_VNI NT_TUNNEL_ID NT_POOL4 NT_POOL6 NT_ENCRYPT NT_PROFILE NT_KEEPALIVE NT_PADDING NT_MTU_PROBE NT_NO_PMTUD NT_IGNORE_DF NT_LANES NT_CONNS NT_REVERSE NT_SNI NT_PEER_KEY NT_FORWARD_PORTS NT_FORWARD_PROTO" ;;
     *) echo '{"error":"bad_method"}'; return 1 ;;
   esac
@@ -8114,7 +7917,6 @@ api_save(){
     for k in $allowed; do
       v="$(printf '%s' "$body" | jq -r --arg k "$k" '.fields[$k] // empty' 2>/dev/null)"
       if [[ "$method" == "neotunnel" && "$k" == "NT_TUNNEL_NAME" && -z "$v" && "$register_only" != "true" ]]; then v="$prof"; fi
-      if [[ "$k" == "LOCAL_ADDR" && -z "$v" ]]; then v="auto"; fi
       [[ -n "$v" ]] || continue
       printf '%s=%q\n' "$k" "$v"   # %q: safely shell-quoted, so later `source` can never execute injected input
     done
